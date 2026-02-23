@@ -1127,54 +1127,31 @@ Served from binary via `rust-embed`. Reuse existing Preact setup, esbuild config
 
 ---
 
-## Total Effort Estimate
+## Implementation Status
 
-| Module | New Rust LOC | New TS LOC | Days |
-|--------|-------------|-----------|------|
-| Core framework | 1,800 | — | 7-10 |
-| Identity, auth & RBAC | 1,500 | 300 | 7-10 |
-| Git server | 1,400 | 300 | 7-10 |
-| Project management | 1,000 | 300 | 4-5 |
-| Build engine | 1,400 | 200 | 7-10 |
-| Continuous deployer | 800 | 100 | 3-4 |
-| Agent orchestration | 800 | 200 | 3-4 |
-| Observability ingest + query | 2,200 | 500 | 10-14 |
-| Secrets engine | 500 | 100 | 2 |
-| Notifications | 500 | 100 | 2 |
-| Web UI (remaining pages) | — | 600 | 4-6 |
-| Integration testing + hardening | 1,200 | — | 4-6 |
-| **Total** | **~13,100** | **~2,700** | **~60-85 days** |
+**All modules complete as of 2026-02-23.** ~23K LOC Rust + ~3K LOC TypeScript.
 
-**~15,800 LOC total. 3-4 months for one developer. Faster with Claude Code assisting.**
+Original estimate was ~15.8K LOC in 60-85 days. Actual: ~23K LOC (growth from security hardening, comprehensive testing, MCP servers, preview environments, WebAuthn/passkeys, and quality-of-life improvements discovered during implementation).
 
-Rust LOC is ~20-25% higher than Go equivalent due to type definitions, trait impls, and explicit error handling. But the code that compiles is more likely to be correct.
-
-The original Go prototype (~2,600 LOC) provided design patterns and logic to port. Implementation details preserved in `plans/mgr-reference.md`. Not direct reuse, but the architecture transfers 1:1.
+Additional deliverables beyond original plan:
+- 6 MCP servers for agent integration (`mcp/servers/`)
+- WebAuthn/passkey authentication
+- Preview environments with TTL cleanup
+- Token scope enforcement
+- 95+ integration tests, 40 E2E tests
+- Preact SPA with full admin, observability, and project management UI
 
 ---
 
-## Phased Delivery Plan
+## Delivery History
 
-### Phase 0 — Spike (3-5 days)
-kube-rs pod exec/attach for interactive agent sessions. Validate that WebSocket bridging works. If it doesn't, evaluate workarounds (kubectl exec shelling, API proxy). **Gate**: must pass before committing to Rust.
+All phases complete. Implementation was organized into 25 plans (now archived in git history):
 
-### Phase 1 — Foundation (week 1-3)
-Core framework + auth + RBAC + git server. At the end: can create users, assign roles, push/clone repos, authenticate with tokens, delegate permissions. CI pipeline building + pushing container image.
-
-### Phase 2 — Agent Loop (week 4-5)
-Port agent orchestration (see `plans/mgr-reference.md`). Agent identity + delegation. At the end: agents can create projects, get workspaces, build code, push results — with RBAC-scoped permissions.
-
-### Phase 3 — Build Engine + Deployer (week 6-8)
-Pipeline execution, artifact storage, continuous deployer, ops repos. At the end: push triggers build → artifact to MinIO → desired state in DB → deployer applies manifests from ops repo.
-
-### Phase 4 — Observability (week 8-11)
-OTEL ingest with prost, arrow-rs Parquet writes, structured log/trace/metric storage, correlation queries, alerts. At the end: full visibility into what agents and pipelines are doing, traceable end-to-end by session.
-
-### Phase 5 — Project Management + Polish (week 11-14)
-Issues, MRs, notifications, secrets, UI polish. At the end: complete platform.
-
-### Phase 6 — Migration (week 14-16)
-Migrate existing data from Gitea/Woodpecker, set up ops repos with current manifests, switch over, remove old deployments.
+- **Plans 01-04**: Foundation, Identity & Auth, Git Server, Project Management
+- **Plans 05-09**: Build Engine, Deployer, Agent Orchestration, Observability, Secrets & Notify
+- **Plan 10**: Web UI (Preact SPA)
+- **Plans 11-16**: Auth improvements (passkeys, user types, token scopes), unit test gaps, code review fixes, agent DX (MCP servers, configurable images), integration tests, roadmap
+- **Plans 17-25**: Additional integration tests, deploy/observe MCP, configurable agent images, preview environments, test quality, admin MCP, web UI completion, code review nitpicks, E2E tests
 
 ---
 
@@ -1206,12 +1183,9 @@ Migrate existing data from Gitea/Woodpecker, set up ops repos with current manif
 
 ---
 
-## Verification Plan
+## Verification
 
-1. **Auth + RBAC**: create user → assign role → get API token → verify permission enforcement → delegate to agent → verify scoped access
-2. **Git**: `git clone`, `git push`, browse files via API, verify RBAC on push
-3. **Agent loop**: prompt → agent session with delegated permissions → code committed to branch → verify agent can only access granted resources
-4. **Pipeline**: push triggers build → logs stream → artifact stored
-5. **Deploy**: pipeline writes desired state → deployer picks up → applies from ops repo → health check passes → history recorded
-6. **Observability**: OTel Collector data appears in platform → query logs by session_id → view trace waterfall → alert fires on threshold → Parquet cold storage verified
-7. **E2E**: human types idea in UI → agent builds it → pipeline deploys it → observable in dashboard → traceable end-to-end
+All verification flows are covered by the test suite:
+- **95+ integration tests** (`tests/*_integration.rs`) — auth, RBAC, projects, issues, MRs, webhooks, notifications, admin
+- **40 E2E tests** (`tests/e2e_*.rs`) — git push/clone, pipeline execution, deployments, agent sessions, webhook delivery
+- Run with `just test-integration` and `just test-e2e` (requires Kind cluster)

@@ -1,8 +1,8 @@
 # Platform — Coding Guidelines
 
-Single Rust binary (~15K LOC) replacing 8+ off-the-shelf services (Gitea, Woodpecker, Authelia, OpenObserve, Maddy, OpenBao) with a unified platform. Architecture: `plans/unified-platform.md`. Toolchain: `plans/rust-dev-process.md`. Phased delivery: `plans/01-foundation.md` through `plans/10-web-ui.md`.
+Single Rust binary (~23K LOC) replacing 8+ off-the-shelf services (Gitea, Woodpecker, Authelia, OpenObserve, Maddy, OpenBao) with a unified platform. Architecture: `docs/architecture.md`. Schema & design rationale: `plans/unified-platform.md`. Toolchain: `plans/rust-dev-process.md`.
 
-**Current status**: Phases 01 (Foundation), 02 (Identity & Auth), 03 (Git Server), and 04 (Project Management) complete. Security hardening applied across all phases (rate limiting, SSRF protection, input validation, auth hardening). Phase 05 (Build Engine) in progress. Modules 05-09 can be implemented in parallel.
+**Current status**: All modules implemented. Security hardening applied across all phases. `plans/` is for new work-in-progress only (completed plans archived in git history).
 
 ## Commands
 
@@ -15,16 +15,20 @@ just deny           # cargo deny check
 just check          # fmt + lint + deny
 just test           # cargo nextest run (all tests)
 just test-unit      # cargo nextest run --lib (unit only, no DB)
+just test-integration  # integration tests (requires DB)
+just test-e2e       # E2E tests (requires Kind cluster, run-ignored)
 just test-doc       # cargo test --doc
+just ui             # build Preact SPA (esbuild)
 just db-add <name>  # create new migration
 just db-migrate     # apply migrations
 just db-revert      # revert last migration
 just db-prepare     # regenerate .sqlx/ offline cache
 just db-check       # verify .sqlx/ is up to date
 just build          # UI + release build (SQLX_OFFLINE=true)
-just docker         # docker build
-just deploy-local   # build + load into kind + kubectl apply
+just docker [tag]   # docker build
+just deploy-local [tag]  # build + load into kind + kubectl apply
 just ci             # full local CI: fmt lint deny test-unit build
+just ci-full        # ci + test-integration + test-e2e
 just cluster-up     # create kind cluster + Postgres + Valkey + MinIO
 just cluster-down   # destroy kind cluster
 ```
@@ -40,6 +44,8 @@ just cluster-down   # destroy kind cluster
       pub minio: opendal::Operator,
       pub kube: kube::Client,
       pub config: Arc<Config>,
+      pub webauthn: Arc<webauthn_rs::prelude::Webauthn>,
+      pub pipeline_notify: Arc<tokio::sync::Notify>,
   }
   ```
 - **Module boundaries** — each `src/<module>/mod.rs` re-exports its public API. Modules communicate through `AppState`, never import each other's internals. Cross-module types live in `src/error.rs` or `src/config.rs`.
@@ -169,6 +175,143 @@ Projects use soft-delete (`is_active = false`). Always filter with `AND is_activ
 - `src/api/issues.rs` — Issues + comments
 - `src/api/merge_requests.rs` — MRs + reviews + comments + merge
 - `src/api/webhooks.rs` — Webhook CRUD + `fire_webhooks()` utility
+- `src/api/pipelines.rs` — Pipeline CRUD + run triggers (Phase 05)
+- `src/api/deployments.rs` — Deployment status + logs (Phase 06)
+- `src/api/sessions.rs` — Agent session management (Phase 07)
+- `src/api/secrets.rs` — Secrets CRUD (Phase 09)
+- `src/api/notifications.rs` — Notification queries (Phase 09)
+- `src/api/passkeys.rs` — WebAuthn registration/authentication
+- `src/api/admin.rs` — Admin CRUD (users, roles, delegations)
+- `src/api/helpers.rs` — Common extraction/validation utilities
+
+## Build Engine Patterns (Phase 05)
+
+### Pipeline definition
+
+Pipeline YAML (`.platform.yaml`) is parsed in `src/pipeline/definition.rs`. Validates steps, images, and commands.
+
+### Pipeline execution
+
+`src/pipeline/executor.rs` spawns K8s pods per step. Uses `pipeline_notify: Arc<tokio::sync::Notify>` to wake the executor loop when a new pipeline is queued — avoids polling.
+
+```rust
+// Wake executor after creating a pipeline run:
+state.pipeline_notify.notify_one();
+```
+
+### Pipeline status state machine
+
+`PipelineStatus`: Pending → Running → Success/Failure/Cancelled. Uses `can_transition_to()` pattern.
+
+### Container image validation
+
+`check_container_image()` and `check_setup_commands()` in `src/pipeline/definition.rs` validate user-supplied container images and setup commands against injection.
+
+### K8s namespaces
+
+- `PLATFORM_PIPELINE_NAMESPACE` (default: `platform-pipelines`) — pipeline pods
+- `PLATFORM_AGENT_NAMESPACE` (default: `platform-agents`) — agent pods
+
+## Deployer Patterns (Phase 06)
+
+### Reconciler loop
+
+`src/deployer/reconciler.rs` — continuous reconciliation of desired vs actual state. Runs as a background task.
+
+### Ops repo + manifest rendering
+
+`src/deployer/ops_repo.rs` — manages operations repos (Kustomize/Helm). `src/deployer/renderer.rs` — renders Kustomize overlays.
+
+### Preview environments
+
+`src/deployer/preview.rs` — ephemeral namespaces per branch. `slugify_branch()` in `src/pipeline/mod.rs` converts branch names to K8s-safe slugs. TTL-based cleanup removes stale previews.
+
+### K8s applier
+
+`src/deployer/applier.rs` — applies rendered manifests to K8s (kubectl apply equivalent).
+
+## Agent Patterns (Phase 07)
+
+### Session lifecycle
+
+`src/agent/service.rs` — agent orchestration. Sessions track ephemeral agent pods.
+
+### Ephemeral identity
+
+`src/agent/identity.rs` — each agent session gets a temporary identity with scoped permissions.
+
+### Provider configuration
+
+`src/agent/provider.rs` — provider interface. `resolve_image()` determines the container image to use with priority: explicit config → registry URL → default.
+
+## Observability Patterns (Phase 08)
+
+### OTLP ingest
+
+`src/observe/ingest.rs` — HTTP endpoints for OTLP traces, logs, metrics. Protobuf types in `src/observe/proto.rs`.
+
+### Parquet storage
+
+`src/observe/parquet.rs` — time-based rotation of Parquet files to MinIO. `src/observe/store.rs` — columnar query engine.
+
+### Query API
+
+`src/observe/query.rs` — traces, logs, metrics query endpoints with time-range filtering.
+
+### Alert evaluation
+
+`src/observe/alert.rs` — background loop evaluates alert rules against stored data, dispatches notifications.
+
+### Background tasks
+
+The observe module spawns 5 background tasks: traces flush, logs flush, metrics flush, Parquet rotation, alert evaluation.
+
+## Secrets & Notify Patterns (Phase 09)
+
+### Secrets engine
+
+`src/secrets/engine.rs` — AES-256-GCM encryption with `PLATFORM_MASTER_KEY`. Encrypt-at-rest, decrypt-on-read.
+
+### Notification dispatch
+
+`src/notify/dispatch.rs` — routes events to email/webhooks. `src/notify/email.rs` — SMTP via lettre. `src/notify/webhook.rs` — HMAC-SHA256 signed delivery.
+
+## Auth Improvements (Phase 11)
+
+### WebAuthn/Passkeys
+
+`src/auth/passkey.rs` — WebAuthn registration and authentication via `webauthn_rs`. API in `src/api/passkeys.rs`. Requires `WEBAUTHN_RP_ID`, `WEBAUTHN_RP_ORIGIN`, `WEBAUTHN_RP_NAME` env vars.
+
+### User types
+
+`src/auth/user_type.rs` — `UserType` enum distinguishes human vs agent users.
+
+## Web UI (Phase 10)
+
+Preact SPA in `ui/src/`, built with esbuild, embedded via `rust-embed` in `src/ui.rs`.
+
+### Structure
+
+- `ui/src/pages/` — Dashboard, Projects, ProjectDetail, IssueDetail, MRDetail, PipelineDetail, Sessions, Login, admin/, observe/
+- `ui/src/components/` — Layout, Pagination, Table, Modal, Toast, Badge, Markdown, CodeBlock, FilterBar, NotificationBell, ErrorBoundary
+- `ui/src/lib/` — api.ts (client), auth.tsx (context), ws.ts (WebSocket), types.ts, format.ts
+
+### Build
+
+`just ui` runs the esbuild pipeline. `just build` includes UI build + release Rust build.
+
+## MCP Servers
+
+6 MCP servers under `mcp/servers/` for external Claude agent integration:
+
+- `platform-core.js` — Core platform operations
+- `platform-admin.js` — Admin operations
+- `platform-issues.js` — Issues/comments
+- `platform-pipeline.js` — Pipeline management
+- `platform-deploy.js` — Deployment operations
+- `platform-observe.js` — Observability queries
+
+Shared client library: `mcp/lib/client.js`.
 
 ## Security Patterns
 
@@ -279,6 +422,16 @@ Key: return **404** (not 403) for private resources the user can't access — av
 | `PLATFORM_CORS_ORIGINS` | (empty = deny) | Comma-separated allowed CORS origins |
 | `PLATFORM_TRUST_PROXY` | `false` | Trust `X-Forwarded-For` for client IP |
 | `PLATFORM_DEV` | `false` | Dev mode (allows default credentials) |
+| `PLATFORM_PERMISSION_CACHE_TTL` | `300` | Permission cache TTL in seconds |
+| `PLATFORM_MASTER_KEY` | — | AES-256-GCM encryption key for secrets |
+| `PLATFORM_PIPELINE_NAMESPACE` | `platform-pipelines` | K8s namespace for pipeline pods |
+| `PLATFORM_AGENT_NAMESPACE` | `platform-agents` | K8s namespace for agent pods |
+| `PLATFORM_OPS_REPOS_PATH` | `/data/ops-repos` | Ops repo storage path |
+| `WEBAUTHN_RP_ID` | — | WebAuthn relying party ID |
+| `WEBAUTHN_RP_ORIGIN` | — | WebAuthn relying party origin |
+| `WEBAUTHN_RP_NAME` | — | WebAuthn relying party display name |
+| `PLATFORM_SMTP_HOST` | — | SMTP server host |
+| `PLATFORM_REGISTRY_URL` | — | Container registry URL |
 
 ## Type System Patterns
 
@@ -415,8 +568,19 @@ platform::main
 ### Testing pyramid
 
 1. **Unit tests** (fast, no I/O) — business logic, parsers, state machines, permission resolution, encryption. Inline `#[cfg(test)] mod tests` in source files.
-2. **Integration tests** (real DB) — API endpoint flows, DB queries, auth flows. In `tests/` with `#[sqlx::test]`.
-3. **E2E** (rare) — full server + kind cluster. Only for deployer reconciliation and agent pod lifecycle.
+2. **Integration tests** (real DB) — API endpoint flows, DB queries, auth flows. In `tests/*_integration.rs` with `#[sqlx::test]`.
+3. **E2E tests** (Kind cluster) — full server + K8s. In `tests/e2e_*.rs` (marked `#[ignore]`). Run with `just test-e2e`.
+
+### E2E test infrastructure
+
+E2E tests in `tests/e2e_helpers/mod.rs` provide:
+- `e2e_state(pool)` — real K8s, MinIO, Valkey, Postgres
+- Auth helpers: `admin_login()`, `create_user()`, `assign_role()`
+- Git helpers: `create_bare_repo()`, `create_working_copy()`, `git_cmd()`
+- K8s helpers: `wait_for_pod()`, `cleanup_k8s()`, `poll_pipeline_status()`
+- HTTP helpers: `get_json()`, `post_json()`, `patch_json()`, `delete_json()`, `get_bytes()`
+
+E2E test files: `e2e_agent.rs`, `e2e_deployer.rs`, `e2e_git.rs`, `e2e_pipeline.rs`, `e2e_webhook.rs`.
 
 ### When to write tests first (TDD)
 

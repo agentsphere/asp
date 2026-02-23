@@ -22,10 +22,10 @@ Apply these throughout every step:
 
 ## Step 1: Understand the requirement
 
-1. Read the relevant plan in `plans/` if one exists for this feature
+1. Read the relevant plan in `plans/` if one exists for this feature (plans/ is for WIP only)
 2. Identify which module(s) under `src/` are affected
 3. **Read the existing source** of affected files — understand current code before proposing changes
-4. Identify which database tables are involved (check `plans/unified-platform.md` for schema)
+4. Identify which database tables are involved (check `plans/unified-platform.md` for schema, `docs/architecture.md` for overview)
 5. List the files that will be created or modified
 6. State the acceptance criteria before writing any code
 
@@ -91,6 +91,31 @@ If the change involves database queries or HTTP endpoints:
 
 If the change is pure logic with no I/O, skip to step 6.
 
+### E2E tests
+
+If the change involves K8s pod execution, deployment reconciliation, or git operations:
+
+1. Write or update E2E tests in `tests/e2e_*.rs` (marked `#[ignore]`)
+2. Use helpers from `tests/e2e_helpers/mod.rs` — `e2e_state(pool)`, auth/git/K8s/HTTP helpers
+3. Run with `just test-e2e` (requires Kind cluster via `just cluster-up`)
+
+### UI changes
+
+If the change affects API responses or adds new endpoints consumed by the UI:
+
+1. Update TypeScript types in `ui/src/lib/types.ts`
+2. Update API client in `ui/src/lib/api.ts` if new endpoints are added
+3. Update relevant page components in `ui/src/pages/`
+4. Run `just ui` to verify the build succeeds
+
+### MCP server changes
+
+If the change adds or modifies API endpoints used by agents:
+
+1. Update the relevant MCP server in `mcp/servers/` (6 servers: core, admin, issues, pipeline, deploy, observe)
+2. Shared client library is `mcp/lib/client.js`
+3. MCP servers expose platform APIs to external Claude agents
+
 ## Step 6: Quality gate
 
 Run the full local CI. Do not skip any checks:
@@ -137,20 +162,21 @@ Verify every item before considering the work done:
 - [ ] Brute-forceable endpoints have rate limiting (`check_rate`)
 - [ ] New mutations write to `audit_log` — audit detail fields never contain URLs or secrets
 - [ ] Webhook dispatch uses the shared `WEBHOOK_CLIENT` (with timeouts) and `WEBHOOK_SEMAPHORE` (concurrency limit)
+- [ ] Container images in pipeline definitions are validated (`check_container_image()`)
+- [ ] K8s pod specs use correct namespace (`PLATFORM_PIPELINE_NAMESPACE` or `PLATFORM_AGENT_NAMESPACE`)
+- [ ] UI types updated in `ui/src/lib/types.ts` if API response shapes changed
+- [ ] MCP servers updated in `mcp/servers/` if agent-facing APIs changed
 
 ## Step 8: Update plan & summarize changes
 
 After all checks pass:
 
-**Update the plan file** (`plans/`):
+**Update the plan file** (if one exists in `plans/` for this work):
 
-1. Mark completed sections/tasks as done (e.g., `[x]` or `✅`)
-2. Update status fields (phase, progress, completion %)
-3. Document any deviations from the original plan — what changed and why
-4. Note added complexity, new edge cases, or unexpected dependencies discovered during implementation
-5. Record alternative approaches that were considered but rejected, with brief reasoning
-6. Update any schema, API, or architecture descriptions that no longer match reality
-7. Add or revise remaining work estimates if scope changed
+1. Mark completed sections/tasks as done
+2. Document any deviations from the plan — what changed and why
+3. Update any schema, API, or architecture descriptions that no longer match reality
+4. If the work added new architecture or patterns, update `docs/architecture.md`
 
 **Provide a summary:**
 
