@@ -63,7 +63,7 @@ async fn smart_http_push(pool: PgPool) {
     let app = e2e_helpers::test_router(state.clone());
     let token = e2e_helpers::admin_login(&app).await;
 
-    let project_id = e2e_helpers::create_project(&app, &token, "push-test", "private").await;
+    let _project_id = e2e_helpers::create_project(&app, &token, "push-test", "private").await;
 
     // Create a local bare repo and working copy
     let (_bare_dir, bare_path) = e2e_helpers::create_bare_repo();
@@ -82,7 +82,7 @@ async fn smart_http_push(pool: PgPool) {
     );
 
     // Verify push to origin succeeds
-    let push_output = e2e_helpers::git_cmd(&work_path, &["push", "origin", "main"]);
+    let _push_output = e2e_helpers::git_cmd(&work_path, &["push", "origin", "main"]);
     // git push outputs to stderr, so the command succeeding is the assertion.
 
     // Verify commits are visible in the bare repo
@@ -105,7 +105,7 @@ async fn smart_http_clone(pool: PgPool) {
 
     // Create a bare repo with content
     let (_bare_dir, bare_path) = e2e_helpers::create_bare_repo();
-    let (_work_dir, work_path) = e2e_helpers::create_working_copy(&bare_path);
+    let (_work_dir, _work_path) = e2e_helpers::create_working_copy(&bare_path);
 
     // Clone from the bare repo (simulating the read path)
     let clone_dir = tempfile::tempdir().unwrap();
@@ -239,7 +239,7 @@ async fn blob_content(pool: PgPool) {
     let project_id = e2e_helpers::create_project(&app, &token, "blob-test", "public").await;
 
     let (_bare_dir, bare_path) = e2e_helpers::create_bare_repo();
-    let (_work_dir, work_path) = e2e_helpers::create_working_copy(&bare_path);
+    let (_work_dir, _work_path) = e2e_helpers::create_working_copy(&bare_path);
 
     // Point project at our bare repo
     sqlx::query("UPDATE projects SET repo_path = $1 WHERE id = $2")

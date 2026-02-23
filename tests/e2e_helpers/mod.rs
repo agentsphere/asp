@@ -244,8 +244,13 @@ pub async fn assign_role(
 // ---------------------------------------------------------------------------
 
 /// Create a bare git repo in a tempdir, return `(TempDir, PathBuf)`.
+///
+/// Uses `/tmp/platform-e2e/` as the base directory so that repos are visible
+/// inside the Kind cluster (which has `/tmp/platform-e2e` as an extra mount).
 pub fn create_bare_repo() -> (TempDir, PathBuf) {
-    let dir = tempfile::tempdir().unwrap();
+    let base = std::path::Path::new("/tmp/platform-e2e");
+    std::fs::create_dir_all(base).unwrap();
+    let dir = tempfile::tempdir_in(base).unwrap();
     let repo_path = dir.path().join("test.git");
     let output = std::process::Command::new("git")
         .args(["init", "--bare"])
@@ -263,7 +268,9 @@ pub fn create_bare_repo() -> (TempDir, PathBuf) {
 /// Create a working copy from a bare repo with an initial commit.
 /// Returns `(TempDir, PathBuf)`.
 pub fn create_working_copy(bare_path: &Path) -> (TempDir, PathBuf) {
-    let dir = tempfile::tempdir().unwrap();
+    let base = std::path::Path::new("/tmp/platform-e2e");
+    std::fs::create_dir_all(base).unwrap();
+    let dir = tempfile::tempdir_in(base).unwrap();
     let work_path = dir.path().join("work");
     git_cmd_at(dir.path(), &["clone", bare_path.to_str().unwrap(), "work"]);
 

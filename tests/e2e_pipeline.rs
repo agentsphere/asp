@@ -124,7 +124,6 @@ async fn pipeline_trigger_and_execute(pool: PgPool) {
     // Poll for completion (max 120s)
     let final_status =
         e2e_helpers::poll_pipeline_status(&app, &token, project_id, pipeline_id, 120).await;
-    assert_eq!(final_status, "success");
 
     // Verify pipeline detail
     let (status, detail) = e2e_helpers::get_json(
@@ -134,7 +133,10 @@ async fn pipeline_trigger_and_execute(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(detail["status"], "success");
+    assert_eq!(
+        final_status, "success",
+        "pipeline should succeed. detail: {detail}"
+    );
 }
 
 /// Test 2: Pipeline with 3 sequential steps.

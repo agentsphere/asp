@@ -13,3 +13,7 @@ nodes:
         hostPort: 9000
       - containerPort: 30901
         hostPort: 9001
+    extraMounts:
+      - hostPath: /tmp/platform-e2e
+        containerPath: /tmp/platform-e2e
+        readOnly: false

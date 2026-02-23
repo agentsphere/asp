@@ -238,6 +238,23 @@ EOF
 echo "Waiting for Postgres to be ready..."
 kubectl wait --for=condition=Ready cluster/platform-db -n platform --timeout=120s
 
+# Grant CREATEDB to the platform user (required by sqlx::test macro)
+kubectl exec -n platform platform-db-1 -c postgres -- psql -U postgres -c "ALTER USER platform CREATEDB;"
+
+# Create e2e test namespaces
+kubectl create namespace e2e-pipelines --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace e2e-agents --dry-run=client -o yaml | kubectl apply -f -
+
+# Create shared temp directory for e2e test repos (mounted via extraMounts)
+mkdir -p /tmp/platform-e2e
+
+# Wait for MinIO to be ready, then create buckets
+echo "Waiting for MinIO to be ready..."
+kubectl wait --for=condition=Available deployment/minio -n platform --timeout=120s
+sleep 3
+kubectl exec -n platform deployment/minio -- sh -c \
+  'mc alias set local http://localhost:9000 platform devdevdev && mc mb local/platform --ignore-existing && mc mb local/platform-e2e --ignore-existing'
+
 echo ""
 echo "Dev cluster ready."
 echo "  Postgres: localhost:5432 (platform/dev)"

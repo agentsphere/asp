@@ -1,6 +1,6 @@
 # Platform — Coding Guidelines
 
-Single Rust binary (~23K LOC) replacing 8+ off-the-shelf services (Gitea, Woodpecker, Authelia, OpenObserve, Maddy, OpenBao) with a unified platform. Architecture: `docs/architecture.md`. Schema & design rationale: `plans/unified-platform.md`. Toolchain: `plans/rust-dev-process.md`.
+Single Rust binary (~23K LOC) replacing 8+ off-the-shelf services (Gitea, Woodpecker, Authelia, OpenObserve, Maddy, OpenBao) with a unified platform. Architecture: `docs/architecture.md`. Testing: `docs/testing.md`. Schema & design rationale: `plans/unified-platform.md`. Toolchain: `plans/rust-dev-process.md`.
 
 **Current status**: All modules implemented. Security hardening applied across all phases. `plans/` is for new work-in-progress only (completed plans archived in git history).
 
@@ -565,22 +565,86 @@ platform::main
 
 ## Testing Standards
 
+Full testing guide: `docs/testing.md`.
+
 ### Testing pyramid
 
-1. **Unit tests** (fast, no I/O) — business logic, parsers, state machines, permission resolution, encryption. Inline `#[cfg(test)] mod tests` in source files.
-2. **Integration tests** (real DB) — API endpoint flows, DB queries, auth flows. In `tests/*_integration.rs` with `#[sqlx::test]`.
-3. **E2E tests** (Kind cluster) — full server + K8s. In `tests/e2e_*.rs` (marked `#[ignore]`). Run with `just test-e2e`.
+1. **Unit tests** (442 tests, fast, no I/O) — `#[cfg(test)] mod tests` in source files. Run: `just test-unit`.
+2. **Integration tests** (real DB) — `tests/*_integration.rs` with `#[sqlx::test]`. Run: `just test-integration`.
+3. **E2E tests** (40 tests, Kind cluster) — `tests/e2e_*.rs` (marked `#[ignore]`). Run: `just test-e2e`.
 
 ### E2E test infrastructure
 
+**Prerequisites**: Kind cluster with Postgres, Valkey, MinIO (buckets: `platform`, `platform-e2e`), plus e2e namespaces. Set up with `just cluster-up`.
+
+**Key requirement**: Git repos must be created under `/tmp/platform-e2e/` (shared mount between host and Kind node). The helpers `create_bare_repo()` and `create_working_copy()` handle this automatically.
+
 E2E tests in `tests/e2e_helpers/mod.rs` provide:
-- `e2e_state(pool)` — real K8s, MinIO, Valkey, Postgres
+- `e2e_state(pool)` — real K8s, MinIO (bucket: `platform-e2e`), Valkey, Postgres
+- `test_router(state)` — full API router with `.with_state(state)`
 - Auth helpers: `admin_login()`, `create_user()`, `assign_role()`
 - Git helpers: `create_bare_repo()`, `create_working_copy()`, `git_cmd()`
 - K8s helpers: `wait_for_pod()`, `cleanup_k8s()`, `poll_pipeline_status()`
 - HTTP helpers: `get_json()`, `post_json()`, `patch_json()`, `delete_json()`, `get_bytes()`
 
-E2E test files: `e2e_agent.rs`, `e2e_deployer.rs`, `e2e_git.rs`, `e2e_pipeline.rs`, `e2e_webhook.rs`.
+E2E test files (40 tests total):
+- `e2e_pipeline.rs` (10) — pipeline trigger, execution, multi-step, cancel, logs, MinIO, artifacts
+- `e2e_agent.rs` (8) — session lifecycle, identity, pod specs, provider config, cleanup
+- `e2e_deployer.rs` (8) — deployment CRUD, status transitions, rollback, preview envs
+- `e2e_git.rs` (8) — bare repo init, push, clone, branches, commits, tree, blob, MR merge
+- `e2e_webhook.rs` (6) — webhook dispatch, HMAC signing, pipeline events, concurrency, timeout
+
+### E2E test patterns
+
+**Pipeline tests must spawn an executor** — the test router doesn't include the background executor:
+
+```rust
+struct ExecutorGuard { shutdown_tx: watch::Sender<()>, handle: JoinHandle<()> }
+impl ExecutorGuard {
+    fn spawn(state: &AppState) -> Self {
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let handle = tokio::spawn(platform::pipeline::executor::run(state.clone(), shutdown_rx));
+        Self { shutdown_tx, handle }
+    }
+}
+// Usage: let _executor = ExecutorGuard::spawn(&state);
+// After trigger: state.pipeline_notify.notify_one();
+```
+
+**`.platform.yaml` must use `pipeline:` wrapper** — matches `PipelineFile` struct:
+
+```yaml
+pipeline:
+  steps:
+    - name: test
+      image: alpine:3.19
+      commands:
+        - echo hello
+```
+
+**SSRF blocks localhost webhook URLs** — insert webhooks directly into DB in tests, bypassing API validation:
+
+```rust
+sqlx::query("INSERT INTO webhooks (id, project_id, url, events, is_active) VALUES ($1,$2,$3,$4,true)")
+    .bind(webhook_id).bind(project_id).bind(&wiremock_url).bind(&["push"]).execute(&pool).await?;
+```
+
+**Use dynamic queries in test files** — avoid `sqlx::query!` macros in `tests/` to prevent stale `.sqlx/` cache issues. Use `sqlx::query()` / `sqlx::query_as()` instead.
+
+### Running E2E tests
+
+```bash
+# Full setup (one-time)
+just cluster-up                    # Kind + Postgres + Valkey + MinIO + namespaces + buckets
+just db-migrate                    # Apply migrations (against Kind Postgres at localhost:5432)
+
+# Run all E2E tests
+just test-e2e                      # or: cargo nextest run --test 'e2e_*' --run-ignored ignored-only --test-threads 2
+
+# Run specific E2E test file or test
+KUBECONFIG=$HOME/.kube/kind-platform DATABASE_URL="postgres://platform:dev@127.0.0.1:5432/platform_dev" \
+  SQLX_OFFLINE=true cargo nextest run --run-ignored=only --test e2e_pipeline -E 'test(step_logs_captured)'
+```
 
 ### When to write tests first (TDD)
 
@@ -595,96 +659,6 @@ E2E test files: `e2e_agent.rs`, `e2e_deployer.rs`, `e2e_git.rs`, `e2e_pipeline.r
 - HTTP handler wiring
 - Database CRUD
 - Integration glue (WebSocket setup, K8s client wiring)
-
-### Trait-based dependency injection
-
-Use native async fn in traits (Rust 2024 edition, no `async-trait` crate). Business logic accepts `impl Trait`, not concrete types.
-
-```rust
-pub trait UserRepository: Send + Sync {
-    async fn find_by_id(&self, id: UserId) -> Result<Option<User>>;
-    async fn create(&self, req: CreateUserRequest) -> Result<User>;
-}
-
-// Production implementation
-pub struct PgUserRepository { pool: PgPool }
-impl UserRepository for PgUserRepository {
-    async fn find_by_id(&self, id: UserId) -> Result<Option<User>> {
-        sqlx::query_as!(User, "SELECT * FROM users WHERE id = $1", id.as_uuid())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(Into::into)
-    }
-    // ...
-}
-
-// Test mock
-#[cfg(test)]
-pub struct MockUserRepository {
-    pub users: std::sync::Mutex<Vec<User>>,
-}
-#[cfg(test)]
-impl UserRepository for MockUserRepository {
-    async fn find_by_id(&self, id: UserId) -> Result<Option<User>> {
-        Ok(self.users.lock().unwrap().iter().find(|u| u.id == id).cloned())
-    }
-    // ...
-}
-```
-
-Use traits for: database access, Valkey cache, K8s client, MinIO/S3, SMTP.
-
-### Integration tests with sqlx
-
-```rust
-#[sqlx::test(migrations = "migrations")]
-async fn create_and_fetch_user(pool: PgPool) {
-    let repo = PgUserRepository::new(pool);
-    let user = repo.create(CreateUserRequest {
-        name: "testuser".into(),
-        email: "test@example.com".into(),
-    }).await.unwrap();
-    let fetched = repo.find_by_id(user.id).await.unwrap().unwrap();
-    assert_eq!(fetched.name, "testuser");
-}
-```
-
-### Snapshot testing (insta)
-
-Use for API response format stability:
-
-```rust
-#[tokio::test]
-async fn list_projects_response() {
-    let response = /* ... */;
-    insta::assert_json_snapshot!(response);
-}
-```
-
-### Property-based testing (proptest)
-
-Use for parser/serialization round-trips:
-
-```rust
-proptest! {
-    #[test]
-    fn permission_roundtrip(perm in any::<Permission>()) {
-        let s = perm.as_str();
-        let parsed = Permission::from_str(s).unwrap();
-        assert_eq!(perm, parsed);
-    }
-}
-```
-
-### Test helpers
-
-Common setup functions in `tests/helpers/mod.rs`:
-
-```rust
-pub async fn create_test_user(pool: &PgPool, name: &str) -> User { /* ... */ }
-pub async fn create_test_project(pool: &PgPool, owner: &User) -> Project { /* ... */ }
-pub fn test_app_state(pool: PgPool) -> AppState { /* mock valkey, minio, kube */ }
-```
 
 ## API Design
 
