@@ -53,7 +53,7 @@ impl FromRequestParts<AppState> for AuthUser {
 
         // Try Bearer token first
         if let Some(raw_token) = extract_bearer_token(parts)
-            && let Some(user) = lookup_api_token(&state.pool, &raw_token).await?
+            && let Some(user) = lookup_api_token(&state.pool, raw_token).await?
         {
             if !user.is_active {
                 return Err(ApiError::Unauthorized);
@@ -73,7 +73,7 @@ impl FromRequestParts<AppState> for AuthUser {
 
         // Try session cookie
         if let Some(session_token) = extract_session_cookie(parts)
-            && let Some(user) = lookup_session(&state.pool, &session_token).await?
+            && let Some(user) = lookup_session(&state.pool, session_token).await?
         {
             if !user.is_active {
                 return Err(ApiError::Unauthorized);

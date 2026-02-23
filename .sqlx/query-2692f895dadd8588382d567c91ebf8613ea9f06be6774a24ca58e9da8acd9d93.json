@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT git_ref, commit_sha, triggered_by FROM pipelines WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "git_ref",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "commit_sha",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "triggered_by",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "2692f895dadd8588382d567c91ebf8613ea9f06be6774a24ca58e9da8acd9d93"
+}

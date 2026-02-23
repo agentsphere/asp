@@ -44,6 +44,7 @@ pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>
 // Reconcile pending previews
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 struct PendingPreview {
     id: Uuid,
     project_id: Uuid,
@@ -245,7 +246,7 @@ fn build_preview_deployment(preview: &PendingPreview, namespace: &str) -> Deploy
     }
 }
 
-/// Build a K8s ClusterIP Service for a preview, targeting port 8080.
+/// Build a K8s `ClusterIP` Service for a preview, targeting port 8080.
 fn build_preview_service(preview: &PendingPreview, namespace: &str) -> Service {
     let labels = BTreeMap::from([
         ("platform.io/component".into(), "preview".into()),
