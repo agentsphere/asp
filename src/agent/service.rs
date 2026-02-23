@@ -7,6 +7,7 @@ use sqlx::PgPool;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
+use crate::secrets::user_keys;
 use crate::store::AppState;
 
 use super::claude_code::ClaudeCodeProvider;
@@ -93,27 +94,19 @@ pub async fn create_session(
     .await?;
 
     // 3. Get repo clone URL and agent image for the project
-    let project = sqlx::query!(
-        "SELECT repo_path, agent_image FROM projects WHERE id = $1 AND is_active = true",
-        project_id,
-    )
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AgentError::Other(anyhow::anyhow!("project not found")))?;
+    let (repo_clone_url, project_agent_image) =
+        get_project_repo_info(&state.pool, project_id).await?;
 
-    let repo_path = project
-        .repo_path
-        .ok_or_else(|| AgentError::Other(anyhow::anyhow!("project has no repo path")))?;
-    let repo_clone_url = format!("file://{repo_path}");
-    let project_agent_image = project.agent_image;
+    // 4. Look up user's provider key (if set)
+    let user_api_key = resolve_user_api_key(state, user_id).await;
 
-    // 4. Build and create the K8s pod
+    // 5. Build and create the K8s pod
     let namespace = &state.config.agent_namespace;
     let platform_api_url = format!("http://platform.{namespace}.svc.cluster.local:8080");
 
     let session_for_pod = AgentSession {
         id: session_id,
-        project_id,
+        project_id: Some(project_id),
         user_id,
         agent_user_id: Some(agent_identity.user_id),
         prompt: prompt.to_owned(),
@@ -125,6 +118,9 @@ pub async fn create_session(
         cost_tokens: None,
         created_at: chrono::Utc::now(),
         finished_at: None,
+        parent_session_id: None,
+        spawn_depth: 0,
+        allowed_child_roles: None,
     };
 
     let pod = provider.build_pod(BuildPodParams {
@@ -135,6 +131,7 @@ pub async fn create_session(
         repo_clone_url: &repo_clone_url,
         namespace,
         project_agent_image: project_agent_image.as_deref(),
+        anthropic_api_key: user_api_key.as_deref(),
     })?;
 
     let pod_name = pod
@@ -365,8 +362,10 @@ async fn reap_terminated_sessions(state: &AppState) -> Result<(), AgentError> {
                                 .await;
                     }
 
-                    // Fire webhook
-                    fire_agent_webhook(&state.pool, session.project_id, session.id, status).await;
+                    // Fire webhook (only if session has a project)
+                    if let Some(pid) = session.project_id {
+                        fire_agent_webhook(&state.pool, pid, session.id, status).await;
+                    }
 
                     tracing::info!(session_id = %session.id, %status, "reaped agent session");
                 }
@@ -385,7 +384,9 @@ async fn reap_terminated_sessions(state: &AppState) -> Result<(), AgentError> {
                         .await;
                 }
 
-                fire_agent_webhook(&state.pool, session.project_id, session.id, "failed").await;
+                if let Some(pid) = session.project_id {
+                    fire_agent_webhook(&state.pool, pid, session.id, "failed").await;
+                }
                 tracing::warn!(session_id = %session.id, "agent pod disappeared, marking failed");
             }
             Err(e) => {
@@ -401,13 +402,34 @@ async fn reap_terminated_sessions(state: &AppState) -> Result<(), AgentError> {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Look up a project's repo clone URL and optional custom agent image.
+async fn get_project_repo_info(
+    pool: &PgPool,
+    project_id: Uuid,
+) -> Result<(String, Option<String>), AgentError> {
+    let project = sqlx::query!(
+        "SELECT repo_path, agent_image FROM projects WHERE id = $1 AND is_active = true",
+        project_id,
+    )
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AgentError::Other(anyhow::anyhow!("project not found")))?;
+
+    let repo_path = project
+        .repo_path
+        .ok_or_else(|| AgentError::Other(anyhow::anyhow!("project has no repo path")))?;
+    let repo_clone_url = format!("file://{repo_path}");
+    Ok((repo_clone_url, project.agent_image))
+}
+
 /// Fetch a session by ID from the database.
 pub async fn fetch_session(pool: &PgPool, session_id: Uuid) -> Result<AgentSession, AgentError> {
     let row = sqlx::query!(
         r#"
         SELECT id, project_id, user_id, agent_user_id, prompt, status,
                branch, pod_name, provider, provider_config,
-               cost_tokens, created_at, finished_at
+               cost_tokens, created_at, finished_at,
+               parent_session_id, spawn_depth, allowed_child_roles
         FROM agent_sessions WHERE id = $1
         "#,
         session_id,
@@ -430,7 +452,33 @@ pub async fn fetch_session(pool: &PgPool, session_id: Uuid) -> Result<AgentSessi
         cost_tokens: row.cost_tokens,
         created_at: row.created_at,
         finished_at: row.finished_at,
+        parent_session_id: row.parent_session_id,
+        spawn_depth: row.spawn_depth,
+        allowed_child_roles: row.allowed_child_roles,
     })
+}
+
+/// Create a global (project-less) agent session for app scaffolding.
+pub async fn create_global_session(
+    state: &AppState,
+    user_id: Uuid,
+    prompt: &str,
+    provider_name: &str,
+) -> Result<AgentSession, AgentError> {
+    let _provider = get_provider(provider_name)?;
+
+    let session_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO agent_sessions (id, user_id, prompt, provider, status) VALUES ($1, $2, $3, $4, 'pending')",
+    )
+    .bind(session_id)
+    .bind(user_id)
+    .bind(prompt)
+    .bind(provider_name)
+    .execute(&state.pool)
+    .await?;
+
+    fetch_session(&state.pool, session_id).await
 }
 
 /// Capture agent pod logs to `MinIO` for post-session review.
@@ -460,4 +508,18 @@ async fn fire_agent_webhook(pool: &PgPool, project_id: Uuid, session_id: Uuid, s
         "project_id": project_id,
     });
     crate::api::webhooks::fire_webhooks(pool, project_id, "agent", &payload).await;
+}
+
+/// Try to resolve the user's Anthropic API key from `user_provider_keys`.
+/// Returns `None` if the user hasn't set one or if the secrets engine isn't configured.
+async fn resolve_user_api_key(state: &AppState, user_id: Uuid) -> Option<String> {
+    let master_key_hex = state.config.master_key.as_deref()?;
+    let master_key = crate::secrets::engine::parse_master_key(master_key_hex).ok()?;
+    match user_keys::get_user_key(&state.pool, &master_key, user_id, "anthropic").await {
+        Ok(key) => key,
+        Err(e) => {
+            tracing::warn!(error = %e, %user_id, "failed to resolve user API key, falling back to global");
+            None
+        }
+    }
 }

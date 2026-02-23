@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, project_id, user_id, prompt, status, branch, pod_name,\n               provider, cost_tokens, created_at, finished_at\n        FROM agent_sessions\n        WHERE project_id = $1 AND ($2::text IS NULL OR status = $2)\n        ORDER BY created_at DESC\n        LIMIT $3 OFFSET $4\n        ",
+  "query": "\n        SELECT id, owner_id, workspace_id, name, display_name, description, visibility, default_branch, agent_image, is_active, created_at, updated_at\n        FROM projects WHERE id = $1 AND is_active = true\n        ",
   "describe": {
     "columns": [
       {
@@ -10,76 +10,79 @@
       },
       {
         "ordinal": 1,
-        "name": "project_id",
+        "name": "owner_id",
         "type_info": "Uuid"
       },
       {
         "ordinal": 2,
-        "name": "user_id",
+        "name": "workspace_id",
         "type_info": "Uuid"
       },
       {
         "ordinal": 3,
-        "name": "prompt",
+        "name": "name",
         "type_info": "Text"
       },
       {
         "ordinal": 4,
-        "name": "status",
+        "name": "display_name",
         "type_info": "Text"
       },
       {
         "ordinal": 5,
-        "name": "branch",
+        "name": "description",
         "type_info": "Text"
       },
       {
         "ordinal": 6,
-        "name": "pod_name",
+        "name": "visibility",
         "type_info": "Text"
       },
       {
         "ordinal": 7,
-        "name": "provider",
+        "name": "default_branch",
         "type_info": "Text"
       },
       {
         "ordinal": 8,
-        "name": "cost_tokens",
-        "type_info": "Int8"
+        "name": "agent_image",
+        "type_info": "Text"
       },
       {
         "ordinal": 9,
+        "name": "is_active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 10,
-        "name": "finished_at",
+        "ordinal": 11,
+        "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Text",
-        "Int8",
-        "Int8"
+        "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
-      false,
-      false,
-      false,
-      true,
       true,
       false,
       true,
+      true,
       false,
-      true
+      false,
+      true,
+      false,
+      false,
+      false
     ]
   },
-  "hash": "f087e74a19ea3889d304e0ae50722213d2c0386132eb5bf095832fafeed97a0c"
+  "hash": "e071706a48917239b667c7fea0ff6bd75d66d72da9048dd86008900411fde768"
 }

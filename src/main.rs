@@ -41,6 +41,9 @@ mod ui;
 mod notify;
 mod secrets;
 
+// Workspaces
+mod workspace;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()

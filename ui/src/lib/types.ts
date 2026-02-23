@@ -19,6 +19,7 @@ export interface LoginResponse {
 export interface Project {
   id: string;
   owner_id: string;
+  workspace_id: string | null;
   name: string;
   display_name: string | null;
   description: string | null;
@@ -357,6 +358,27 @@ export interface AuditLogEntry {
   project_id?: string;
   detail?: Record<string, any>;
   ip_addr?: string;
+  created_at: string;
+}
+
+// Workspaces
+export interface Workspace {
+  id: string;
+  name: string;
+  display_name: string | null;
+  description: string | null;
+  owner_id: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceMember {
+  id: string;
+  workspace_id: string;
+  user_id: string;
+  user_name: string;
+  role: string;
   created_at: string;
 }
 

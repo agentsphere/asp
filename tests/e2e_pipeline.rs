@@ -10,9 +10,54 @@ use uuid::Uuid;
 // These tests require a Kind cluster with real K8s, Postgres, Valkey, and
 // MinIO. All tests are #[ignore] so they don't run in normal CI.
 // Run with: just test-e2e
+//
+// Note: The pipeline trigger reads `.platform.yaml` from the git ref using
+// `git show ref:.platform.yaml`. The `setup_pipeline_project` helper commits
+// a default `.platform.yaml` to the repo so triggers succeed.
+//
+// Each test that needs pipelines to actually execute spawns the pipeline
+// executor background task and shuts it down when done.
 // ---------------------------------------------------------------------------
 
+/// Default `.platform.yaml` for pipeline tests.
+/// Must have top-level `pipeline:` key — see `PipelineFile` in definition.rs.
+const DEFAULT_PIPELINE_YAML: &str = "\
+pipeline:
+  steps:
+    - name: test
+      image: alpine:3.19
+      commands:
+        - echo hello
+";
+
+/// RAII guard that spawns the pipeline executor and shuts it down on drop.
+struct ExecutorGuard {
+    shutdown_tx: tokio::sync::watch::Sender<()>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+#[allow(dead_code)]
+impl ExecutorGuard {
+    fn spawn(state: &platform::store::AppState) -> Self {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let executor_state = state.clone();
+        let handle = tokio::spawn(async move {
+            platform::pipeline::executor::run(executor_state, shutdown_rx).await;
+        });
+        Self {
+            shutdown_tx,
+            handle,
+        }
+    }
+
+    async fn shutdown(self) {
+        let _ = self.shutdown_tx.send(());
+        let _ = self.handle.await;
+    }
+}
+
 /// Helper: create a project and set up a bare git repo wired to it.
+/// Also commits a `.platform.yaml` so the pipeline trigger can parse it.
 /// Returns (project_id, bare_path, work_path, _bare_dir, _work_dir).
 async fn setup_pipeline_project(
     state: &platform::store::AppState,
@@ -31,6 +76,12 @@ async fn setup_pipeline_project(
     let (_bare_dir, bare_path) = e2e_helpers::create_bare_repo();
     let (_work_dir, work_path) = e2e_helpers::create_working_copy(&bare_path);
 
+    // Commit a .platform.yaml so the pipeline trigger can find it at the ref
+    std::fs::write(work_path.join(".platform.yaml"), DEFAULT_PIPELINE_YAML).unwrap();
+    e2e_helpers::git_cmd(&work_path, &["add", "."]);
+    e2e_helpers::git_cmd(&work_path, &["commit", "-m", "add pipeline config"]);
+    e2e_helpers::git_cmd(&work_path, &["push", "origin", "main"]);
+
     sqlx::query("UPDATE projects SET repo_path = $1 WHERE id = $2")
         .bind(bare_path.to_str().unwrap())
         .bind(project_id)
@@ -48,6 +99,7 @@ async fn pipeline_trigger_and_execute(pool: PgPool) {
     let state = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
     let token = e2e_helpers::admin_login(&app).await;
+    let _executor = ExecutorGuard::spawn(&state);
 
     let (project_id, _bare_path, _work_path, _bd, _wd) =
         setup_pipeline_project(&state, &app, &token, "pipe-exec").await;
@@ -65,6 +117,9 @@ async fn pipeline_trigger_and_execute(pool: PgPool) {
     assert_eq!(status, StatusCode::CREATED, "trigger failed: {body}");
     let pipeline_id = body["id"].as_str().expect("pipeline should have id");
     assert_eq!(body["status"], "pending");
+
+    // Wake the executor
+    state.pipeline_notify.notify_one();
 
     // Poll for completion (max 120s)
     let final_status =
@@ -89,9 +144,32 @@ async fn pipeline_with_multiple_steps(pool: PgPool) {
     let state = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
     let token = e2e_helpers::admin_login(&app).await;
+    let _executor = ExecutorGuard::spawn(&state);
 
-    let (project_id, _bare_path, _work_path, _bd, _wd) =
+    let (project_id, _bare_path, work_path, _bd, _wd) =
         setup_pipeline_project(&state, &app, &token, "pipe-multi").await;
+
+    // Override .platform.yaml with a multi-step definition
+    let multi_step_yaml = "\
+pipeline:
+  steps:
+    - name: build
+      image: alpine:3.19
+      commands:
+        - echo building
+    - name: test
+      image: alpine:3.19
+      commands:
+        - echo testing
+    - name: lint
+      image: alpine:3.19
+      commands:
+        - echo linting
+";
+    std::fs::write(work_path.join(".platform.yaml"), multi_step_yaml).unwrap();
+    e2e_helpers::git_cmd(&work_path, &["add", "."]);
+    e2e_helpers::git_cmd(&work_path, &["commit", "-m", "add multi-step pipeline"]);
+    e2e_helpers::git_cmd(&work_path, &["push", "origin", "main"]);
 
     let (status, body) = e2e_helpers::post_json(
         &app,
@@ -104,6 +182,7 @@ async fn pipeline_with_multiple_steps(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::CREATED, "trigger failed: {body}");
     let pipeline_id = body["id"].as_str().unwrap();
+    state.pipeline_notify.notify_one();
 
     // Poll for completion
     let final_status =
@@ -136,9 +215,24 @@ async fn pipeline_step_failure(pool: PgPool) {
     let state = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
     let token = e2e_helpers::admin_login(&app).await;
+    let _executor = ExecutorGuard::spawn(&state);
 
-    let (project_id, _bare_path, _work_path, _bd, _wd) =
+    let (project_id, _bare_path, work_path, _bd, _wd) =
         setup_pipeline_project(&state, &app, &token, "pipe-fail").await;
+
+    // Override with a failing step
+    let fail_yaml = "\
+pipeline:
+  steps:
+    - name: fail
+      image: alpine:3.19
+      commands:
+        - exit 1
+";
+    std::fs::write(work_path.join(".platform.yaml"), fail_yaml).unwrap();
+    e2e_helpers::git_cmd(&work_path, &["add", "."]);
+    e2e_helpers::git_cmd(&work_path, &["commit", "-m", "add failing pipeline"]);
+    e2e_helpers::git_cmd(&work_path, &["push", "origin", "main"]);
 
     let (status, body) = e2e_helpers::post_json(
         &app,
@@ -151,6 +245,7 @@ async fn pipeline_step_failure(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::CREATED, "trigger failed: {body}");
     let pipeline_id = body["id"].as_str().unwrap();
+    state.pipeline_notify.notify_one();
 
     // Poll for completion
     let final_status =
@@ -170,9 +265,24 @@ async fn pipeline_cancel(pool: PgPool) {
     let state = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
     let token = e2e_helpers::admin_login(&app).await;
+    let _executor = ExecutorGuard::spawn(&state);
 
-    let (project_id, _bare_path, _work_path, _bd, _wd) =
+    let (project_id, _bare_path, work_path, _bd, _wd) =
         setup_pipeline_project(&state, &app, &token, "pipe-cancel").await;
+
+    // Use a slow step so we have time to cancel
+    let slow_yaml = "\
+pipeline:
+  steps:
+    - name: slow
+      image: alpine:3.19
+      commands:
+        - sleep 30
+";
+    std::fs::write(work_path.join(".platform.yaml"), slow_yaml).unwrap();
+    e2e_helpers::git_cmd(&work_path, &["add", "."]);
+    e2e_helpers::git_cmd(&work_path, &["commit", "-m", "add slow pipeline"]);
+    e2e_helpers::git_cmd(&work_path, &["push", "origin", "main"]);
 
     // Trigger pipeline
     let (status, body) = e2e_helpers::post_json(
@@ -186,6 +296,7 @@ async fn pipeline_cancel(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::CREATED, "trigger failed: {body}");
     let pipeline_id = body["id"].as_str().unwrap();
+    state.pipeline_notify.notify_one();
 
     // Attempt to cancel immediately
     let (cancel_status, cancel_body) = e2e_helpers::post_json(
@@ -217,6 +328,7 @@ async fn step_logs_captured(pool: PgPool) {
     let state = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
     let token = e2e_helpers::admin_login(&app).await;
+    let _executor = ExecutorGuard::spawn(&state);
 
     let (project_id, _bare_path, _work_path, _bd, _wd) =
         setup_pipeline_project(&state, &app, &token, "pipe-logs").await;
@@ -232,6 +344,7 @@ async fn step_logs_captured(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let pipeline_id = body["id"].as_str().unwrap();
+    state.pipeline_notify.notify_one();
 
     // Wait for completion
     let _ = e2e_helpers::poll_pipeline_status(&app, &token, project_id, pipeline_id, 120).await;
@@ -272,6 +385,7 @@ async fn step_logs_in_minio(pool: PgPool) {
     let state = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
     let token = e2e_helpers::admin_login(&app).await;
+    let _executor = ExecutorGuard::spawn(&state);
 
     let (project_id, _bare_path, _work_path, _bd, _wd) =
         setup_pipeline_project(&state, &app, &token, "pipe-minio").await;
@@ -287,6 +401,7 @@ async fn step_logs_in_minio(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let pipeline_id = body["id"].as_str().unwrap();
+    state.pipeline_notify.notify_one();
 
     let _ = e2e_helpers::poll_pipeline_status(&app, &token, project_id, pipeline_id, 120).await;
 
@@ -323,6 +438,7 @@ async fn artifact_upload_and_download(pool: PgPool) {
     let state = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
     let token = e2e_helpers::admin_login(&app).await;
+    let _executor = ExecutorGuard::spawn(&state);
 
     let (project_id, _bare_path, _work_path, _bd, _wd) =
         setup_pipeline_project(&state, &app, &token, "pipe-artifact").await;
@@ -338,6 +454,7 @@ async fn artifact_upload_and_download(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let pipeline_id = body["id"].as_str().unwrap();
+    state.pipeline_notify.notify_one();
 
     let _ = e2e_helpers::poll_pipeline_status(&app, &token, project_id, pipeline_id, 120).await;
 
@@ -375,30 +492,32 @@ async fn artifact_upload_and_download(pool: PgPool) {
     }
 }
 
-/// Test 8: .platformci.yml in repo triggers pipeline with correct steps.
+/// Test 8: .platform.yaml in repo triggers pipeline with correct steps.
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn pipeline_definition_parsing(pool: PgPool) {
     let state = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
     let token = e2e_helpers::admin_login(&app).await;
+    let _executor = ExecutorGuard::spawn(&state);
 
     let (project_id, _bare_path, work_path, _bd, _wd) =
         setup_pipeline_project(&state, &app, &token, "pipe-yaml").await;
 
-    // Write a .platformci.yml file
-    let pipeline_yaml = r#"
-steps:
-  - name: build
-    image: alpine:3.19
-    commands:
-      - echo "building"
-  - name: test
-    image: alpine:3.19
-    commands:
-      - echo "testing"
-"#;
-    std::fs::write(work_path.join(".platformci.yml"), pipeline_yaml).unwrap();
+    // Write a multi-step .platform.yaml file (overriding the default one)
+    let pipeline_yaml = "\
+pipeline:
+  steps:
+    - name: build
+      image: alpine:3.19
+      commands:
+        - echo building
+    - name: test
+      image: alpine:3.19
+      commands:
+        - echo testing
+";
+    std::fs::write(work_path.join(".platform.yaml"), pipeline_yaml).unwrap();
     e2e_helpers::git_cmd(&work_path, &["add", "."]);
     e2e_helpers::git_cmd(&work_path, &["commit", "-m", "add pipeline definition"]);
     e2e_helpers::git_cmd(&work_path, &["push", "origin", "main"]);
@@ -415,6 +534,7 @@ steps:
     .await;
     assert_eq!(status, StatusCode::CREATED, "trigger failed: {body}");
     let pipeline_id = body["id"].as_str().unwrap();
+    state.pipeline_notify.notify_one();
 
     // Wait for completion
     let _ = e2e_helpers::poll_pipeline_status(&app, &token, project_id, pipeline_id, 120).await;
@@ -443,9 +563,11 @@ async fn pipeline_branch_trigger_filter(pool: PgPool) {
     let (project_id, _bare_path, work_path, _bd, _wd) =
         setup_pipeline_project(&state, &app, &token, "pipe-filter").await;
 
-    // Create a feature branch
+    // Create a feature branch with its own .platform.yaml
     e2e_helpers::git_cmd(&work_path, &["checkout", "-b", "feature-no-pipeline"]);
     std::fs::write(work_path.join("feature.txt"), "no pipeline\n").unwrap();
+    // Include .platform.yaml on this branch too so trigger can parse it
+    std::fs::write(work_path.join(".platform.yaml"), DEFAULT_PIPELINE_YAML).unwrap();
     e2e_helpers::git_cmd(&work_path, &["add", "."]);
     e2e_helpers::git_cmd(&work_path, &["commit", "-m", "feature commit"]);
     e2e_helpers::git_cmd(&work_path, &["push", "origin", "feature-no-pipeline"]);
@@ -461,9 +583,8 @@ async fn pipeline_branch_trigger_filter(pool: PgPool) {
     )
     .await;
 
-    // Pipeline creation may succeed (filter happens at definition level)
-    // or fail if the ref doesn't match any pipeline definition.
-    // Both outcomes are valid — we just verify the API responds correctly.
+    // Pipeline creation should succeed since .platform.yaml exists on the branch.
+    // Both outcomes are valid depending on branch filter config.
     assert!(
         status == StatusCode::CREATED
             || status == StatusCode::NOT_FOUND
@@ -479,6 +600,7 @@ async fn concurrent_pipeline_limit(pool: PgPool) {
     let state = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
     let token = e2e_helpers::admin_login(&app).await;
+    let _executor = ExecutorGuard::spawn(&state);
 
     let (project_id, _bare_path, _work_path, _bd, _wd) =
         setup_pipeline_project(&state, &app, &token, "pipe-concurrent").await;
@@ -501,6 +623,9 @@ async fn concurrent_pipeline_limit(pool: PgPool) {
             }
         }
     }
+
+    // Wake executor for all queued pipelines
+    state.pipeline_notify.notify_one();
 
     // At least some should have been created
     assert!(

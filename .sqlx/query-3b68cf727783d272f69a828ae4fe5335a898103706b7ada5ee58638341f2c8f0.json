@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, project_id, user_id, agent_user_id, prompt, status,\n               branch, pod_name, provider, provider_config,\n               cost_tokens, created_at, finished_at\n        FROM agent_sessions WHERE id = $1\n        ",
+  "query": "\n        SELECT id, project_id, user_id, agent_user_id, prompt, status,\n               branch, pod_name, provider, provider_config,\n               cost_tokens, created_at, finished_at,\n               parent_session_id, spawn_depth, allowed_child_roles\n        FROM agent_sessions WHERE id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -67,6 +67,21 @@
         "ordinal": 12,
         "name": "finished_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "parent_session_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 14,
+        "name": "spawn_depth",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 15,
+        "name": "allowed_child_roles",
+        "type_info": "TextArray"
       }
     ],
     "parameters": {
@@ -76,10 +91,13 @@
     },
     "nullable": [
       false,
-      false,
+      true,
       false,
       true,
       false,
+      false,
+      true,
+      true,
       false,
       true,
       true,
@@ -90,5 +108,5 @@
       true
     ]
   },
-  "hash": "3e1ed2e8c0150fecbc7da4112d1257899b1190252475bbed028080032299a914"
+  "hash": "3b68cf727783d272f69a828ae4fe5335a898103706b7ada5ee58638341f2c8f0"
 }

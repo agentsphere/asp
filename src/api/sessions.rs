@@ -49,11 +49,31 @@ pub struct SendMessageRequest {
     pub content: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)] // config + allowed_child_roles used when child pod spawning is implemented
+pub struct SpawnChildRequest {
+    pub prompt: String,
+    pub config: Option<serde_json::Value>,
+    pub allowed_child_roles: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateAppRequest {
+    pub description: String,
+    pub provider: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateSessionRequest {
+    pub project_id: Option<Uuid>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SessionResponse {
     pub id: Uuid,
-    pub project_id: Uuid,
+    pub project_id: Option<Uuid>,
     pub user_id: Uuid,
+    pub agent_user_id: Option<Uuid>,
     pub prompt: String,
     pub status: String,
     pub branch: Option<String>,
@@ -102,8 +122,22 @@ pub fn router() -> Router<AppState> {
             axum::routing::post(stop_session),
         )
         .route(
+            "/api/projects/{id}/sessions/{session_id}/spawn",
+            axum::routing::post(spawn_child),
+        )
+        .route(
+            "/api/projects/{id}/sessions/{session_id}/children",
+            get(list_children),
+        )
+        .route(
             "/api/projects/{id}/sessions/{session_id}/ws",
             get(ws_handler),
+        )
+        // Global (project-less) endpoints
+        .route("/api/create-app", axum::routing::post(create_app))
+        .route(
+            "/api/sessions/{session_id}",
+            axum::routing::patch(update_session),
         )
 }
 
@@ -278,7 +312,10 @@ async fn create_session(
     )
     .await;
 
-    Ok((StatusCode::CREATED, Json(session_to_response(&session))))
+    Ok((
+        StatusCode::CREATED,
+        Json(session_to_response(&session, false)),
+    ))
 }
 
 async fn list_sessions(
@@ -305,7 +342,7 @@ async fn list_sessions(
 
     let rows = sqlx::query!(
         r#"
-        SELECT id, project_id, user_id, prompt, status, branch, pod_name,
+        SELECT id, project_id, user_id, agent_user_id, prompt, status, branch, pod_name,
                provider, cost_tokens, created_at, finished_at
         FROM agent_sessions
         WHERE project_id = $1 AND ($2::text IS NULL OR status = $2)
@@ -326,6 +363,7 @@ async fn list_sessions(
             id: r.id,
             project_id: r.project_id,
             user_id: r.user_id,
+            agent_user_id: r.agent_user_id,
             prompt: r.prompt.chars().take(200).collect(), // Truncate in list view
             status: r.status,
             branch: r.branch,
@@ -351,7 +389,7 @@ async fn get_session(
         .await
         .map_err(ApiError::from)?;
 
-    if session.project_id != id {
+    if session.project_id != Some(id) {
         return Err(ApiError::NotFound("session".into()));
     }
 
@@ -380,7 +418,7 @@ async fn get_session(
         .collect();
 
     Ok(Json(SessionDetailResponse {
-        session: session_to_response(&session),
+        session: session_to_response(&session, false),
         messages,
     }))
 }
@@ -398,7 +436,7 @@ async fn send_message(
         .await
         .map_err(ApiError::from)?;
 
-    if session.project_id != id {
+    if session.project_id != Some(id) {
         return Err(ApiError::NotFound("session".into()));
     }
 
@@ -436,7 +474,7 @@ async fn stop_session(
         .await
         .map_err(ApiError::from)?;
 
-    if session.project_id != id {
+    if session.project_id != Some(id) {
         return Err(ApiError::NotFound("session".into()));
     }
 
@@ -473,6 +511,294 @@ async fn stop_session(
 }
 
 // ---------------------------------------------------------------------------
+// Create App (project-less session)
+// ---------------------------------------------------------------------------
+
+/// Create a project-less agent session for the "Create App" flow.
+#[tracing::instrument(skip(state, body), err)]
+async fn create_app(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<CreateAppRequest>,
+) -> Result<(StatusCode, Json<SessionResponse>), ApiError> {
+    // Rate limit: 5 create-app sessions per 10 minutes per user
+    crate::auth::rate_limit::check_rate(
+        &state.valkey,
+        "create_app",
+        &auth.user_id.to_string(),
+        5,
+        600,
+    )
+    .await?;
+
+    validation::check_length("description", &body.description, 1, 100_000)?;
+    let provider = body.provider.as_deref().unwrap_or("claude-code");
+    validation::check_length("provider", provider, 1, 50)?;
+
+    // Check that the user has project:write and agent:run (global scope)
+    let has_write = resolver::has_permission(
+        &state.pool,
+        &state.valkey,
+        auth.user_id,
+        None,
+        Permission::ProjectWrite,
+    )
+    .await
+    .map_err(ApiError::Internal)?;
+    let has_run = resolver::has_permission(
+        &state.pool,
+        &state.valkey,
+        auth.user_id,
+        None,
+        Permission::AgentRun,
+    )
+    .await
+    .map_err(ApiError::Internal)?;
+    if !has_write || !has_run {
+        return Err(ApiError::Forbidden);
+    }
+
+    // Create project-less session via service
+    let session = service::create_global_session(&state, auth.user_id, &body.description, provider)
+        .await
+        .map_err(ApiError::from)?;
+
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "agent_session.create_app",
+            resource: "agent_session",
+            resource_id: Some(session.id),
+            project_id: None,
+            detail: Some(serde_json::json!({"provider": provider})),
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(session_to_response(&session, false)),
+    ))
+}
+
+/// Link a project-less session to a newly created project.
+#[tracing::instrument(skip(state, body), fields(%session_id), err)]
+async fn update_session(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(session_id): Path<Uuid>,
+    Json(body): Json<UpdateSessionRequest>,
+) -> Result<Json<SessionResponse>, ApiError> {
+    let session = service::fetch_session(&state.pool, session_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    // Only the session owner can update it
+    if session.user_id != auth.user_id {
+        return Err(ApiError::Forbidden);
+    }
+
+    if let Some(project_id) = body.project_id {
+        // Verify project exists and user has access
+        let exists: Option<(Uuid,)> =
+            sqlx::query_as("SELECT id FROM projects WHERE id = $1 AND is_active = true")
+                .bind(project_id)
+                .fetch_optional(&state.pool)
+                .await?;
+        if exists.is_none() {
+            return Err(ApiError::NotFound("project".into()));
+        }
+
+        sqlx::query("UPDATE agent_sessions SET project_id = $2 WHERE id = $1")
+            .bind(session_id)
+            .bind(project_id)
+            .execute(&state.pool)
+            .await?;
+    }
+
+    let updated = service::fetch_session(&state.pool, session_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(Json(session_to_response(&updated, false)))
+}
+
+// ---------------------------------------------------------------------------
+// Spawn
+// ---------------------------------------------------------------------------
+
+const MAX_SPAWN_DEPTH: i32 = 5;
+
+/// Spawn a child agent session from a parent session.
+#[tracing::instrument(skip(state, body), fields(%id, %session_id), err)]
+async fn spawn_child(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, session_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<SpawnChildRequest>,
+) -> Result<(StatusCode, Json<SessionResponse>), ApiError> {
+    validation::check_length("prompt", &body.prompt, 1, 100_000)?;
+
+    // Check agent:spawn permission
+    let allowed = resolver::has_permission(
+        &state.pool,
+        &state.valkey,
+        auth.user_id,
+        Some(id),
+        Permission::AgentSpawn,
+    )
+    .await
+    .map_err(ApiError::Internal)?;
+    if !allowed {
+        return Err(ApiError::Forbidden);
+    }
+
+    // Fetch parent session
+    let parent = service::fetch_session(&state.pool, session_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    if parent.project_id != Some(id) {
+        return Err(ApiError::NotFound("session".into()));
+    }
+
+    // Check spawn depth
+    if parent.spawn_depth >= MAX_SPAWN_DEPTH {
+        return Err(ApiError::BadRequest(format!(
+            "spawn depth limit reached (max {MAX_SPAWN_DEPTH})"
+        )));
+    }
+
+    // Create child session record
+    let child_id = Uuid::new_v4();
+    let child_depth = parent.spawn_depth + 1;
+    let allowed_roles = body.allowed_child_roles.as_deref();
+
+    sqlx::query!(
+        r#"
+        INSERT INTO agent_sessions (id, project_id, user_id, prompt, provider, parent_session_id, spawn_depth, allowed_child_roles)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "#,
+        child_id,
+        id,
+        parent.user_id, // Child inherits the original human user
+        body.prompt,
+        parent.provider,
+        session_id,
+        child_depth,
+        allowed_roles as Option<&[String]>,
+    )
+    .execute(&state.pool)
+    .await?;
+
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "agent_session.spawn",
+            resource: "agent_session",
+            resource_id: Some(child_id),
+            project_id: Some(id),
+            detail: Some(serde_json::json!({
+                "parent_session_id": session_id,
+                "spawn_depth": child_depth,
+            })),
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
+
+    // Fetch the created child to return
+    let child = service::fetch_session(&state.pool, child_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(session_to_response(&child, false)),
+    ))
+}
+
+/// List child sessions spawned from a parent session.
+async fn list_children(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, session_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Vec<SessionResponse>>, ApiError> {
+    require_project_read(&state, &auth, id).await?;
+
+    let children = sqlx::query!(
+        r#"
+        SELECT id, project_id, user_id, agent_user_id, prompt, status, branch, pod_name,
+               provider, cost_tokens, created_at, finished_at, spawn_depth
+        FROM agent_sessions
+        WHERE parent_session_id = $1 AND project_id = $2
+        ORDER BY created_at
+        "#,
+        session_id,
+        id,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    let items = children
+        .into_iter()
+        .map(|r| SessionResponse {
+            id: r.id,
+            project_id: r.project_id,
+            user_id: r.user_id,
+            agent_user_id: r.agent_user_id,
+            prompt: truncate_prompt(&r.prompt, 200),
+            status: r.status,
+            branch: r.branch,
+            pod_name: r.pod_name,
+            provider: r.provider,
+            cost_tokens: r.cost_tokens,
+            created_at: r.created_at,
+            finished_at: r.finished_at,
+        })
+        .collect();
+
+    Ok(Json(items))
+}
+
+fn truncate_prompt(prompt: &str, max_len: usize) -> String {
+    if prompt.len() <= max_len {
+        prompt.to_owned()
+    } else {
+        format!("{}...", &prompt[..max_len])
+    }
+}
+
+fn session_to_response(
+    session: &crate::agent::provider::AgentSession,
+    truncate: bool,
+) -> SessionResponse {
+    SessionResponse {
+        id: session.id,
+        project_id: session.project_id,
+        user_id: session.user_id,
+        agent_user_id: session.agent_user_id,
+        prompt: if truncate {
+            truncate_prompt(&session.prompt, 200)
+        } else {
+            session.prompt.clone()
+        },
+        status: session.status.clone(),
+        branch: session.branch.clone(),
+        pod_name: session.pod_name.clone(),
+        provider: session.provider.clone(),
+        cost_tokens: session.cost_tokens,
+        created_at: session.created_at,
+        finished_at: session.finished_at,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket
 // ---------------------------------------------------------------------------
 
@@ -490,7 +816,7 @@ async fn ws_handler(
         .await
         .map_err(ApiError::from)?;
 
-    if session.project_id != id {
+    if session.project_id != Some(id) {
         return Err(ApiError::NotFound("session".into()));
     }
 
@@ -573,24 +899,4 @@ async fn handle_ws(
     }
 
     tracing::info!(%session_id, "websocket connection closed");
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn session_to_response(session: &crate::agent::provider::AgentSession) -> SessionResponse {
-    SessionResponse {
-        id: session.id,
-        project_id: session.project_id,
-        user_id: session.user_id,
-        prompt: session.prompt.clone(),
-        status: session.status.clone(),
-        branch: session.branch.clone(),
-        pod_name: session.pod_name.clone(),
-        provider: session.provider.clone(),
-        cost_tokens: session.cost_tokens,
-        created_at: session.created_at,
-        finished_at: session.finished_at,
-    }
 }

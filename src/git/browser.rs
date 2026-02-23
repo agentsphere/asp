@@ -260,7 +260,6 @@ async fn blob(
             .arg("-C")
             .arg(&repo_path)
             .arg("show")
-            .arg("--")
             .arg(&object_spec)
             .output()
     })
@@ -357,8 +356,8 @@ async fn commits(
             .arg("log")
             .arg(format!("-n{limit}"))
             .arg("--format=%H%x00%s%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI")
-            .arg("--")
             .arg(&query.git_ref)
+            .arg("--")
             .output()
     })
     .await

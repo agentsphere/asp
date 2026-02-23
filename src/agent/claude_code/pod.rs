@@ -19,6 +19,9 @@ pub struct PodBuildParams<'a> {
     pub namespace: &'a str,
     /// Project-level default agent image (from `projects.agent_image` column).
     pub project_agent_image: Option<&'a str>,
+    /// User-provided Anthropic API key. If set, used as a plain env var
+    /// instead of referencing the global K8s secret.
+    pub anthropic_api_key: Option<&'a str>,
 }
 
 /// Resolves the container image for an agent pod.
@@ -55,11 +58,13 @@ pub fn build_agent_pod(params: &PodBuildParams<'_>) -> Pod {
         .clone()
         .unwrap_or_else(|| format!("agent/{short_id}"));
 
-    let labels = BTreeMap::from([
+    let mut labels = BTreeMap::from([
         ("platform.io/component".into(), "agent-session".into()),
         ("platform.io/session".into(), session_id.to_string()),
-        ("platform.io/project".into(), project_id.to_string()),
     ]);
+    if let Some(pid) = project_id {
+        labels.insert("platform.io/project".into(), pid.to_string());
+    }
 
     let claude_args = build_claude_args(params, &branch);
     let env_vars = build_env_vars(params, session_id, &branch);
@@ -121,26 +126,35 @@ fn build_env_vars(
 ) -> Vec<EnvVar> {
     let role = params.config.role.as_deref().unwrap_or("dev");
 
-    vec![
-        EnvVar {
+    // Use user-provided key if available, otherwise fall back to global K8s secret
+    let api_key_env = match params.anthropic_api_key {
+        Some(key) => env_var("ANTHROPIC_API_KEY", key),
+        None => EnvVar {
             name: "ANTHROPIC_API_KEY".into(),
             value_from: Some(EnvVarSource {
                 secret_key_ref: Some(SecretKeySelector {
                     name: "platform-agent-secrets".into(),
                     key: "anthropic-api-key".into(),
-                    optional: Some(false),
+                    optional: Some(true),
                 }),
                 ..Default::default()
             }),
             ..Default::default()
         },
+    };
+
+    let mut vars = vec![
+        api_key_env,
         env_var("SESSION_ID", &session_id.to_string()),
         env_var("PLATFORM_API_TOKEN", params.agent_api_token),
         env_var("PLATFORM_API_URL", params.platform_api_url),
         env_var("BRANCH", branch),
-        env_var("PROJECT_ID", &params.session.project_id.to_string()),
         env_var("AGENT_ROLE", role),
-    ]
+    ];
+    if let Some(pid) = params.session.project_id {
+        vars.push(env_var("PROJECT_ID", &pid.to_string()));
+    }
+    vars
 }
 
 fn build_init_containers(params: &PodBuildParams<'_>, branch: &str) -> Vec<Container> {
@@ -261,7 +275,7 @@ mod tests {
     fn test_session() -> AgentSession {
         AgentSession {
             id: Uuid::parse_str("12345678-1234-1234-1234-123456789abc").unwrap(),
-            project_id: Uuid::parse_str("abcdef01-2345-6789-abcd-ef0123456789").unwrap(),
+            project_id: Some(Uuid::parse_str("abcdef01-2345-6789-abcd-ef0123456789").unwrap()),
             user_id: Uuid::new_v4(),
             agent_user_id: None,
             prompt: "Fix the tests".to_owned(),
@@ -273,6 +287,9 @@ mod tests {
             cost_tokens: None,
             created_at: Utc::now(),
             finished_at: None,
+            parent_session_id: None,
+            spawn_depth: 0,
+            allowed_child_roles: None,
         }
     }
 
@@ -287,6 +304,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "platform-agents",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         assert_eq!(pod.metadata.name.as_deref(), Some("agent-12345678"));
         assert_eq!(pod.metadata.namespace.as_deref(), Some("platform-agents"));
@@ -303,13 +321,14 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "ns",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         let labels = pod.metadata.labels.unwrap();
         assert_eq!(labels["platform.io/component"], "agent-session");
         assert_eq!(labels["platform.io/session"], session.id.to_string());
         assert_eq!(
             labels["platform.io/project"],
-            session.project_id.to_string()
+            session.project_id.unwrap().to_string()
         );
     }
 
@@ -324,6 +343,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "ns",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         let spec = pod.spec.unwrap();
         let claude_container = &spec.containers[0];
@@ -343,6 +363,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "ns",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -358,6 +379,28 @@ mod tests {
             .unwrap();
         assert_eq!(secret_ref.name, "platform-agent-secrets");
         assert_eq!(secret_ref.key, "anthropic-api-key");
+        assert_eq!(secret_ref.optional, Some(true));
+    }
+
+    #[test]
+    fn anthropic_key_from_user_provided() {
+        let session = test_session();
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &ProviderConfig::default(),
+            agent_api_token: "tok",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "file:///data/repos/test",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: Some("sk-ant-user-key-1234"),
+        });
+        let spec = pod.spec.unwrap();
+        let env = spec.containers[0].env.as_ref().unwrap();
+        let api_key_env = env.iter().find(|e| e.name == "ANTHROPIC_API_KEY").unwrap();
+        // User-provided key should be a plain value, not a secret ref
+        assert_eq!(api_key_env.value.as_deref(), Some("sk-ant-user-key-1234"));
+        assert!(api_key_env.value_from.is_none());
     }
 
     #[test]
@@ -371,6 +414,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "ns",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -383,7 +427,10 @@ mod tests {
         assert_eq!(get("PLATFORM_API_TOKEN"), Some("plat_api_xyz"));
         assert_eq!(get("PLATFORM_API_URL"), Some("http://platform:8080"));
         assert_eq!(get("BRANCH"), Some("agent/12345678"));
-        assert_eq!(get("PROJECT_ID"), Some(&*session.project_id.to_string()));
+        assert_eq!(
+            get("PROJECT_ID"),
+            Some(&*session.project_id.unwrap().to_string())
+        );
         assert_eq!(get("AGENT_ROLE"), Some("dev"));
     }
 
@@ -402,6 +449,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "ns",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -423,6 +471,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "ns",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         let spec = pod.spec.unwrap();
         let args = spec.containers[0].args.as_ref().unwrap();
@@ -446,6 +495,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "ns",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         let spec = pod.spec.unwrap();
         let args = spec.containers[0].args.as_ref().unwrap();
@@ -466,6 +516,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/myproject",
             namespace: "ns",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -486,6 +537,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "ns",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         let spec = pod.spec.unwrap();
         let resources = spec.containers[0].resources.as_ref().unwrap();
@@ -505,6 +557,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "ns",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.restart_policy.as_deref(), Some("Never"));
@@ -563,6 +616,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "ns",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         let spec = pod.spec.unwrap();
         let main = &spec.containers[0];
@@ -581,6 +635,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "ns",
             project_agent_image: Some("rust:1.80"),
+            anthropic_api_key: None,
         });
         let spec = pod.spec.unwrap();
         let main = &spec.containers[0];
@@ -603,6 +658,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "ns",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -628,6 +684,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "ns",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -645,6 +702,7 @@ mod tests {
             repo_clone_url: "file:///data/repos/test",
             namespace: "ns",
             project_agent_image: None,
+            anthropic_api_key: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();

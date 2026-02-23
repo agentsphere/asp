@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, project_id, name, scope, version, created_at, updated_at\n            FROM secrets WHERE project_id = $1\n            ORDER BY name\n            ",
+  "query": "SELECT wm.id, wm.workspace_id, wm.user_id, u.name as user_name,\n                  wm.role, wm.created_at\n           FROM workspace_members wm\n           JOIN users u ON u.id = wm.user_id\n           WHERE wm.workspace_id = $1\n           ORDER BY wm.created_at",
   "describe": {
     "columns": [
       {
@@ -10,32 +10,27 @@
       },
       {
         "ordinal": 1,
-        "name": "project_id",
+        "name": "workspace_id",
         "type_info": "Uuid"
       },
       {
         "ordinal": 2,
-        "name": "name",
-        "type_info": "Text"
+        "name": "user_id",
+        "type_info": "Uuid"
       },
       {
         "ordinal": 3,
-        "name": "scope",
+        "name": "user_name",
         "type_info": "Text"
       },
       {
         "ordinal": 4,
-        "name": "version",
-        "type_info": "Int4"
+        "name": "role",
+        "type_info": "Text"
       },
       {
         "ordinal": 5,
         "name": "created_at",
-        "type_info": "Timestamptz"
-      },
-      {
-        "ordinal": 6,
-        "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
@@ -46,7 +41,6 @@
     },
     "nullable": [
       false,
-      true,
       false,
       false,
       false,
@@ -54,5 +48,5 @@
       false
     ]
   },
-  "hash": "6f2c2289f504a7b7d72f7623275d3e938660dd0d6dadc6e152af40f7d7c1a4cf"
+  "hash": "c5b8fb2307a1417a4f94413bc5130c8d3e904dde649dc6098e7ac1928be3333a"
 }

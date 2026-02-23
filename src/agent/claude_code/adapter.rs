@@ -19,6 +19,7 @@ impl AgentProvider for ClaudeCodeProvider {
             repo_clone_url: params.repo_clone_url,
             namespace: params.namespace,
             project_agent_image: params.project_agent_image,
+            anthropic_api_key: params.anthropic_api_key,
         }))
     }
 

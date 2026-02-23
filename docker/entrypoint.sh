@@ -29,6 +29,11 @@ case "$ROLE" in
   ui)
     MCP_JSON+=',"platform-issues":{"command":"node","args":["'"$MCP_DIR"'/platform-issues.js"]}'
     ;;
+  create-app)
+    for s in platform-pipeline platform-issues platform-deploy platform-admin; do
+      MCP_JSON+=',"'"$s"'":{"command":"node","args":["'"$MCP_DIR"'/'"$s"'.js"]}'
+    done
+    ;;
 esac
 
 MCP_JSON+='}}'

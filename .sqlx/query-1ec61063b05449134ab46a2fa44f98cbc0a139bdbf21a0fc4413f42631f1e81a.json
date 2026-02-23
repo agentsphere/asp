@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, project_id, name, scope, version, created_at, updated_at\n            FROM secrets WHERE project_id IS NULL\n            ORDER BY name\n            ",
+  "query": "\n            SELECT id, project_id, workspace_id, environment, name, scope, version, created_at, updated_at\n            FROM secrets\n            WHERE project_id = $1\n              AND ($2::text IS NULL OR environment IS NOT DISTINCT FROM $2)\n            ORDER BY name\n            ",
   "describe": {
     "columns": [
       {
@@ -15,35 +15,50 @@
       },
       {
         "ordinal": 2,
-        "name": "name",
-        "type_info": "Text"
+        "name": "workspace_id",
+        "type_info": "Uuid"
       },
       {
         "ordinal": 3,
-        "name": "scope",
+        "name": "environment",
         "type_info": "Text"
       },
       {
         "ordinal": 4,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "scope",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
         "name": "version",
         "type_info": "Int4"
       },
       {
-        "ordinal": 5,
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 6,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
     },
     "nullable": [
       false,
+      true,
+      true,
       true,
       false,
       false,
@@ -52,5 +67,5 @@
       false
     ]
   },
-  "hash": "9d274b6503b9c07d54d4910b0f3c3fabeaaa52de27563c5448af953d64aa0006"
+  "hash": "1ec61063b05449134ab46a2fa44f98cbc0a139bdbf21a0fc4413f42631f1e81a"
 }

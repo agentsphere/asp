@@ -14,7 +14,7 @@ use super::error::AgentError;
 #[allow(dead_code)]
 pub struct AgentSession {
     pub id: Uuid,
-    pub project_id: Uuid,
+    pub project_id: Option<Uuid>,
     pub user_id: Uuid,
     pub agent_user_id: Option<Uuid>,
     pub prompt: String,
@@ -26,6 +26,9 @@ pub struct AgentSession {
     pub cost_tokens: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
+    pub parent_session_id: Option<Uuid>,
+    pub spawn_depth: i32,
+    pub allowed_child_roles: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +92,8 @@ pub struct BuildPodParams<'a> {
     pub repo_clone_url: &'a str,
     pub namespace: &'a str,
     pub project_agent_image: Option<&'a str>,
+    /// User-provided Anthropic API key. If set, used instead of the global K8s secret.
+    pub anthropic_api_key: Option<&'a str>,
 }
 
 /// Trait for agent provider implementations.

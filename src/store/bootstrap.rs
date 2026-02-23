@@ -22,9 +22,12 @@ const SYSTEM_ROLES: &[RoleDef] = &[
             "project:read",
             "project:write",
             "agent:run",
+            "agent:spawn",
             "deploy:read",
             "observe:read",
             "secret:read",
+            "workspace:read",
+            "workspace:write",
         ],
     },
     RoleDef {
@@ -82,6 +85,12 @@ const SYSTEM_PERMISSIONS: &[PermDef] = &[
         resource: "agent",
         action: "run",
         description: "Start agent sessions",
+    },
+    PermDef {
+        name: "agent:spawn",
+        resource: "agent",
+        action: "spawn",
+        description: "Spawn child agent sessions",
     },
     PermDef {
         name: "deploy:read",
@@ -148,6 +157,24 @@ const SYSTEM_PERMISSIONS: &[PermDef] = &[
         resource: "admin",
         action: "delegate",
         description: "Delegate permissions to other users/agents",
+    },
+    PermDef {
+        name: "workspace:read",
+        resource: "workspace",
+        action: "read",
+        description: "Read workspace data",
+    },
+    PermDef {
+        name: "workspace:write",
+        resource: "workspace",
+        action: "write",
+        description: "Create/update workspaces",
+    },
+    PermDef {
+        name: "workspace:admin",
+        resource: "workspace",
+        action: "admin",
+        description: "Manage workspace members and settings",
     },
 ];
 

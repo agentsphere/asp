@@ -20,6 +20,10 @@ import { Users } from './pages/admin/Users';
 import { Roles } from './pages/admin/Roles';
 import { Delegations } from './pages/admin/Delegations';
 import { Tokens } from './pages/admin/Tokens';
+import { ProviderKeys } from './pages/ProviderKeys';
+import { Workspaces } from './pages/Workspaces';
+import { WorkspaceDetail } from './pages/WorkspaceDetail';
+import { CreateApp } from './pages/CreateApp';
 
 function AppRouter() {
   const { user, loading } = useAuth();
@@ -31,6 +35,9 @@ function AppRouter() {
     <Layout>
       <Router>
         <Dashboard path="/" />
+        <CreateApp path="/create-app" />
+        <Workspaces path="/workspaces" />
+        <WorkspaceDetail path="/workspaces/:id" />
         <Projects path="/projects" />
         <ProjectDetail path="/projects/:id/:tab?" />
         <IssueDetail path="/projects/:id/issues/:number" />
@@ -46,6 +53,7 @@ function AppRouter() {
         <Roles path="/admin/roles" />
         <Delegations path="/admin/delegations" />
         <Tokens path="/settings/tokens" />
+        <ProviderKeys path="/settings/provider-keys" />
       </Router>
     </Layout>
   );

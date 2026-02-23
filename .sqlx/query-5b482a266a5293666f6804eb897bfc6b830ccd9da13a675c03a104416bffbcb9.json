@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO projects (owner_id, name, display_name, description, visibility, default_branch, repo_path)\n        VALUES ($1, $2, $3, $4, $5, $6, $7)\n        RETURNING id, owner_id, name, display_name, description, visibility, default_branch, agent_image, is_active, created_at, updated_at\n        ",
+  "query": "\n        UPDATE projects SET\n            display_name = COALESCE($2, display_name),\n            description = COALESCE($3, description),\n            visibility = COALESCE($4, visibility),\n            default_branch = COALESCE($5, default_branch),\n            agent_image = COALESCE($6, agent_image),\n            updated_at = now()\n        WHERE id = $1 AND is_active = true\n        RETURNING id, owner_id, workspace_id, name, display_name, description, visibility, default_branch, agent_image, is_active, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -15,46 +15,51 @@
       },
       {
         "ordinal": 2,
+        "name": "workspace_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
         "name": "name",
         "type_info": "Text"
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "display_name",
         "type_info": "Text"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "description",
         "type_info": "Text"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "visibility",
         "type_info": "Text"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "default_branch",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "agent_image",
         "type_info": "Text"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "is_active",
         "type_info": "Bool"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -66,13 +71,13 @@
         "Text",
         "Text",
         "Text",
-        "Text",
         "Text"
       ]
     },
     "nullable": [
       false,
       false,
+      true,
       false,
       true,
       true,
@@ -84,5 +89,5 @@
       false
     ]
   },
-  "hash": "bacf2dec8e53635f0020ae9d062b92527ce9eb25e8003e31f21b2bcfdab23707"
+  "hash": "5b482a266a5293666f6804eb897bfc6b830ccd9da13a675c03a104416bffbcb9"
 }

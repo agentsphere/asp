@@ -25,6 +25,7 @@ pub struct CreateProjectRequest {
     pub display_name: Option<String>,
     pub description: Option<String>,
     pub default_branch: Option<String>,
+    pub workspace_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +50,7 @@ pub struct ListProjectsParams {
 pub struct ProjectResponse {
     pub id: Uuid,
     pub owner_id: Uuid,
+    pub workspace_id: Option<Uuid>,
     pub name: String,
     pub display_name: Option<String>,
     pub description: Option<String>,
@@ -140,11 +142,20 @@ async fn create_project(
 
     let repo_path_str = repo_path.to_string_lossy().to_string();
 
+    // If workspace_id provided, validate the user is a member
+    if let Some(ws_id) = body.workspace_id
+        && !crate::workspace::service::is_member(&state.pool, ws_id, auth.user_id).await?
+    {
+        return Err(ApiError::BadRequest(
+            "you are not a member of this workspace".into(),
+        ));
+    }
+
     let project = sqlx::query!(
         r#"
-        INSERT INTO projects (owner_id, name, display_name, description, visibility, default_branch, repo_path)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        RETURNING id, owner_id, name, display_name, description, visibility, default_branch, agent_image, is_active, created_at, updated_at
+        INSERT INTO projects (owner_id, name, display_name, description, visibility, default_branch, repo_path, workspace_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id, owner_id, workspace_id, name, display_name, description, visibility, default_branch, agent_image, is_active, created_at, updated_at
         "#,
         auth.user_id,
         body.name,
@@ -153,6 +164,7 @@ async fn create_project(
         visibility,
         default_branch,
         repo_path_str,
+        body.workspace_id,
     )
     .fetch_one(&state.pool)
     .await?;
@@ -177,6 +189,7 @@ async fn create_project(
         Json(ProjectResponse {
             id: project.id,
             owner_id: project.owner_id,
+            workspace_id: project.workspace_id,
             name: project.name,
             display_name: project.display_name,
             description: project.description,
@@ -224,7 +237,7 @@ async fn list_projects(
 
     let rows = sqlx::query!(
         r#"
-        SELECT id, owner_id, name, display_name, description, visibility, default_branch, agent_image, is_active, created_at, updated_at
+        SELECT id, owner_id, workspace_id, name, display_name, description, visibility, default_branch, agent_image, is_active, created_at, updated_at
         FROM projects
         WHERE is_active = true
           AND ($1::uuid IS NULL OR owner_id = $1)
@@ -253,6 +266,7 @@ async fn list_projects(
         .map(|p| ProjectResponse {
             id: p.id,
             owner_id: p.owner_id,
+            workspace_id: p.workspace_id,
             name: p.name,
             display_name: p.display_name,
             description: p.description,
@@ -275,7 +289,7 @@ async fn get_project(
 ) -> Result<Json<ProjectResponse>, ApiError> {
     let project = sqlx::query!(
         r#"
-        SELECT id, owner_id, name, display_name, description, visibility, default_branch, agent_image, is_active, created_at, updated_at
+        SELECT id, owner_id, workspace_id, name, display_name, description, visibility, default_branch, agent_image, is_active, created_at, updated_at
         FROM projects WHERE id = $1 AND is_active = true
         "#,
         id,
@@ -304,6 +318,7 @@ async fn get_project(
     Ok(Json(ProjectResponse {
         id: project.id,
         owner_id: project.owner_id,
+        workspace_id: project.workspace_id,
         name: project.name,
         display_name: project.display_name,
         description: project.description,
@@ -380,7 +395,7 @@ async fn update_project(
             agent_image = COALESCE($6, agent_image),
             updated_at = now()
         WHERE id = $1 AND is_active = true
-        RETURNING id, owner_id, name, display_name, description, visibility, default_branch, agent_image, is_active, created_at, updated_at
+        RETURNING id, owner_id, workspace_id, name, display_name, description, visibility, default_branch, agent_image, is_active, created_at, updated_at
         "#,
         id,
         body.display_name,
@@ -411,6 +426,7 @@ async fn update_project(
     Ok(Json(ProjectResponse {
         id: project.id,
         owner_id: project.owner_id,
+        workspace_id: project.workspace_id,
         name: project.name,
         display_name: project.display_name,
         description: project.description,

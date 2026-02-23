@@ -104,10 +104,16 @@ pub async fn effective_permissions(
     .fetch_all(pool)
     .await?;
 
-    let perms: HashSet<Permission> = perm_names
+    let mut perms: HashSet<Permission> = perm_names
         .iter()
         .filter_map(|s| Permission::from_str(s).ok())
         .collect();
+
+    // Workspace-derived project permissions: if the project belongs to a
+    // workspace, workspace membership grants implicit project access.
+    if let Some(pid) = project_id {
+        add_workspace_permissions(pool, &mut perms, user_id, pid).await?;
+    }
 
     // Cache result
     let cache_strings: Vec<String> = perms.iter().map(|p| p.as_str().to_owned()).collect();
@@ -162,6 +168,39 @@ fn scope_allows(token_scopes: Option<&[String]>, perm: Permission) -> bool {
         return true; // unrestricted token
     }
     scopes.iter().any(|s| s == perm.as_str())
+}
+
+/// If a project belongs to a workspace, grant implicit project permissions
+/// based on the user's workspace membership role:
+///   - workspace owner/admin → project:read + project:write
+///   - workspace member       → project:read
+async fn add_workspace_permissions(
+    pool: &PgPool,
+    perms: &mut HashSet<Permission>,
+    user_id: Uuid,
+    project_id: Uuid,
+) -> anyhow::Result<()> {
+    let role = sqlx::query_scalar!(
+        r#"
+        SELECT wm.role as "role!"
+        FROM workspace_members wm
+        JOIN projects p ON p.workspace_id = wm.workspace_id
+        WHERE p.id = $1 AND p.is_active = true AND wm.user_id = $2
+        "#,
+        project_id,
+        user_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some(role) = role {
+        perms.insert(Permission::ProjectRead);
+        if role == "owner" || role == "admin" {
+            perms.insert(Permission::ProjectWrite);
+        }
+    }
+
+    Ok(())
 }
 
 /// Invalidate all cached permissions for a user.

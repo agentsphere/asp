@@ -72,6 +72,12 @@ export function Dashboard() {
         </div>
       </div>
 
+      {/* Create App card */}
+      <div class="card mb-md create-app-card" style="cursor:pointer;border:2px dashed var(--border);text-align:center;padding:1.5rem" onClick={() => { window.location.href = '/create-app'; }}>
+        <h3 style="margin:0 0 0.5rem">Create New App</h3>
+        <p class="text-muted" style="margin:0">Describe your idea — AI will set up everything</p>
+      </div>
+
       {/* Quick actions */}
       <div class="flex gap-sm mb-md">
         <a href="/projects" class="btn btn-primary btn-sm">New Project</a>

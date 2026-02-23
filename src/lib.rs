@@ -30,3 +30,6 @@ pub mod ui;
 // Phase 09 — Secrets Engine & Notifications
 pub mod notify;
 pub mod secrets;
+
+// Workspaces
+pub mod workspace;

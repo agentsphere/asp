@@ -4,6 +4,7 @@ import { NotificationBell } from './NotificationBell';
 
 const NAV = [
   { href: '/', label: 'Dashboard' },
+  { href: '/workspaces', label: 'Workspaces' },
   { href: '/projects', label: 'Projects' },
 ];
 
@@ -22,6 +23,7 @@ const ADMIN_NAV = [
 
 const SETTINGS_NAV = [
   { href: '/settings/tokens', label: 'API Tokens' },
+  { href: '/settings/provider-keys', label: 'Provider Keys' },
 ];
 
 function NavLink({ href, label }: { href: string; label: string }) {

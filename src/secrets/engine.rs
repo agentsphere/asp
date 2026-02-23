@@ -78,6 +78,8 @@ pub fn decrypt(encrypted: &[u8], master_key: &[u8; 32]) -> anyhow::Result<Vec<u8
 pub struct SecretMetadata {
     pub id: Uuid,
     pub project_id: Option<Uuid>,
+    pub workspace_id: Option<Uuid>,
+    pub environment: Option<String>,
     pub name: String,
     pub scope: String,
     pub version: i32,
@@ -89,37 +91,54 @@ pub struct SecretMetadata {
 // CRUD
 // ---------------------------------------------------------------------------
 
-/// Create or update a secret. On conflict (same project + name), bumps version.
-#[tracing::instrument(skip(pool, master_key, value), fields(?project_id, %name, %scope), err)]
+/// Parameters for creating/updating a secret.
+pub struct CreateSecretParams<'a> {
+    pub project_id: Option<Uuid>,
+    pub workspace_id: Option<Uuid>,
+    pub environment: Option<&'a str>,
+    pub name: &'a str,
+    pub value: &'a [u8],
+    pub scope: &'a str,
+    pub created_by: Uuid,
+}
+
+/// Create or update a secret with full hierarchy support.
+/// Uniqueness is enforced by the `idx_secrets_scoped` index on
+/// (`workspace_id`, `project_id`, `environment`, `name`) with COALESCE.
+#[tracing::instrument(skip(pool, master_key, params), err)]
 pub async fn create_secret(
     pool: &PgPool,
     master_key: &[u8; 32],
-    project_id: Option<Uuid>,
-    name: &str,
-    value: &[u8],
-    scope: &str,
-    created_by: Uuid,
+    params: CreateSecretParams<'_>,
 ) -> anyhow::Result<SecretMetadata> {
-    let encrypted = encrypt(value, master_key)?;
+    let encrypted = encrypt(params.value, master_key)?;
 
+    // Use the scoped index for conflict detection
     let row = sqlx::query!(
         r#"
-        INSERT INTO secrets (project_id, name, encrypted_value, scope, created_by)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (project_id, name) WHERE project_id IS NOT NULL
+        INSERT INTO secrets (project_id, workspace_id, environment, name, encrypted_value, scope, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (
+            COALESCE(workspace_id, '00000000-0000-0000-0000-000000000000'::uuid),
+            COALESCE(project_id,   '00000000-0000-0000-0000-000000000000'::uuid),
+            COALESCE(environment,  '__none__'),
+            name
+        )
         DO UPDATE SET
             encrypted_value = EXCLUDED.encrypted_value,
             scope = EXCLUDED.scope,
             version = secrets.version + 1,
             updated_at = now()
-        RETURNING id, project_id, name, scope, version,
+        RETURNING id, project_id, workspace_id, environment, name, scope, version,
                   created_at, updated_at
         "#,
-        project_id,
-        name,
+        params.project_id,
+        params.workspace_id,
+        params.environment,
+        params.name,
         encrypted,
-        scope,
-        created_by,
+        params.scope,
+        params.created_by,
     )
     .fetch_one(pool)
     .await?;
@@ -127,6 +146,8 @@ pub async fn create_secret(
     Ok(SecretMetadata {
         id: row.id,
         project_id: row.project_id,
+        workspace_id: row.workspace_id,
+        environment: row.environment,
         name: row.name,
         scope: row.scope,
         version: row.version,
@@ -135,7 +156,7 @@ pub async fn create_secret(
     })
 }
 
-/// Create or update a global secret (`project_id` IS NULL).
+/// Create or update a global secret (`project_id`, `workspace_id`, `environment` all NULL).
 #[tracing::instrument(skip(pool, master_key, value), fields(%name, %scope), err)]
 pub async fn create_global_secret(
     pool: &PgPool,
@@ -147,18 +168,18 @@ pub async fn create_global_secret(
 ) -> anyhow::Result<SecretMetadata> {
     let encrypted = encrypt(value, master_key)?;
 
-    // The unique index idx_secrets_global_name handles conflicts for NULL project_id
+    // The unique index idx_secrets_global_name handles conflicts for fully-NULL scoping
     let row = sqlx::query!(
         r#"
-        INSERT INTO secrets (project_id, name, encrypted_value, scope, created_by)
-        VALUES (NULL, $1, $2, $3, $4)
-        ON CONFLICT (name) WHERE project_id IS NULL
+        INSERT INTO secrets (project_id, workspace_id, environment, name, encrypted_value, scope, created_by)
+        VALUES (NULL, NULL, NULL, $1, $2, $3, $4)
+        ON CONFLICT (name) WHERE project_id IS NULL AND workspace_id IS NULL AND environment IS NULL
         DO UPDATE SET
             encrypted_value = EXCLUDED.encrypted_value,
             scope = EXCLUDED.scope,
             version = secrets.version + 1,
             updated_at = now()
-        RETURNING id, project_id, name, scope, version,
+        RETURNING id, project_id, workspace_id, environment, name, scope, version,
                   created_at, updated_at
         "#,
         name,
@@ -172,6 +193,8 @@ pub async fn create_global_secret(
     Ok(SecretMetadata {
         id: row.id,
         project_id: row.project_id,
+        workspace_id: row.workspace_id,
+        environment: row.environment,
         name: row.name,
         scope: row.scope,
         version: row.version,
@@ -208,19 +231,23 @@ pub async fn delete_secret(
 }
 
 /// List secret metadata for a project (or global if `project_id` is None).
-/// Never returns encrypted values.
+/// Never returns encrypted values. Optionally filter by environment.
 pub async fn list_secrets(
     pool: &PgPool,
     project_id: Option<Uuid>,
+    environment: Option<&str>,
 ) -> anyhow::Result<Vec<SecretMetadata>> {
     if let Some(pid) = project_id {
         let rows = sqlx::query!(
             r#"
-            SELECT id, project_id, name, scope, version, created_at, updated_at
-            FROM secrets WHERE project_id = $1
+            SELECT id, project_id, workspace_id, environment, name, scope, version, created_at, updated_at
+            FROM secrets
+            WHERE project_id = $1
+              AND ($2::text IS NULL OR environment IS NOT DISTINCT FROM $2)
             ORDER BY name
             "#,
             pid,
+            environment,
         )
         .fetch_all(pool)
         .await?;
@@ -230,6 +257,8 @@ pub async fn list_secrets(
             .map(|r| SecretMetadata {
                 id: r.id,
                 project_id: r.project_id,
+                workspace_id: r.workspace_id,
+                environment: r.environment,
                 name: r.name,
                 scope: r.scope,
                 version: r.version,
@@ -240,8 +269,9 @@ pub async fn list_secrets(
     } else {
         let rows = sqlx::query!(
             r#"
-            SELECT id, project_id, name, scope, version, created_at, updated_at
-            FROM secrets WHERE project_id IS NULL
+            SELECT id, project_id, workspace_id, environment, name, scope, version, created_at, updated_at
+            FROM secrets
+            WHERE project_id IS NULL AND workspace_id IS NULL AND environment IS NULL
             ORDER BY name
             "#,
         )
@@ -253,6 +283,8 @@ pub async fn list_secrets(
             .map(|r| SecretMetadata {
                 id: r.id,
                 project_id: r.project_id,
+                workspace_id: r.workspace_id,
+                environment: r.environment,
                 name: r.name,
                 scope: r.scope,
                 version: r.version,
@@ -263,9 +295,44 @@ pub async fn list_secrets(
     }
 }
 
+/// List secret metadata for a workspace. Never returns encrypted values.
+pub async fn list_workspace_secrets(
+    pool: &PgPool,
+    workspace_id: Uuid,
+) -> anyhow::Result<Vec<SecretMetadata>> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT id, project_id, workspace_id, environment, name, scope, version, created_at, updated_at
+        FROM secrets
+        WHERE workspace_id = $1 AND project_id IS NULL
+        ORDER BY name
+        "#,
+        workspace_id,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| SecretMetadata {
+            id: r.id,
+            project_id: r.project_id,
+            workspace_id: r.workspace_id,
+            environment: r.environment,
+            name: r.name,
+            scope: r.scope,
+            version: r.version,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        })
+        .collect())
+}
+
 /// Resolve (decrypt) a secret by name. Internal-only — NOT exposed via API.
 /// Enforces scope matching: a `pipeline`-scoped secret is only resolved when
 /// `requested_scope` is `pipeline` or `all`.
+///
+/// This is the simple resolution: project-scoped > global.
 #[tracing::instrument(skip(pool, master_key), fields(%project_id, %name, %requested_scope), err)]
 pub async fn resolve_secret(
     pool: &PgPool,
@@ -280,6 +347,8 @@ pub async fn resolve_secret(
         FROM secrets
         WHERE (project_id = $1 OR project_id IS NULL)
           AND name = $2
+          AND workspace_id IS NULL
+          AND environment IS NULL
         ORDER BY project_id IS NULL  -- prefer project-scoped over global
         LIMIT 1
         "#,
@@ -291,6 +360,73 @@ pub async fn resolve_secret(
     .ok_or_else(|| anyhow::anyhow!("secret '{name}' not found"))?;
 
     // Scope enforcement: secret scope must match the requested scope
+    if row.scope != "all" && row.scope != requested_scope && requested_scope != "all" {
+        anyhow::bail!(
+            "secret '{name}' has scope '{}' but '{}' was requested",
+            row.scope,
+            requested_scope
+        );
+    }
+
+    let plaintext = decrypt(&row.encrypted_value, master_key)?;
+    String::from_utf8(plaintext)
+        .map_err(|e| anyhow::anyhow!("secret value is not valid UTF-8: {e}"))
+}
+
+/// Resolve (decrypt) a secret using the full hierarchy (most specific wins):
+///
+/// 1. Project + Environment  (`project_id = X, environment = staging`)
+/// 2. Project                (`project_id = X, environment IS NULL`)
+/// 3. Workspace              (`workspace_id = W, project_id IS NULL`)
+/// 4. Global                 (all NULLs)
+///
+/// Enforces scope matching like `resolve_secret`.
+#[tracing::instrument(skip(pool, master_key), fields(%project_id, ?workspace_id, ?environment, %name, %requested_scope), err)]
+pub async fn resolve_secret_hierarchical(
+    pool: &PgPool,
+    master_key: &[u8; 32],
+    project_id: Uuid,
+    workspace_id: Option<Uuid>,
+    environment: Option<&str>,
+    name: &str,
+    requested_scope: &str,
+) -> anyhow::Result<String> {
+    // Query all matching rows ordered by specificity, take the first one.
+    // Specificity: project+env > project > workspace > global
+    let row = sqlx::query!(
+        r#"
+        SELECT encrypted_value, scope,
+               project_id, workspace_id, environment
+        FROM secrets
+        WHERE name = $1
+          AND (
+              -- Level 1: project + environment
+              (project_id = $2 AND environment = $3)
+              -- Level 2: project (no env)
+              OR (project_id = $2 AND environment IS NULL)
+              -- Level 3: workspace (no project)
+              OR (workspace_id = $4 AND project_id IS NULL AND environment IS NULL)
+              -- Level 4: global
+              OR (project_id IS NULL AND workspace_id IS NULL AND environment IS NULL)
+          )
+        ORDER BY
+            CASE
+                WHEN project_id = $2 AND environment = $3 THEN 0
+                WHEN project_id = $2 AND environment IS NULL THEN 1
+                WHEN workspace_id = $4 AND project_id IS NULL THEN 2
+                ELSE 3
+            END
+        LIMIT 1
+        "#,
+        name,
+        project_id,
+        environment,
+        workspace_id,
+    )
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("secret '{name}' not found"))?;
+
     if row.scope != "all" && row.scope != requested_scope && requested_scope != "all" {
         anyhow::bail!(
             "secret '{name}' has scope '{}' but '{}' was requested",

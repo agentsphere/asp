@@ -909,9 +909,13 @@ async fn git_merge_no_ff(
     let merge_output = tokio::process::Command::new("git")
         .arg("-C")
         .arg(&worktree_dir)
+        .env("GIT_AUTHOR_NAME", "Platform")
+        .env("GIT_AUTHOR_EMAIL", "platform@localhost")
+        .env("GIT_COMMITTER_NAME", "Platform")
+        .env("GIT_COMMITTER_EMAIL", "platform@localhost")
         .arg("merge")
         .arg("--no-ff")
-        .arg(format!("origin/{source_branch}"))
+        .arg(source_branch)
         .arg("-m")
         .arg(format!(
             "Merge branch '{source_branch}' into {target_branch}"

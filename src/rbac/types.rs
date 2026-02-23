@@ -9,6 +9,7 @@ pub enum Permission {
     ProjectWrite,
     ProjectDelete,
     AgentRun,
+    AgentSpawn,
     DeployRead,
     DeployPromote,
     ObserveRead,
@@ -20,6 +21,9 @@ pub enum Permission {
     AdminRoles,
     AdminConfig,
     AdminDelegate,
+    WorkspaceRead,
+    WorkspaceWrite,
+    WorkspaceAdmin,
 }
 
 impl Permission {
@@ -29,6 +33,7 @@ impl Permission {
             Self::ProjectWrite => "project:write",
             Self::ProjectDelete => "project:delete",
             Self::AgentRun => "agent:run",
+            Self::AgentSpawn => "agent:spawn",
             Self::DeployRead => "deploy:read",
             Self::DeployPromote => "deploy:promote",
             Self::ObserveRead => "observe:read",
@@ -40,6 +45,9 @@ impl Permission {
             Self::AdminRoles => "admin:roles",
             Self::AdminConfig => "admin:config",
             Self::AdminDelegate => "admin:delegate",
+            Self::WorkspaceRead => "workspace:read",
+            Self::WorkspaceWrite => "workspace:write",
+            Self::WorkspaceAdmin => "workspace:admin",
         }
     }
 }
@@ -59,6 +67,7 @@ impl FromStr for Permission {
             "project:write" => Ok(Self::ProjectWrite),
             "project:delete" => Ok(Self::ProjectDelete),
             "agent:run" => Ok(Self::AgentRun),
+            "agent:spawn" => Ok(Self::AgentSpawn),
             "deploy:read" => Ok(Self::DeployRead),
             "deploy:promote" => Ok(Self::DeployPromote),
             "observe:read" => Ok(Self::ObserveRead),
@@ -70,6 +79,9 @@ impl FromStr for Permission {
             "admin:roles" => Ok(Self::AdminRoles),
             "admin:config" => Ok(Self::AdminConfig),
             "admin:delegate" => Ok(Self::AdminDelegate),
+            "workspace:read" => Ok(Self::WorkspaceRead),
+            "workspace:write" => Ok(Self::WorkspaceWrite),
+            "workspace:admin" => Ok(Self::WorkspaceAdmin),
             other => anyhow::bail!("unknown permission: {other}"),
         }
     }
@@ -97,6 +109,7 @@ mod tests {
         Permission::ProjectWrite,
         Permission::ProjectDelete,
         Permission::AgentRun,
+        Permission::AgentSpawn,
         Permission::DeployRead,
         Permission::DeployPromote,
         Permission::ObserveRead,
@@ -108,6 +121,9 @@ mod tests {
         Permission::AdminRoles,
         Permission::AdminConfig,
         Permission::AdminDelegate,
+        Permission::WorkspaceRead,
+        Permission::WorkspaceWrite,
+        Permission::WorkspaceAdmin,
     ];
 
     #[test]
@@ -121,7 +137,7 @@ mod tests {
 
     #[test]
     fn all_permissions_counted() {
-        assert_eq!(ALL_PERMISSIONS.len(), 15);
+        assert_eq!(ALL_PERMISSIONS.len(), 19);
     }
 
     #[test]

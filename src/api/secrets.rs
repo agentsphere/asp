@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -23,6 +23,7 @@ pub struct CreateSecretRequest {
     pub name: String,
     pub value: String,
     pub scope: String,
+    pub environment: Option<String>,
 }
 
 const VALID_SCOPES: &[&str] = &["pipeline", "agent", "deploy", "all"];
@@ -47,6 +48,17 @@ fn validate_scope(scope: &str) -> Result<(), ApiError> {
     if !VALID_SCOPES.contains(&scope) {
         return Err(ApiError::BadRequest(format!(
             "scope must be one of {VALID_SCOPES:?}"
+        )));
+    }
+    Ok(())
+}
+
+const VALID_ENVIRONMENTS: &[&str] = &["preview", "staging", "production"];
+
+fn validate_environment(env: &str) -> Result<(), ApiError> {
+    if !VALID_ENVIRONMENTS.contains(&env) {
+        return Err(ApiError::BadRequest(format!(
+            "environment must be one of {VALID_ENVIRONMENTS:?}"
         )));
     }
     Ok(())
@@ -126,6 +138,14 @@ pub fn router() -> Router<AppState> {
             axum::routing::delete(delete_project_secret),
         )
         .route(
+            "/api/workspaces/{id}/secrets",
+            get(list_workspace_secrets).post(create_workspace_secret),
+        )
+        .route(
+            "/api/workspaces/{id}/secrets/{name}",
+            axum::routing::delete(delete_workspace_secret),
+        )
+        .route(
             "/api/admin/secrets",
             get(list_global_secrets).post(create_global_secret),
         )
@@ -154,14 +174,22 @@ async fn create_project_secret(
 
     let master_key = get_master_key(&state)?;
 
+    if let Some(ref env) = body.environment {
+        validate_environment(env)?;
+    }
+
     let meta = engine::create_secret(
         &state.pool,
         &master_key,
-        Some(id),
-        &body.name,
-        body.value.as_bytes(),
-        &body.scope,
-        auth.user_id,
+        engine::CreateSecretParams {
+            project_id: Some(id),
+            workspace_id: None,
+            environment: body.environment.as_deref(),
+            name: &body.name,
+            value: body.value.as_bytes(),
+            scope: &body.scope,
+            created_by: auth.user_id,
+        },
     )
     .await
     .map_err(ApiError::Internal)?;
@@ -175,7 +203,11 @@ async fn create_project_secret(
             resource: "secret",
             resource_id: Some(meta.id),
             project_id: Some(id),
-            detail: Some(serde_json::json!({"name": body.name, "scope": body.scope})),
+            detail: Some(serde_json::json!({
+                "name": body.name,
+                "scope": body.scope,
+                "environment": body.environment,
+            })),
             ip_addr: auth.ip_addr.as_deref(),
         },
     )
@@ -184,14 +216,20 @@ async fn create_project_secret(
     Ok((StatusCode::CREATED, Json(meta)))
 }
 
+#[derive(Debug, Deserialize)]
+struct ListSecretsParams {
+    environment: Option<String>,
+}
+
 async fn list_project_secrets(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
+    Query(params): Query<ListSecretsParams>,
 ) -> Result<Json<Vec<engine::SecretMetadata>>, ApiError> {
     require_secret_read(&state, &auth, id).await?;
 
-    let secrets = engine::list_secrets(&state.pool, Some(id))
+    let secrets = engine::list_secrets(&state.pool, Some(id), params.environment.as_deref())
         .await
         .map_err(ApiError::Internal)?;
 
@@ -287,7 +325,7 @@ async fn list_global_secrets(
 ) -> Result<Json<Vec<engine::SecretMetadata>>, ApiError> {
     require_admin(&state, &auth).await?;
 
-    let secrets = engine::list_secrets(&state.pool, None)
+    let secrets = engine::list_secrets(&state.pool, None, None)
         .await
         .map_err(ApiError::Internal)?;
 
@@ -320,6 +358,138 @@ async fn delete_global_secret(
             resource_id: None,
             project_id: None,
             detail: Some(serde_json::json!({"name": name, "global": true})),
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
+
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+// ---------------------------------------------------------------------------
+// Workspace-scoped secret handlers
+// ---------------------------------------------------------------------------
+
+async fn require_workspace_admin(
+    state: &AppState,
+    auth: &AuthUser,
+    workspace_id: Uuid,
+) -> Result<(), ApiError> {
+    if !crate::workspace::service::is_admin(&state.pool, workspace_id, auth.user_id).await? {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(())
+}
+
+async fn require_workspace_member_for_secrets(
+    state: &AppState,
+    auth: &AuthUser,
+    workspace_id: Uuid,
+) -> Result<(), ApiError> {
+    if !crate::workspace::service::is_member(&state.pool, workspace_id, auth.user_id).await? {
+        return Err(ApiError::NotFound("workspace".into()));
+    }
+    Ok(())
+}
+
+#[tracing::instrument(skip(state, body), fields(%id), err)]
+async fn create_workspace_secret(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<CreateSecretRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_workspace_admin(&state, &auth, id).await?;
+
+    validation::check_name(&body.name)?;
+    validation::check_length("value", &body.value, 1, 65_536)?;
+    validate_scope(&body.scope)?;
+
+    let master_key = get_master_key(&state)?;
+
+    let meta = engine::create_secret(
+        &state.pool,
+        &master_key,
+        engine::CreateSecretParams {
+            project_id: None,
+            workspace_id: Some(id),
+            environment: None,
+            name: &body.name,
+            value: body.value.as_bytes(),
+            scope: &body.scope,
+            created_by: auth.user_id,
+        },
+    )
+    .await
+    .map_err(ApiError::Internal)?;
+
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "secret.create",
+            resource: "secret",
+            resource_id: Some(meta.id),
+            project_id: None,
+            detail: Some(serde_json::json!({
+                "name": body.name,
+                "scope": body.scope,
+                "workspace_id": id,
+            })),
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
+
+    Ok((StatusCode::CREATED, Json(meta)))
+}
+
+async fn list_workspace_secrets(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<engine::SecretMetadata>>, ApiError> {
+    require_workspace_member_for_secrets(&state, &auth, id).await?;
+
+    let secrets = engine::list_workspace_secrets(&state.pool, id)
+        .await
+        .map_err(ApiError::Internal)?;
+
+    Ok(Json(secrets))
+}
+
+#[tracing::instrument(skip(state), fields(%id, %name), err)]
+async fn delete_workspace_secret(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, name)): Path<(Uuid, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_workspace_admin(&state, &auth, id).await?;
+
+    // Delete workspace-scoped secret specifically
+    let result = sqlx::query!(
+        "DELETE FROM secrets WHERE workspace_id = $1 AND project_id IS NULL AND name = $2",
+        id,
+        name,
+    )
+    .execute(&state.pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(ApiError::NotFound("secret".into()));
+    }
+
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "secret.delete",
+            resource: "secret",
+            resource_id: None,
+            project_id: None,
+            detail: Some(serde_json::json!({"name": name, "workspace_id": id})),
             ip_addr: auth.ip_addr.as_deref(),
         },
     )
