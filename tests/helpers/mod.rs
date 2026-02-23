@@ -70,7 +70,7 @@ pub async fn test_state(pool: PgPool) -> AppState {
         minio_endpoint: "http://localhost:9000".into(),
         minio_access_key: "test".into(),
         minio_secret_key: "test".into(),
-        master_key: None,
+        master_key: Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into()),
         git_repos_path: std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4())),
         ops_repos_path: std::env::temp_dir().join(format!("platform-ops-{}", Uuid::new_v4())),
         smtp_host: None,
@@ -103,6 +103,7 @@ pub async fn test_state(pool: PgPool) -> AppState {
         config: Arc::new(config),
         webauthn: Arc::new(webauthn),
         pipeline_notify: Arc::new(tokio::sync::Notify::new()),
+        inprocess_sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     }
 }
 
@@ -210,6 +211,23 @@ pub async fn assign_role(
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "assign role failed: {body}");
+}
+
+/// Store a dummy Anthropic API key for a user (required for create-app sessions).
+pub async fn set_user_api_key(pool: &PgPool, user_id: Uuid) {
+    let master_key = platform::secrets::engine::parse_master_key(
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    )
+    .unwrap();
+    platform::secrets::user_keys::set_user_key(
+        pool,
+        &master_key,
+        user_id,
+        "anthropic",
+        "sk-ant-test-dummy-key",
+    )
+    .await
+    .expect("set_user_key failed");
 }
 
 /// Send a GET request with Bearer auth.

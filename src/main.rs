@@ -41,6 +41,9 @@ mod ui;
 mod notify;
 mod secrets;
 
+// OCI Image Registry
+mod registry;
+
 // Workspaces
 mod workspace;
 
@@ -132,6 +135,10 @@ async fn main() -> anyhow::Result<()> {
     let observe_shutdown_rx = shutdown_tx.subscribe();
     let observe_channels = observe::spawn_background_tasks(state.clone(), observe_shutdown_rx);
 
+    // Start registry GC background task
+    let registry_shutdown_rx = shutdown_tx.subscribe();
+    tokio::spawn(registry::gc::run(state.clone(), registry_shutdown_rx));
+
     // Spawn expired session/token cleanup task (hourly)
     tokio::spawn(run_session_cleanup(pool.clone()));
 
@@ -142,6 +149,8 @@ async fn main() -> anyhow::Result<()> {
         .merge(observe::router(observe_channels))
         // Git routes get a higher body limit (500 MB for push/LFS)
         .merge(git::git_protocol_router().layer(RequestBodyLimitLayer::new(500 * 1024 * 1024)))
+        // Registry routes get a higher body limit (500 MB for blob uploads)
+        .merge(registry::router().layer(RequestBodyLimitLayer::new(500 * 1024 * 1024)))
         .with_state(state)
         .fallback(ui::static_handler)
         // Default body limit: 10 MB for API endpoints

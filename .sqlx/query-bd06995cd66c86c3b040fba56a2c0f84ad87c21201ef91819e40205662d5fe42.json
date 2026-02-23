@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT u.id as \"user_id!\", u.name as \"user_name!\", u.is_active as \"is_active!\"\n        FROM api_tokens t\n        JOIN users u ON u.id = t.user_id\n        WHERE t.token_hash = $1\n          AND u.name = $2\n          AND (t.expires_at IS NULL OR t.expires_at > now())\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "is_active!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "bd06995cd66c86c3b040fba56a2c0f84ad87c21201ef91819e40205662d5fe42"
+}

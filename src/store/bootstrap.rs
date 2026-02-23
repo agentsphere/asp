@@ -28,6 +28,8 @@ const SYSTEM_ROLES: &[RoleDef] = &[
             "secret:read",
             "workspace:read",
             "workspace:write",
+            "registry:pull",
+            "registry:push",
         ],
     },
     RoleDef {
@@ -40,6 +42,7 @@ const SYSTEM_ROLES: &[RoleDef] = &[
             "observe:write",
             "alert:manage",
             "secret:read",
+            "registry:pull",
         ],
     },
     RoleDef {
@@ -50,7 +53,12 @@ const SYSTEM_ROLES: &[RoleDef] = &[
     RoleDef {
         name: "viewer",
         description: "Read-only access",
-        permissions: &["project:read", "observe:read", "deploy:read"],
+        permissions: &[
+            "project:read",
+            "observe:read",
+            "deploy:read",
+            "registry:pull",
+        ],
     },
 ];
 
@@ -175,6 +183,18 @@ const SYSTEM_PERMISSIONS: &[PermDef] = &[
         resource: "workspace",
         action: "admin",
         description: "Manage workspace members and settings",
+    },
+    PermDef {
+        name: "registry:pull",
+        resource: "registry",
+        action: "pull",
+        description: "Pull images from project registry",
+    },
+    PermDef {
+        name: "registry:push",
+        resource: "registry",
+        action: "push",
+        description: "Push images to project registry",
     },
 ];
 

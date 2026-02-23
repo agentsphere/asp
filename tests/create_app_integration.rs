@@ -6,8 +6,8 @@ use axum::http::StatusCode;
 use sqlx::PgPool;
 
 use helpers::{
-    admin_login, assign_role, create_project, create_user, patch_json, post_json, test_router,
-    test_state,
+    admin_login, assign_role, create_project, create_user, patch_json, post_json, set_user_api_key,
+    test_router, test_state,
 };
 
 // ---------------------------------------------------------------------------
@@ -23,6 +23,7 @@ async fn create_app_session(pool: PgPool) {
     let admin_token = admin_login(&app).await;
     let (_user_id, token) = create_user(&app, &admin_token, "dev1", "dev1@test.com").await;
     assign_role(&app, &admin_token, _user_id, "developer", None, &pool).await;
+    set_user_api_key(&pool, _user_id).await;
 
     let (status, body) = post_json(
         &app,
@@ -35,7 +36,7 @@ async fn create_app_session(pool: PgPool) {
     .await;
 
     assert_eq!(status, StatusCode::CREATED, "create-app failed: {body}");
-    assert_eq!(body["status"].as_str(), Some("pending"));
+    assert_eq!(body["status"].as_str(), Some("running"));
     // project_id should be null for create-app sessions
     assert!(
         body["project_id"].is_null(),
@@ -99,6 +100,7 @@ async fn update_session_link_project(pool: PgPool) {
     let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev3", "dev3@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
+    set_user_api_key(&pool, user_id).await;
 
     // Create a project-less session
     let (status, session_body) = post_json(
@@ -140,6 +142,7 @@ async fn update_session_non_owner_forbidden(pool: PgPool) {
     let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev4", "dev4@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
+    set_user_api_key(&pool, user_id).await;
     let (_other_id, other_token) = create_user(&app, &admin_token, "dev5", "dev5@test.com").await;
     assign_role(&app, &admin_token, _other_id, "developer", None, &pool).await;
 
@@ -177,6 +180,7 @@ async fn create_app_rate_limited(pool: PgPool) {
     let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev6", "dev6@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
+    set_user_api_key(&pool, user_id).await;
 
     // Create 5 sessions (should succeed)
     for i in 0..5 {
