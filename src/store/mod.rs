@@ -2,10 +2,13 @@ pub mod bootstrap;
 pub mod pool;
 pub mod valkey;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use sqlx::PgPool;
+use uuid::Uuid;
 
+use crate::agent::inprocess::InProcessHandle;
 use crate::config::Config;
 
 #[derive(Clone)]
@@ -19,4 +22,6 @@ pub struct AppState {
     pub webauthn: Arc<webauthn_rs::prelude::Webauthn>,
     /// Notify the pipeline executor that a new pipeline is ready.
     pub pipeline_notify: Arc<tokio::sync::Notify>,
+    /// In-process agent sessions (global/create-app sessions, not K8s pods).
+    pub inprocess_sessions: Arc<std::sync::RwLock<HashMap<Uuid, InProcessHandle>>>,
 }

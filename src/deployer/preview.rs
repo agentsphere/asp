@@ -464,7 +464,43 @@ mod tests {
     }
 
     #[test]
-    fn build_service_has_correct_structure() {
+    fn namespace_name_exact_63_chars() {
+        // Build inputs that produce exactly 63 chars
+        // "preview-" = 8 chars, need 55 more
+        let project = "a".repeat(25);
+        let branch = "b".repeat(29); // 8 + 25 + 1 + 29 = 63
+        let ns = build_namespace_name(&project, &branch);
+        assert_eq!(ns.len(), 63);
+        assert!(!ns.ends_with('-'));
+    }
+
+    #[test]
+    fn namespace_name_truncation_strips_trailing_dash() {
+        // Create input where truncation to 63 chars ends with '-'
+        let project = "a".repeat(25);
+        let branch = format!("{}-{}", "b".repeat(28), "c".repeat(5));
+        let ns = build_namespace_name(&project, &branch);
+        assert!(ns.len() <= 63);
+        assert!(!ns.ends_with('-'));
+    }
+
+    #[test]
+    fn build_deployment_container_port_is_8080() {
+        let preview = PendingPreview {
+            id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            branch_slug: "test".into(),
+            image_ref: "img:v1".into(),
+            project_name: "proj".into(),
+        };
+        let deployment = build_preview_deployment(&preview, "ns");
+        let containers = &deployment.spec.unwrap().template.spec.unwrap().containers;
+        let port = containers[0].ports.as_ref().unwrap()[0].container_port;
+        assert_eq!(port, 8080);
+    }
+
+    #[test]
+    fn build_service_port_mapping_80_to_8080() {
         let preview = PendingPreview {
             id: Uuid::nil(),
             project_id: Uuid::nil(),
@@ -487,5 +523,9 @@ mod tests {
         let ports = spec.ports.as_ref().expect("ports");
         assert_eq!(ports.len(), 1);
         assert_eq!(ports[0].port, 80);
+        assert_eq!(
+            ports[0].target_port,
+            Some(k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(8080))
+        );
     }
 }

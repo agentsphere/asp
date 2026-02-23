@@ -46,6 +46,9 @@ mod workspace;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Install rustls crypto provider before any TLS usage (kube, reqwest, lettre)
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_env("PLATFORM_LOG").unwrap_or_else(|_| "info".into()))
         .with(fmt::layer().json())
@@ -101,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
         config: Arc::new(cfg.clone()),
         webauthn: Arc::new(webauthn),
         pipeline_notify: Arc::new(tokio::sync::Notify::new()),
+        inprocess_sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     };
 
     // Set configurable permission cache TTL

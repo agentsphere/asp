@@ -84,6 +84,7 @@ minijinja = "2"
 reqwest = { version = "0.13", default-features = false, features = [
     "rustls",
     "json",
+    "stream",
 ] }
 
 # Error handling
@@ -109,6 +110,9 @@ url = "2"
 # Embedded UI
 rust-embed = { version = "8", features = ["compression"] }
 
+# TLS crypto provider (needed by kube-client, reqwest, lettre)
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 hyper = { version = "1", features = ["full"] }
@@ -117,7 +121,6 @@ proptest = "1"
 rstest = "0.25"
 wiremock = "0.6"
 tempfile = "3"
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [lints.rust]
 unsafe_code = "forbid"

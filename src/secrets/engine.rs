@@ -440,6 +440,35 @@ pub async fn resolve_secret_hierarchical(
         .map_err(|e| anyhow::anyhow!("secret value is not valid UTF-8: {e}"))
 }
 
+/// Extract secret names from a template string matching `${{ secrets.NAME }}` patterns.
+/// Returns (`start_pos`, `end_pos`, `secret_name`) for each valid match.
+fn extract_secret_patterns(template: &str) -> Vec<(usize, usize, String)> {
+    let mut results = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(start) = template[search_from..].find("${{ secrets.") {
+        let abs_start = search_from + start;
+        let after_prefix = abs_start + "${{ secrets.".len();
+        let Some(end) = template[after_prefix..].find(" }}") else {
+            break;
+        };
+        let abs_end = after_prefix + end + " }}".len();
+        let secret_name = &template[after_prefix..after_prefix + end];
+
+        if !secret_name.is_empty()
+            && secret_name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
+            results.push((abs_start, abs_end, secret_name.to_string()));
+        }
+
+        search_from = abs_end;
+    }
+
+    results
+}
+
 /// Replace `${{ secrets.NAME }}` patterns in a template string.
 /// Only resolves secrets matching the given scope.
 #[tracing::instrument(skip(pool, master_key, template), fields(%project_id, %scope), err)]
@@ -659,5 +688,73 @@ mod tests {
         let encrypted = encrypt(large.as_bytes(), &key).unwrap();
         let decrypted = decrypt(&encrypted, &key).unwrap();
         assert_eq!(decrypted, large.as_bytes());
+    }
+
+    // -- extract_secret_patterns --
+
+    #[test]
+    fn secret_pattern_single() {
+        let patterns = extract_secret_patterns("DB_URL=${{ secrets.DATABASE_URL }}");
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0].2, "DATABASE_URL");
+    }
+
+    #[test]
+    fn secret_pattern_multiple() {
+        let template = "${{ secrets.DB_HOST }}:${{ secrets.DB_PORT }}";
+        let patterns = extract_secret_patterns(template);
+        assert_eq!(patterns.len(), 2);
+        assert_eq!(patterns[0].2, "DB_HOST");
+        assert_eq!(patterns[1].2, "DB_PORT");
+    }
+
+    #[test]
+    fn secret_pattern_no_match() {
+        let patterns = extract_secret_patterns("just a plain string");
+        assert!(patterns.is_empty());
+    }
+
+    #[test]
+    fn secret_pattern_invalid_name_skipped() {
+        // Spaces in name
+        let patterns = extract_secret_patterns("${{ secrets.bad name }}");
+        assert!(patterns.is_empty());
+    }
+
+    #[test]
+    fn secret_pattern_empty_name_skipped() {
+        let patterns = extract_secret_patterns("${{ secrets. }}");
+        assert!(patterns.is_empty());
+    }
+
+    #[test]
+    fn secret_pattern_unclosed_brace() {
+        let patterns = extract_secret_patterns("${{ secrets.OPEN");
+        assert!(patterns.is_empty());
+    }
+
+    #[test]
+    fn secret_pattern_hyphen_underscore_valid() {
+        let patterns = extract_secret_patterns("${{ secrets.my-secret_v2 }}");
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0].2, "my-secret_v2");
+    }
+
+    #[test]
+    fn secret_pattern_positions_correct() {
+        let template = "prefix${{ secrets.KEY }}suffix";
+        let patterns = extract_secret_patterns(template);
+        assert_eq!(patterns.len(), 1);
+        let (start, end, _) = &patterns[0];
+        assert_eq!(&template[*start..*end], "${{ secrets.KEY }}");
+    }
+
+    #[test]
+    fn secret_pattern_adjacent() {
+        let template = "${{ secrets.A }}${{ secrets.B }}";
+        let patterns = extract_secret_patterns(template);
+        assert_eq!(patterns.len(), 2);
+        assert_eq!(patterns[0].2, "A");
+        assert_eq!(patterns[1].2, "B");
     }
 }

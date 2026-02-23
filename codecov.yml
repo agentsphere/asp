@@ -1,0 +1,46 @@
+codecov:
+  require_ci_to_pass: true
+
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 2%
+      unit:
+        flags: [unit]
+        target: auto
+        threshold: 1%
+      integration:
+        flags: [integration]
+        informational: true
+      e2e:
+        flags: [e2e]
+        informational: true
+    patch:
+      default:
+        target: 70%
+        threshold: 5%
+        flags: [unit]
+
+flags:
+  unit:
+    paths:
+      - src/
+    carryforward: true
+  integration:
+    paths:
+      - src/
+    carryforward: true
+  e2e:
+    paths:
+      - src/
+    carryforward: true
+
+ignore:
+  - src/observe/proto.rs
+  - src/ui.rs
+  - src/main.rs
+  - tests/
+  - ui/
+  - mcp/

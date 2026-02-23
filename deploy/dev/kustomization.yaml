@@ -5,6 +5,7 @@ namespace: platform
 
 resources:
   - ../base
+  - service-nodeport.yaml
 
 patches:
   - path: patch-image.yaml

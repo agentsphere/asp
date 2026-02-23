@@ -27,6 +27,12 @@ just db-check       # verify .sqlx/ is up to date
 just build          # UI + release build (SQLX_OFFLINE=true)
 just docker [tag]   # docker build
 just deploy-local [tag]  # build + load into kind + kubectl apply
+just cov-unit       # unit test coverage → coverage-unit.lcov
+just cov-integration # integration coverage → coverage-integration.lcov
+just cov-e2e        # E2E coverage → coverage-e2e.lcov
+just cov-all        # all tiers combined → coverage-all.lcov
+just cov-html       # unit coverage as HTML report
+just cov-summary    # quick terminal summary (unit + integration)
 just ci             # full local CI: fmt lint deny test-unit build
 just ci-full        # ci + test-integration + test-e2e
 just cluster-up     # create kind cluster + Postgres + Valkey + MinIO

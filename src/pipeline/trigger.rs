@@ -236,6 +236,19 @@ async fn get_ref_sha(repo_path: &Path, git_ref: &str) -> Option<String> {
 // Executor notification
 // ---------------------------------------------------------------------------
 
+/// Strip `refs/heads/` prefix from a git ref to get the branch name.
+#[cfg(test)]
+fn ref_to_branch(git_ref: &str) -> &str {
+    git_ref.strip_prefix("refs/heads/").unwrap_or(git_ref)
+}
+
+/// Determine if a push to the given branch should trigger a pipeline,
+/// given a parsed pipeline definition.
+#[cfg(test)]
+fn should_trigger_push(def: &PipelineDefinition, branch: &str) -> bool {
+    definition::matches_push(def.trigger.as_ref(), branch)
+}
+
 /// Notify the executor that a pipeline is ready to run.
 ///
 /// Uses an in-process `tokio::sync::Notify` for immediate wake-up,
@@ -245,5 +258,73 @@ pub async fn notify_executor(state: &crate::store::AppState, pipeline_id: Uuid) 
     let msg = pipeline_id.to_string();
     if let Err(e) = crate::store::valkey::publish(&state.valkey, "pipeline:run", &msg).await {
         tracing::warn!(error = %e, %pipeline_id, "failed to notify executor via valkey");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- ref_to_branch --
+
+    #[test]
+    fn ref_to_branch_strips_refs_heads() {
+        assert_eq!(ref_to_branch("refs/heads/main"), "main");
+    }
+
+    #[test]
+    fn ref_to_branch_strips_refs_heads_nested() {
+        assert_eq!(ref_to_branch("refs/heads/feature/login"), "feature/login");
+    }
+
+    #[test]
+    fn ref_to_branch_bare_ref_unchanged() {
+        assert_eq!(ref_to_branch("main"), "main");
+    }
+
+    #[test]
+    fn ref_to_branch_tag_ref_unchanged() {
+        assert_eq!(ref_to_branch("refs/tags/v1.0"), "refs/tags/v1.0");
+    }
+
+    #[test]
+    fn ref_to_branch_empty_string() {
+        assert_eq!(ref_to_branch(""), "");
+    }
+
+    #[test]
+    fn ref_to_branch_partial_prefix() {
+        // "refs/heads" without trailing "/" should not be stripped
+        assert_eq!(ref_to_branch("refs/heads"), "refs/heads");
+    }
+
+    // -- should_trigger_push --
+
+    #[test]
+    fn should_trigger_no_trigger_config_matches_all() {
+        let def = definition::parse("pipeline:\n  steps:\n    - name: test\n      image: alpine\n")
+            .unwrap();
+        assert!(should_trigger_push(&def, "any-branch"));
+    }
+
+    #[test]
+    fn should_trigger_matching_branch() {
+        let def = definition::parse(
+            "pipeline:\n  steps:\n    - name: test\n      image: alpine\n  on:\n    push:\n      branches: [main, develop]\n",
+        )
+        .unwrap();
+        assert!(should_trigger_push(&def, "main"));
+        assert!(should_trigger_push(&def, "develop"));
+        assert!(!should_trigger_push(&def, "feature/foo"));
+    }
+
+    #[test]
+    fn should_trigger_wildcard_branch() {
+        let def = definition::parse(
+            "pipeline:\n  steps:\n    - name: test\n      image: alpine\n  on:\n    push:\n      branches: [\"feature/*\"]\n",
+        )
+        .unwrap();
+        assert!(should_trigger_push(&def, "feature/login"));
+        assert!(!should_trigger_push(&def, "main"));
     }
 }

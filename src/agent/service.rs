@@ -170,10 +170,12 @@ pub async fn send_message(
         return Err(AgentError::SessionNotRunning);
     }
 
-    let pod_name = session
-        .pod_name
-        .as_deref()
-        .ok_or(AgentError::SessionNotRunning)?;
+    // In-process sessions (no pod) use the inprocess module
+    if session.pod_name.is_none() {
+        return super::inprocess::send_inprocess_message(state, session_id, content).await;
+    }
+
+    let pod_name = session.pod_name.as_deref().unwrap();
 
     let namespace = &state.config.agent_namespace;
     let pods: Api<Pod> = Api::namespaced(state.kube.clone(), namespace);
@@ -218,13 +220,15 @@ pub async fn send_message(
 pub async fn stop_session(state: &AppState, session_id: Uuid) -> Result<(), AgentError> {
     let session = fetch_session(&state.pool, session_id).await?;
 
-    // Delete pod if it exists
     if let Some(ref pod_name) = session.pod_name {
+        // K8s pod session — capture logs and delete pod
         let namespace = &state.config.agent_namespace;
         let pods: Api<Pod> = Api::namespaced(state.kube.clone(), namespace);
-        // Capture logs before deleting the pod
         capture_session_logs(&pods, pod_name, state, session_id).await;
         let _ = pods.delete(pod_name, &DeleteParams::default()).await;
+    } else {
+        // In-process session — remove handle from memory
+        super::inprocess::remove_session(state, session_id);
     }
 
     // Update session status
@@ -458,25 +462,16 @@ pub async fn fetch_session(pool: &PgPool, session_id: Uuid) -> Result<AgentSessi
     })
 }
 
-/// Create a global (project-less) agent session for app scaffolding.
+/// Create a global (project-less) in-process agent session for app scaffolding.
+/// The session runs in-process (no K8s pod) using the Anthropic Messages API.
 pub async fn create_global_session(
     state: &AppState,
     user_id: Uuid,
     prompt: &str,
     provider_name: &str,
 ) -> Result<AgentSession, AgentError> {
-    let _provider = get_provider(provider_name)?;
-
-    let session_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO agent_sessions (id, user_id, prompt, provider, status) VALUES ($1, $2, $3, $4, 'pending')",
-    )
-    .bind(session_id)
-    .bind(user_id)
-    .bind(prompt)
-    .bind(provider_name)
-    .execute(&state.pool)
-    .await?;
+    let session_id =
+        super::inprocess::create_inprocess_session(state, user_id, prompt, provider_name).await?;
 
     fetch_session(&state.pool, session_id).await
 }

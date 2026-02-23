@@ -49,6 +49,37 @@ test-e2e:
     @echo "Requires Kind cluster: just cluster-up"
     cargo nextest run --test 'e2e_*' --run-ignored ignored-only --test-threads 2
 
+# -- Coverage -------------------------------------------------------
+cov-unit:
+    cargo llvm-cov nextest --lib --lcov --output-path coverage-unit.lcov \
+        --ignore-filename-regex '(proto\.rs|ui\.rs)'
+
+cov-integration:
+    cargo llvm-cov nextest --test '*_integration' --lcov --output-path coverage-integration.lcov \
+        --ignore-filename-regex '(proto\.rs|ui\.rs)'
+
+cov-e2e:
+    @echo "Requires Kind cluster: just cluster-up"
+    cargo llvm-cov nextest --test 'e2e_*' --run-ignored ignored-only --test-threads 2 \
+        --lcov --output-path coverage-e2e.lcov \
+        --ignore-filename-regex '(proto\.rs|ui\.rs)'
+
+cov-all:
+    cargo llvm-cov nextest --lcov --output-path coverage-all.lcov \
+        --ignore-filename-regex '(proto\.rs|ui\.rs)'
+
+cov-html:
+    cargo llvm-cov nextest --lib --html --output-dir coverage-html \
+        --ignore-filename-regex '(proto\.rs|ui\.rs)'
+    @echo "Open coverage-html/index.html"
+
+cov-summary:
+    @echo "=== Unit ==="
+    @cargo llvm-cov nextest --lib --ignore-filename-regex '(proto\.rs|ui\.rs)' 2>&1 | tail -3
+    @echo ""
+    @echo "=== Integration ==="
+    @cargo llvm-cov nextest --test '*_integration' --ignore-filename-regex '(proto\.rs|ui\.rs)' 2>&1 | tail -3
+
 # -- Database -------------------------------------------------------
 db-add name:
     cargo sqlx migrate add -r {{ name }}

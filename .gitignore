@@ -17,6 +17,10 @@ ui/dist/
 *~
 .DS_Store
 
+# Coverage artifacts
+*.lcov
+coverage-html/
+
 # Kind kubeconfig
 kind-platform.kubeconfig
 .claude/worktrees/

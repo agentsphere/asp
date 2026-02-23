@@ -139,6 +139,11 @@ pub fn router() -> Router<AppState> {
             "/api/sessions/{session_id}",
             axum::routing::patch(update_session),
         )
+        .route(
+            "/api/sessions/{session_id}/message",
+            axum::routing::post(send_message_global),
+        )
+        .route("/api/sessions/{session_id}/ws", get(ws_handler_global))
 }
 
 // ---------------------------------------------------------------------------
@@ -899,4 +904,105 @@ async fn handle_ws(
     }
 
     tracing::info!(%session_id, "websocket connection closed");
+}
+
+// ---------------------------------------------------------------------------
+// Global (project-less) message + WebSocket handlers
+// ---------------------------------------------------------------------------
+
+/// Send a message to a global (project-less) in-process session.
+async fn send_message_global(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(session_id): Path<Uuid>,
+    Json(body): Json<SendMessageRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = service::fetch_session(&state.pool, session_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    // Only the session owner can send messages
+    if session.user_id != auth.user_id {
+        return Err(ApiError::Forbidden);
+    }
+
+    validation::check_length("content", &body.content, 1, 100_000)?;
+
+    service::send_message(&state, session_id, &body.content)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(Json(serde_json::json!({"ok": true})))
+}
+
+/// WebSocket handler for global (project-less) in-process sessions.
+async fn ws_handler_global(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(session_id): Path<Uuid>,
+    ws: WebSocketUpgrade,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = service::fetch_session(&state.pool, session_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    // Only the session owner can connect
+    if session.user_id != auth.user_id {
+        return Err(ApiError::Forbidden);
+    }
+
+    Ok(ws.on_upgrade(move |socket| handle_ws_global(state, session_id, socket)))
+}
+
+async fn handle_ws_global(state: AppState, session_id: Uuid, mut socket: ws::WebSocket) {
+    // Subscribe to the in-process session's broadcast channel
+    let Some(mut rx) = crate::agent::inprocess::subscribe(&state, session_id) else {
+        // Session not found in in-process map — may have already completed.
+        let _ = socket
+            .send(ws::Message::Text(
+                serde_json::json!({"kind":"error","message":"session not active"})
+                    .to_string()
+                    .into(),
+            ))
+            .await;
+        return;
+    };
+
+    loop {
+        tokio::select! {
+            // Receive progress events from the in-process agent
+            event = rx.recv() => {
+                match event {
+                    Ok(event) => {
+                        let json = serde_json::to_string(&event).unwrap_or_default();
+                        if socket.send(ws::Message::Text(json.into())).await.is_err() {
+                            break; // Client disconnected
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(%session_id, lagged = n, "ws subscriber lagged");
+                        // Continue receiving — we'll just miss some events
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        // Session ended — send completion and close
+                        break;
+                    }
+                }
+            }
+            // Receive messages from the WebSocket client
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(ws::Message::Text(text))) => {
+                        if let Ok(cmd) = serde_json::from_str::<SendMessageRequest>(&text) {
+                            let _ = service::send_message(&state, session_id, &cmd.content).await;
+                        }
+                    }
+                    Some(Ok(ws::Message::Close(_))) | None => break,
+                    _ => {} // Ignore pings, binary, etc.
+                }
+            }
+        }
+    }
+
+    tracing::info!(%session_id, "global websocket connection closed");
 }

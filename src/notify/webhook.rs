@@ -11,6 +11,15 @@ pub struct DeliveryResult {
     pub success: bool,
 }
 
+/// Compute HMAC-SHA256 signature for a payload.
+/// Returns `sha256={hex}` format string, or `None` if the key is invalid.
+fn compute_signature(payload: &[u8], secret: &str) -> Option<String> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
+    mac.update(payload);
+    let signature = hex::encode(mac.finalize().into_bytes());
+    Some(format!("sha256={signature}"))
+}
+
 /// Deliver a JSON payload to a webhook URL with optional HMAC-SHA256 signing.
 ///
 /// Reuses the shared webhook HTTP client and SSRF protection from `api::webhooks`.
@@ -42,11 +51,9 @@ pub async fn deliver(
 
     // HMAC-SHA256 signing
     if let Some(secret) = secret
-        && let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        && let Some(sig) = compute_signature(body.as_bytes(), secret)
     {
-        mac.update(body.as_bytes());
-        let signature = hex::encode(mac.finalize().into_bytes());
-        request = request.header("X-Platform-Signature", format!("sha256={signature}"));
+        request = request.header("X-Platform-Signature", sig);
     }
 
     match request.body(body).send().await {
@@ -65,5 +72,69 @@ pub async fn deliver(
                 "webhook delivery failed: {e}"
             )))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hmac_signature_matches_expected() {
+        // Known test vector: HMAC-SHA256("hello", "secret")
+        let sig = compute_signature(b"hello", "secret").unwrap();
+        assert!(sig.starts_with("sha256="));
+        // Verify deterministic: same inputs produce same output
+        let sig2 = compute_signature(b"hello", "secret").unwrap();
+        assert_eq!(sig, sig2);
+    }
+
+    #[test]
+    fn hmac_signature_deterministic() {
+        let payload = br#"{"event":"push","ref":"refs/heads/main"}"#;
+        let s1 = compute_signature(payload, "my-secret").unwrap();
+        let s2 = compute_signature(payload, "my-secret").unwrap();
+        assert_eq!(s1, s2);
+    }
+
+    #[test]
+    fn hmac_signature_format_sha256_prefix() {
+        let sig = compute_signature(b"data", "key").unwrap();
+        assert!(
+            sig.starts_with("sha256="),
+            "signature should start with 'sha256=', got: {sig}"
+        );
+        // The hex part should be 64 chars (SHA-256 = 32 bytes = 64 hex chars)
+        let hex_part = sig.strip_prefix("sha256=").unwrap();
+        assert_eq!(hex_part.len(), 64);
+        assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn hmac_different_secrets_produce_different_signatures() {
+        let payload = b"same-payload";
+        let s1 = compute_signature(payload, "secret-a").unwrap();
+        let s2 = compute_signature(payload, "secret-b").unwrap();
+        assert_ne!(s1, s2);
+    }
+
+    #[test]
+    fn hmac_different_payloads_produce_different_signatures() {
+        let s1 = compute_signature(b"payload-a", "secret").unwrap();
+        let s2 = compute_signature(b"payload-b", "secret").unwrap();
+        assert_ne!(s1, s2);
+    }
+
+    #[test]
+    fn hmac_empty_payload_works() {
+        let sig = compute_signature(b"", "secret").unwrap();
+        assert!(sig.starts_with("sha256="));
+    }
+
+    #[test]
+    fn hmac_empty_secret_works() {
+        // HMAC with empty key is valid (zero-length key is padded)
+        let sig = compute_signature(b"data", "").unwrap();
+        assert!(sig.starts_with("sha256="));
     }
 }

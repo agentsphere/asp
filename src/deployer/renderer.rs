@@ -150,4 +150,35 @@ spec:
         assert_eq!(docs.len(), 1);
         assert!(docs[0].contains("Service"));
     }
+
+    #[test]
+    fn split_yaml_windows_line_endings() {
+        let yaml =
+            "apiVersion: v1\r\nkind: Service\r\n---\r\napiVersion: apps/v1\r\nkind: Deployment";
+        let docs = split_yaml_documents(yaml);
+        assert_eq!(docs.len(), 2);
+        assert!(docs[0].contains("Service"));
+        assert!(docs[1].contains("Deployment"));
+    }
+
+    #[test]
+    fn split_yaml_unicode_content_preserved() {
+        let yaml = "data:\n  greeting: こんにちは\n---\ndata:\n  emoji: 🚀";
+        let docs = split_yaml_documents(yaml);
+        assert_eq!(docs.len(), 2);
+        assert!(docs[0].contains("こんにちは"));
+        assert!(docs[1].contains("🚀"));
+    }
+
+    #[test]
+    fn render_invalid_template_syntax_errors() {
+        let template = "{{ unclosed";
+        let vars = RenderVars {
+            image_ref: "img:v1".into(),
+            project_name: "app".into(),
+            environment: "staging".into(),
+            values: serde_json::json!({}),
+        };
+        assert!(render(template, &vars).is_err());
+    }
 }

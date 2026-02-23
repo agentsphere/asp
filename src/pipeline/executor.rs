@@ -488,6 +488,27 @@ fn build_env_vars(
     commit_sha: Option<&str>,
     step_name: &str,
 ) -> Vec<EnvVar> {
+    build_env_vars_core(
+        pipeline_id,
+        project_id,
+        project_name,
+        git_ref,
+        commit_sha,
+        step_name,
+        state.config.registry_url.as_deref(),
+    )
+}
+
+/// Core env var builder with no dependency on `AppState`.
+fn build_env_vars_core(
+    pipeline_id: Uuid,
+    project_id: Uuid,
+    project_name: &str,
+    git_ref: &str,
+    commit_sha: Option<&str>,
+    step_name: &str,
+    registry_url: Option<&str>,
+) -> Vec<EnvVar> {
     let branch = git_ref.strip_prefix("refs/heads/").unwrap_or(git_ref);
 
     let mut vars = vec![
@@ -504,7 +525,7 @@ fn build_env_vars(
         vars.push(env_var("COMMIT_SHA", sha));
     }
 
-    if let Some(ref registry) = state.config.registry_url {
+    if let Some(registry) = registry_url {
         vars.push(env_var("REGISTRY", registry));
     }
 
@@ -786,6 +807,24 @@ mod tests {
         ContainerState, ContainerStateTerminated, ContainerStatus, PodStatus,
     };
 
+    // -- test-only helpers for kaniko detection / branch classification --
+
+    fn is_kaniko_image(image: &str) -> bool {
+        image.to_ascii_lowercase().contains("kaniko")
+    }
+
+    fn classify_branch(branch: &str) -> &'static str {
+        if matches!(branch, "main" | "master") {
+            "production"
+        } else {
+            "preview"
+        }
+    }
+
+    fn build_image_ref(registry: &str, project_name: &str, tag: &str) -> String {
+        format!("{registry}/{project_name}:{tag}")
+    }
+
     // -- slug --
 
     #[test]
@@ -949,5 +988,330 @@ mod tests {
         assert_eq!(volumes.len(), 2);
         assert_eq!(volumes[0].name, "workspace");
         assert_eq!(volumes[1].name, "repos");
+    }
+
+    #[test]
+    fn build_pod_spec_strips_refs_heads_prefix() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["echo hello".into()],
+            env_vars: &[],
+            repo_path: "/repos/test.git",
+            git_ref: "refs/heads/feature-branch",
+        });
+
+        let init = &pod.spec.unwrap().init_containers.unwrap()[0];
+        let clone_cmd = &init.args.as_ref().unwrap()[0];
+        assert!(
+            clone_cmd.contains("--branch feature-branch"),
+            "should strip refs/heads/ prefix, got: {clone_cmd}"
+        );
+    }
+
+    #[test]
+    fn build_pod_spec_strips_refs_tags_prefix() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["echo hello".into()],
+            env_vars: &[],
+            repo_path: "/repos/test.git",
+            git_ref: "refs/tags/v1.0",
+        });
+
+        let init = &pod.spec.unwrap().init_containers.unwrap()[0];
+        let clone_cmd = &init.args.as_ref().unwrap()[0];
+        assert!(
+            clone_cmd.contains("--branch v1.0"),
+            "should strip refs/tags/ prefix, got: {clone_cmd}"
+        );
+    }
+
+    #[test]
+    fn build_pod_spec_bare_ref_used_as_is() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["echo hello".into()],
+            env_vars: &[],
+            repo_path: "/repos/test.git",
+            git_ref: "main",
+        });
+
+        let init = &pod.spec.unwrap().init_containers.unwrap()[0];
+        let clone_cmd = &init.args.as_ref().unwrap()[0];
+        assert!(
+            clone_cmd.contains("--branch main"),
+            "bare ref should be used directly, got: {clone_cmd}"
+        );
+    }
+
+    #[test]
+    fn build_pod_spec_empty_commands_produce_empty_script() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &[],
+            env_vars: &[],
+            repo_path: "/repos/test.git",
+            git_ref: "main",
+        });
+
+        let container = &pod.spec.unwrap().containers[0];
+        let script = &container.args.as_ref().unwrap()[0];
+        assert!(
+            script.is_empty(),
+            "empty commands should produce empty script"
+        );
+    }
+
+    #[test]
+    fn build_pod_spec_resource_requests() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["true".into()],
+            env_vars: &[],
+            repo_path: "/repos/test.git",
+            git_ref: "main",
+        });
+
+        let container = &pod.spec.unwrap().containers[0];
+        let requests = container
+            .resources
+            .as_ref()
+            .unwrap()
+            .requests
+            .as_ref()
+            .unwrap();
+        assert_eq!(requests["cpu"], Quantity("250m".into()));
+        assert_eq!(requests["memory"], Quantity("256Mi".into()));
+    }
+
+    #[test]
+    fn build_pod_spec_working_dir_is_workspace() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["true".into()],
+            env_vars: &[],
+            repo_path: "/repos/test.git",
+            git_ref: "main",
+        });
+
+        let container = &pod.spec.unwrap().containers[0];
+        assert_eq!(container.working_dir.as_deref(), Some("/workspace"));
+    }
+
+    #[test]
+    fn build_pod_spec_labels_include_all_three() {
+        let pipeline_id = Uuid::nil();
+        let project_id = Uuid::max();
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id,
+            project_id,
+            step_name: "build",
+            image: "alpine:3.19",
+            commands: &["true".into()],
+            env_vars: &[],
+            repo_path: "/repos/test.git",
+            git_ref: "main",
+        });
+
+        let labels = pod.metadata.labels.as_ref().unwrap();
+        assert_eq!(labels["platform.io/pipeline"], pipeline_id.to_string());
+        assert_eq!(labels["platform.io/project"], project_id.to_string());
+        assert_eq!(labels["platform.io/step"], "build");
+    }
+
+    // -- build_env_vars_core --
+
+    fn find_env(vars: &[EnvVar], name: &str) -> Option<String> {
+        vars.iter()
+            .find(|v| v.name == name)
+            .and_then(|v| v.value.clone())
+    }
+
+    #[test]
+    fn env_vars_include_all_seven_standard_vars() {
+        let vars = build_env_vars_core(
+            Uuid::nil(),
+            Uuid::nil(),
+            "my-project",
+            "refs/heads/main",
+            None,
+            "build",
+            None,
+        );
+        assert!(find_env(&vars, "PLATFORM_PROJECT_ID").is_some());
+        assert!(find_env(&vars, "PLATFORM_PROJECT_NAME").is_some());
+        assert!(find_env(&vars, "PIPELINE_ID").is_some());
+        assert!(find_env(&vars, "STEP_NAME").is_some());
+        assert!(find_env(&vars, "COMMIT_REF").is_some());
+        assert!(find_env(&vars, "COMMIT_BRANCH").is_some());
+        assert!(find_env(&vars, "PROJECT").is_some());
+    }
+
+    #[test]
+    fn env_vars_commit_sha_present_when_some() {
+        let vars = build_env_vars_core(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "refs/heads/main",
+            Some("abc123"),
+            "test",
+            None,
+        );
+        assert_eq!(find_env(&vars, "COMMIT_SHA"), Some("abc123".into()));
+    }
+
+    #[test]
+    fn env_vars_commit_sha_absent_when_none() {
+        let vars = build_env_vars_core(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "refs/heads/main",
+            None,
+            "test",
+            None,
+        );
+        assert!(find_env(&vars, "COMMIT_SHA").is_none());
+    }
+
+    #[test]
+    fn env_vars_registry_present_when_configured() {
+        let vars = build_env_vars_core(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "main",
+            None,
+            "test",
+            Some("registry.example.com"),
+        );
+        assert_eq!(
+            find_env(&vars, "REGISTRY"),
+            Some("registry.example.com".into())
+        );
+    }
+
+    #[test]
+    fn env_vars_registry_absent_when_none() {
+        let vars =
+            build_env_vars_core(Uuid::nil(), Uuid::nil(), "proj", "main", None, "test", None);
+        assert!(find_env(&vars, "REGISTRY").is_none());
+    }
+
+    #[test]
+    fn env_vars_branch_strips_refs_heads_prefix() {
+        let vars = build_env_vars_core(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "refs/heads/feature/login",
+            None,
+            "test",
+            None,
+        );
+        assert_eq!(
+            find_env(&vars, "COMMIT_BRANCH"),
+            Some("feature/login".into())
+        );
+        assert_eq!(
+            find_env(&vars, "COMMIT_REF"),
+            Some("refs/heads/feature/login".into())
+        );
+    }
+
+    #[test]
+    fn env_vars_bare_ref_used_as_branch() {
+        let vars =
+            build_env_vars_core(Uuid::nil(), Uuid::nil(), "proj", "main", None, "test", None);
+        assert_eq!(find_env(&vars, "COMMIT_BRANCH"), Some("main".into()));
+    }
+
+    // -- is_kaniko_image --
+
+    #[test]
+    fn detect_kaniko_image_standard() {
+        assert!(is_kaniko_image("gcr.io/kaniko-project/executor:latest"));
+    }
+
+    #[test]
+    fn detect_kaniko_image_case_insensitive() {
+        assert!(is_kaniko_image("gcr.io/Kaniko-Project/executor:v1"));
+    }
+
+    #[test]
+    fn detect_kaniko_image_substring() {
+        assert!(is_kaniko_image("my-registry/kaniko-custom:v1"));
+    }
+
+    #[test]
+    fn detect_kaniko_image_false_for_alpine() {
+        assert!(!is_kaniko_image("alpine:3.19"));
+    }
+
+    #[test]
+    fn detect_kaniko_image_false_for_rust() {
+        assert!(!is_kaniko_image("rust:1.85-slim"));
+    }
+
+    // -- classify_branch --
+
+    #[test]
+    fn branch_main_classified_as_production() {
+        assert_eq!(classify_branch("main"), "production");
+    }
+
+    #[test]
+    fn branch_master_classified_as_production() {
+        assert_eq!(classify_branch("master"), "production");
+    }
+
+    #[test]
+    fn branch_feature_classified_as_preview() {
+        assert_eq!(classify_branch("feature/login"), "preview");
+    }
+
+    #[test]
+    fn branch_develop_classified_as_preview() {
+        assert_eq!(classify_branch("develop"), "preview");
+    }
+
+    // -- build_image_ref --
+
+    #[test]
+    fn image_ref_format() {
+        let r = build_image_ref("registry.example.com", "my-app", "abc123");
+        assert_eq!(r, "registry.example.com/my-app:abc123");
+    }
+
+    #[test]
+    fn image_ref_latest_tag() {
+        let r = build_image_ref("localhost:5000", "proj", "latest");
+        assert_eq!(r, "localhost:5000/proj:latest");
     }
 }

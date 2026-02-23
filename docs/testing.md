@@ -290,3 +290,55 @@ just ci-full         # ci + test-integration + test-e2e (requires Kind cluster)
 ```
 
 `just ci` runs without any external infrastructure. `just ci-full` requires a running Kind cluster.
+
+## Coverage
+
+Three-tier coverage reporting using [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) with separate reports for unit, integration, and E2E tests. This makes the testing pyramid visible — if code is only covered by E2E tests, it should probably also have unit tests.
+
+### Prerequisites
+
+```bash
+cargo install cargo-llvm-cov --locked
+rustup component add llvm-tools-preview
+```
+
+### Commands
+
+```bash
+just cov-unit         # unit coverage → coverage-unit.lcov
+just cov-integration  # integration coverage → coverage-integration.lcov
+just cov-e2e          # E2E coverage → coverage-e2e.lcov (requires Kind cluster)
+just cov-all          # all tiers combined → coverage-all.lcov
+just cov-html         # unit coverage as HTML report → coverage-html/
+just cov-summary      # quick terminal summary of unit + integration coverage
+```
+
+Generated files (`*.lcov`, `coverage-html/`) are gitignored.
+
+### Excluded from coverage
+
+- `src/observe/proto.rs` — generated protobuf types
+- `src/ui.rs` — rust-embed static file serving
+- `src/main.rs` — bootstrap wiring (tested via E2E)
+- `tests/`, `ui/`, `mcp/` — non-source code
+
+### CI
+
+The `coverage` job in `.github/workflows/ci.yaml` runs after unit tests pass, generates unit and integration lcov reports, and uploads them to Codecov with separate flags (`unit`, `integration`). E2E coverage runs nightly or on demand.
+
+Codecov configuration is in `codecov.yml`:
+- **Unit coverage**: gated — target is auto-ratcheting, new code (patch) must have 70% coverage
+- **Integration coverage**: informational — tracked but does not block PRs
+- **E2E coverage**: informational with carryforward (nightly updates)
+
+### Interpreting results
+
+| Scenario | What it means | Action |
+|---|---|---|
+| High unit, low integration | Logic tested, wiring not | Add integration tests for key API paths |
+| Low unit, high E2E | Logic only tested through slow paths | Extract pure functions, add unit tests |
+| Low everywhere | Untested code | Prioritize unit tests for business logic |
+
+### VS Code integration
+
+Install the Coverage Gutters extension (`ryanluker.vscode-coverage-gutters`), run `just cov-unit`, then Cmd+Shift+P → "Coverage Gutters: Display Coverage" to see green/red line indicators inline.

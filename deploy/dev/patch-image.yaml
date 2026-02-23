@@ -12,3 +12,17 @@ spec:
           env:
             - name: PLATFORM_LOG
               value: "debug"
+            - name: PLATFORM_DEV
+              value: "true"
+            - name: PLATFORM_MASTER_KEY
+              value: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            - name: PLATFORM_GIT_REPOS_PATH
+              value: "/tmp/platform-repos"
+            - name: PLATFORM_OPS_REPOS_PATH
+              value: "/tmp/platform-ops-repos"
+            - name: WEBAUTHN_RP_ID
+              value: "localhost"
+            - name: WEBAUTHN_RP_ORIGIN
+              value: "http://localhost:8080"
+            - name: WEBAUTHN_RP_NAME
+              value: "Platform Dev"
