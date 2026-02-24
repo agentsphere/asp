@@ -456,3 +456,176 @@ fn write_parquet_buffer(batch: &RecordBatch) -> Result<Vec<u8>, ObserveError> {
     writer.close()?;
     Ok(buf)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::datatypes::{DataType, TimeUnit};
+    use chrono::Utc;
+
+    // ── Schema tests ────────────────────────────────────────────────
+
+    #[test]
+    fn log_schema_has_10_fields() {
+        let schema = log_schema();
+        assert_eq!(schema.fields().len(), 10);
+        assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(
+            *schema.field(1).data_type(),
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+        );
+        assert!(schema.field(2).is_nullable()); // trace_id
+        assert!(!schema.field(0).is_nullable()); // id
+    }
+
+    #[test]
+    fn span_schema_has_10_fields() {
+        let schema = span_schema();
+        assert_eq!(schema.fields().len(), 10);
+        assert_eq!(schema.field(0).name(), "trace_id");
+        assert!(!schema.field(0).is_nullable());
+        assert!(schema.field(2).is_nullable()); // parent_span_id
+        assert!(schema.field(7).is_nullable()); // duration_ms
+    }
+
+    #[test]
+    fn metric_schema_has_4_fields() {
+        let schema = metric_schema();
+        assert_eq!(schema.fields().len(), 4);
+        assert_eq!(schema.field(0).name(), "name");
+        assert_eq!(*schema.field(3).data_type(), DataType::Float64);
+    }
+
+    // ── build_log_batch ─────────────────────────────────────────────
+
+    fn sample_log_row() -> LogQueryRow {
+        LogQueryRow {
+            id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            trace_id: Some("trace-abc".into()),
+            span_id: Some("span-def".into()),
+            project_id: Some(Uuid::new_v4()),
+            session_id: None,
+            service: "my-svc".into(),
+            level: "info".into(),
+            message: "hello".into(),
+            attributes: Some(serde_json::json!({"key": "val"})),
+        }
+    }
+
+    #[test]
+    fn build_log_batch_single_row() {
+        let rows = vec![sample_log_row()];
+        let batch = build_log_batch(&rows).unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(batch.num_columns(), 10);
+    }
+
+    #[test]
+    fn build_log_batch_multiple_rows() {
+        let rows = vec![sample_log_row(), sample_log_row(), sample_log_row()];
+        let batch = build_log_batch(&rows).unwrap();
+        assert_eq!(batch.num_rows(), 3);
+    }
+
+    #[test]
+    fn build_log_batch_nullable_fields() {
+        let row = LogQueryRow {
+            id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            trace_id: None,
+            span_id: None,
+            project_id: None,
+            session_id: None,
+            service: "svc".into(),
+            level: "error".into(),
+            message: "fail".into(),
+            attributes: None,
+        };
+        let batch = build_log_batch(&[row]).unwrap();
+        assert_eq!(batch.num_rows(), 1);
+    }
+
+    // ── build_span_batch ────────────────────────────────────────────
+
+    fn sample_span_row() -> SpanQueryRow {
+        SpanQueryRow {
+            trace_id: "trace-001".into(),
+            span_id: "span-001".into(),
+            parent_span_id: Some("span-000".into()),
+            name: "GET /api".into(),
+            service: "api-svc".into(),
+            kind: "server".into(),
+            status: "ok".into(),
+            duration_ms: Some(42),
+            started_at: Utc::now(),
+            attributes: Some(serde_json::json!({"http.status_code": 200})),
+        }
+    }
+
+    #[test]
+    fn build_span_batch_single_row() {
+        let batch = build_span_batch(&[sample_span_row()]).unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(batch.num_columns(), 10);
+    }
+
+    #[test]
+    fn build_span_batch_optional_parent_none() {
+        let mut row = sample_span_row();
+        row.parent_span_id = None;
+        let batch = build_span_batch(&[row]).unwrap();
+        assert_eq!(batch.num_rows(), 1);
+    }
+
+    #[test]
+    fn build_span_batch_optional_duration_none() {
+        let mut row = sample_span_row();
+        row.duration_ms = None;
+        let batch = build_span_batch(&[row]).unwrap();
+        assert_eq!(batch.num_rows(), 1);
+    }
+
+    // ── build_metric_batch ──────────────────────────────────────────
+
+    fn sample_metric_row() -> MetricSampleRow {
+        MetricSampleRow {
+            name: "cpu_usage".into(),
+            labels: serde_json::json!({"host": "node1"}),
+            series_id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            value: 73.5,
+        }
+    }
+
+    #[test]
+    fn build_metric_batch_single_row() {
+        let batch = build_metric_batch(&[sample_metric_row()]).unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(batch.num_columns(), 4);
+    }
+
+    #[test]
+    fn build_metric_batch_preserves_float_values() {
+        let mut row = sample_metric_row();
+        row.value = std::f64::consts::PI;
+        let batch = build_metric_batch(&[row]).unwrap();
+        let col = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        assert!((col.value(0) - std::f64::consts::PI).abs() < f64::EPSILON);
+    }
+
+    // ── write_parquet_buffer ────────────────────────────────────────
+
+    #[test]
+    fn write_parquet_produces_valid_bytes() {
+        let batch = build_log_batch(&[sample_log_row()]).unwrap();
+        let bytes = write_parquet_buffer(&batch).unwrap();
+        assert!(!bytes.is_empty());
+        // Parquet magic number: PAR1
+        assert_eq!(&bytes[..4], b"PAR1");
+    }
+}

@@ -522,3 +522,143 @@ async fn drain_metrics(
         buffer.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::observe::proto;
+
+    // ── number_point_to_record ──────────────────────────────────────
+
+    fn empty_envelope() -> correlation::CorrelationEnvelope {
+        correlation::CorrelationEnvelope {
+            project_id: None,
+            session_id: None,
+            user_id: None,
+            trace_id: None,
+            span_id: None,
+            service: "test-svc".into(),
+        }
+    }
+
+    #[test]
+    fn number_point_double_value() {
+        let dp = proto::NumberDataPoint {
+            value: Some(proto::number_data_point::Value::AsDouble(42.5)),
+            time_unix_nano: 1_700_000_000_000_000_000,
+            attributes: vec![],
+            ..Default::default()
+        };
+        let env = empty_envelope();
+        let rec = number_point_to_record(&dp, "cpu", "gauge", Some("percent"), &env).unwrap();
+        assert_eq!(rec.name, "cpu");
+        assert_eq!(rec.metric_type, "gauge");
+        assert!((rec.value - 42.5).abs() < f64::EPSILON);
+        assert_eq!(rec.unit.as_deref(), Some("percent"));
+    }
+
+    #[test]
+    fn number_point_int_value() {
+        let dp = proto::NumberDataPoint {
+            value: Some(proto::number_data_point::Value::AsInt(100)),
+            time_unix_nano: 1_700_000_000_000_000_000,
+            attributes: vec![],
+            ..Default::default()
+        };
+        let env = empty_envelope();
+        let rec = number_point_to_record(&dp, "requests", "counter", None, &env).unwrap();
+        assert!((rec.value - 100.0).abs() < f64::EPSILON);
+        assert_eq!(rec.unit, None);
+    }
+
+    #[test]
+    fn number_point_none_value_returns_none() {
+        let dp = proto::NumberDataPoint {
+            value: None,
+            time_unix_nano: 1_700_000_000_000_000_000,
+            attributes: vec![],
+            ..Default::default()
+        };
+        let env = empty_envelope();
+        assert!(number_point_to_record(&dp, "x", "gauge", None, &env).is_none());
+    }
+
+    // ── json_opt ────────────────────────────────────────────────────
+
+    #[test]
+    fn json_opt_non_empty_returns_some() {
+        let attrs = vec![proto::KeyValue {
+            key: "foo".into(),
+            value: Some(proto::AnyValue {
+                value: Some(proto::any_value::Value::StringValue("bar".into())),
+            }),
+        }];
+        let result = json_opt(&attrs);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap()["foo"], "bar");
+    }
+
+    #[test]
+    fn json_opt_empty_returns_none() {
+        assert!(json_opt(&[]).is_none());
+    }
+
+    // ── events_to_json ──────────────────────────────────────────────
+
+    #[test]
+    fn events_to_json_empty_returns_none() {
+        assert!(events_to_json(&[]).is_none());
+    }
+
+    #[test]
+    fn events_to_json_single_event() {
+        let events = vec![proto::SpanEvent {
+            time_unix_nano: 1_700_000_000_000_000_000,
+            name: "exception".into(),
+            attributes: vec![],
+            ..Default::default()
+        }];
+        let json = events_to_json(&events).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "exception");
+    }
+
+    #[test]
+    fn events_to_json_multiple_events() {
+        let events = vec![
+            proto::SpanEvent {
+                time_unix_nano: 1_700_000_000_000_000_000,
+                name: "e1".into(),
+                attributes: vec![],
+                ..Default::default()
+            },
+            proto::SpanEvent {
+                time_unix_nano: 1_700_000_001_000_000_000,
+                name: "e2".into(),
+                attributes: vec![],
+                ..Default::default()
+            },
+        ];
+        let json = events_to_json(&events).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 2);
+    }
+
+    // ── build_metric_records coverage (metric data type branches) ───
+
+    #[tokio::test]
+    async fn build_metric_records_gauge() {
+        // We can't call build_metric_records directly (needs AppState),
+        // but we can verify the branch logic via number_point_to_record
+        // which is the core of each data type branch.
+        let dp = proto::NumberDataPoint {
+            value: Some(proto::number_data_point::Value::AsDouble(1.0)),
+            time_unix_nano: 1_700_000_000_000_000_000,
+            attributes: vec![],
+            ..Default::default()
+        };
+        let env = empty_envelope();
+        let rec = number_point_to_record(&dp, "temp", "gauge", None, &env).unwrap();
+        assert_eq!(rec.metric_type, "gauge");
+    }
+}

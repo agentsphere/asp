@@ -41,3 +41,49 @@ impl From<ObserveError> for ApiError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    #[test]
+    fn arrow_error_maps_to_internal() {
+        let err = ObserveError::Arrow(arrow::error::ArrowError::InvalidArgumentError(
+            "test".into(),
+        ));
+        let api_err: ApiError = err.into();
+        assert_eq!(
+            api_err.into_response().status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn parquet_error_maps_to_internal() {
+        let err = ObserveError::Parquet(parquet::errors::ParquetError::General("test".into()));
+        let api_err: ApiError = err.into();
+        assert_eq!(
+            api_err.into_response().status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn invalid_payload_maps_to_bad_request() {
+        let err = ObserveError::InvalidPayload("bad data".into());
+        let api_err: ApiError = err.into();
+        assert_eq!(api_err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn backpressure_maps_to_service_unavailable() {
+        let err = ObserveError::BackpressureFull;
+        let api_err: ApiError = err.into();
+        assert_eq!(
+            api_err.into_response().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+}

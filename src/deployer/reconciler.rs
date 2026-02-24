@@ -470,4 +470,48 @@ mod tests {
         assert_eq!(parsed["apiVersion"], "apps/v1");
         assert_eq!(parsed["spec"]["replicas"], 1);
     }
+
+    #[test]
+    fn basic_manifest_container_port_8080() {
+        let d = sample_deployment();
+        let manifest = generate_basic_manifest(&d);
+        assert!(manifest.contains("containerPort: 8080"));
+    }
+
+    #[test]
+    fn basic_manifest_selector_matches_labels() {
+        let d = sample_deployment();
+        let manifest = generate_basic_manifest(&d);
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&manifest).unwrap();
+        let selector_label = &parsed["spec"]["selector"]["matchLabels"]["app"];
+        let template_label = &parsed["spec"]["template"]["metadata"]["labels"]["app"];
+        assert_eq!(selector_label, template_label);
+    }
+
+    #[test]
+    fn copy_deployment_fields_preserves_all() {
+        let original = sample_deployment();
+        let copy = copy_deployment_fields(&original);
+        assert_eq!(original.id, copy.id);
+        assert_eq!(original.project_id, copy.project_id);
+        assert_eq!(original.environment, copy.environment);
+        assert_eq!(original.ops_repo_id, copy.ops_repo_id);
+        assert_eq!(original.manifest_path, copy.manifest_path);
+        assert_eq!(original.image_ref, copy.image_ref);
+        assert_eq!(original.values_override, copy.values_override);
+        assert_eq!(original.desired_status, copy.desired_status);
+        assert_eq!(original.deployed_by, copy.deployed_by);
+        assert_eq!(original.project_name, copy.project_name);
+    }
+
+    #[test]
+    fn basic_manifest_with_special_chars_in_name() {
+        let mut d = sample_deployment();
+        d.project_name = "my-app-2".into();
+        d.environment = "staging-01".into();
+        let manifest = generate_basic_manifest(&d);
+        assert!(manifest.contains("name: my-app-2-staging-01"));
+        // Verify it's still valid YAML
+        let _: serde_yaml::Value = serde_yaml::from_str(&manifest).unwrap();
+    }
 }
