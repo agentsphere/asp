@@ -214,8 +214,15 @@ async fn list_webhooks(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<WebhookResponse>>, ApiError> {
+) -> Result<Json<super::helpers::ListResponse<WebhookResponse>>, ApiError> {
     require_project_write(&state, &auth, id).await?;
+
+    let total = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) as "count!: i64" FROM webhooks WHERE project_id = $1"#,
+        id,
+    )
+    .fetch_one(&state.pool)
+    .await?;
 
     let rows = sqlx::query!(
         r#"
@@ -240,7 +247,7 @@ async fn list_webhooks(
         })
         .collect();
 
-    Ok(Json(items))
+    Ok(Json(super::helpers::ListResponse { items, total }))
 }
 
 async fn get_webhook(

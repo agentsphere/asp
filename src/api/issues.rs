@@ -425,7 +425,7 @@ async fn list_comments(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((id, number)): Path<(Uuid, i32)>,
-) -> Result<Json<Vec<CommentResponse>>, ApiError> {
+) -> Result<Json<ListResponse<CommentResponse>>, ApiError> {
     require_project_read(&state, &auth, id).await?;
 
     let issue_id = sqlx::query_scalar!(
@@ -436,6 +436,13 @@ async fn list_comments(
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| ApiError::NotFound("issue".into()))?;
+
+    let total = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) as "count!: i64" FROM comments WHERE issue_id = $1"#,
+        issue_id,
+    )
+    .fetch_one(&state.pool)
+    .await?;
 
     let rows = sqlx::query!(
         r#"
@@ -459,7 +466,7 @@ async fn list_comments(
         })
         .collect();
 
-    Ok(Json(items))
+    Ok(Json(ListResponse { items, total }))
 }
 
 #[tracing::instrument(skip(state, body), fields(%id, %number), err)]

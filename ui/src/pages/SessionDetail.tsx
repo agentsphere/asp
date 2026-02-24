@@ -21,12 +21,19 @@ export function SessionDetail({ id: projectId, sessionId }: Props) {
 
   useEffect(() => {
     if (!projectId || !sessionId) return;
-    api.get<AgentSession>(`/api/projects/${projectId}/sessions/${sessionId}`)
-      .then(setSession).catch(() => {});
-
-    // Load historical events
-    api.get<ProgressEvent[]>(`/api/projects/${projectId}/sessions/${sessionId}/events`)
-      .then(setEvents).catch(() => {});
+    api.get<AgentSession & { messages?: { role: string; content: string; metadata?: Record<string, any> }[] }>(
+      `/api/projects/${projectId}/sessions/${sessionId}`
+    ).then(data => {
+      setSession(data);
+      // Map session messages to ProgressEvent format
+      if (data.messages) {
+        setEvents(data.messages.map(m => ({
+          kind: (m.metadata?.kind as ProgressEvent['kind']) || (m.role === 'assistant' ? 'Text' : 'Text'),
+          message: m.content,
+          metadata: m.metadata,
+        })));
+      }
+    }).catch(() => {});
   }, [projectId, sessionId]);
 
   // WebSocket for live streaming

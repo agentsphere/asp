@@ -365,8 +365,7 @@ function DeploymentsTab({ projectId }: { projectId: string }) {
   const rollback = async () => {
     if (!selectedEnv || !rollbackImage) return;
     try {
-      await api.post(`/api/projects/${projectId}/deployments`, {
-        environment: selectedEnv,
+      await api.patch(`/api/projects/${projectId}/deployments/${selectedEnv}`, {
         image_ref: rollbackImage,
       });
       setShowRollback(false);
@@ -375,9 +374,9 @@ function DeploymentsTab({ projectId }: { projectId: string }) {
     } catch { /* ignore */ }
   };
 
-  const deletePreview = async (previewId: string) => {
+  const deletePreview = async (slug: string) => {
     if (!confirm('Delete this preview environment?')) return;
-    await api.del(`/api/projects/${projectId}/previews/${previewId}`);
+    await api.del(`/api/projects/${projectId}/previews/${slug}`);
     load();
   };
 
@@ -470,7 +469,7 @@ function DeploymentsTab({ projectId }: { projectId: string }) {
                   <td class="mono text-xs truncate" style="max-width:150px">{p.image_ref}</td>
                   <td class="text-sm">{timeRemaining(p.expires_at)}</td>
                   <td>
-                    <button class="btn btn-danger btn-sm" onClick={() => deletePreview(p.id)}>Delete</button>
+                    <button class="btn btn-danger btn-sm" onClick={() => deletePreview(p.branch_slug)}>Delete</button>
                   </td>
                 </tr>
               ))}
@@ -669,7 +668,7 @@ function SecretsSection({ projectId }: { projectId: string }) {
 
   const deleteSecret = async (secretId: string, name: string) => {
     if (!confirm(`Delete secret "${name}"? This action cannot be undone.`)) return;
-    await api.del(`/api/projects/${projectId}/secrets/${secretId}`);
+    await api.del(`/api/projects/${projectId}/secrets/${encodeURIComponent(name)}`);
     load();
   };
 

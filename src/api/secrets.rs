@@ -14,6 +14,8 @@ use crate::secrets::engine;
 use crate::store::AppState;
 use crate::validation;
 
+use super::helpers::ListResponse;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -226,14 +228,19 @@ async fn list_project_secrets(
     auth: AuthUser,
     Path(id): Path<Uuid>,
     Query(params): Query<ListSecretsParams>,
-) -> Result<Json<Vec<engine::SecretMetadata>>, ApiError> {
+) -> Result<Json<ListResponse<engine::SecretMetadata>>, ApiError> {
     require_secret_read(&state, &auth, id).await?;
 
     let secrets = engine::list_secrets(&state.pool, Some(id), params.environment.as_deref())
         .await
         .map_err(ApiError::Internal)?;
 
-    Ok(Json(secrets))
+    #[allow(clippy::cast_possible_wrap)]
+    let total = secrets.len() as i64;
+    Ok(Json(ListResponse {
+        items: secrets,
+        total,
+    }))
 }
 
 #[tracing::instrument(skip(state), fields(%id, %name), err)]
@@ -322,14 +329,19 @@ async fn create_global_secret(
 async fn list_global_secrets(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<Vec<engine::SecretMetadata>>, ApiError> {
+) -> Result<Json<ListResponse<engine::SecretMetadata>>, ApiError> {
     require_admin(&state, &auth).await?;
 
     let secrets = engine::list_secrets(&state.pool, None, None)
         .await
         .map_err(ApiError::Internal)?;
 
-    Ok(Json(secrets))
+    #[allow(clippy::cast_possible_wrap)]
+    let total = secrets.len() as i64;
+    Ok(Json(ListResponse {
+        items: secrets,
+        total,
+    }))
 }
 
 #[tracing::instrument(skip(state), fields(%name), err)]
@@ -449,14 +461,19 @@ async fn list_workspace_secrets(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<engine::SecretMetadata>>, ApiError> {
+) -> Result<Json<ListResponse<engine::SecretMetadata>>, ApiError> {
     require_workspace_member_for_secrets(&state, &auth, id).await?;
 
     let secrets = engine::list_workspace_secrets(&state.pool, id)
         .await
         .map_err(ApiError::Internal)?;
 
-    Ok(Json(secrets))
+    #[allow(clippy::cast_possible_wrap)]
+    let total = secrets.len() as i64;
+    Ok(Json(ListResponse {
+        items: secrets,
+        total,
+    }))
 }
 
 #[tracing::instrument(skip(state), fields(%id, %name), err)]
