@@ -767,9 +767,8 @@ async fn mark_pipeline_failed(pool: &PgPool, pipeline_id: Uuid) -> Result<(), Pi
 // Deployment handoff
 // ---------------------------------------------------------------------------
 
-/// If any step used a kaniko-like image, write/update the deployments table.
-/// For main/master branches, creates a production deployment.
-/// For other branches, creates a preview deployment.
+/// If any step used a kaniko-like image, publish an `ImageBuilt` event (for production)
+/// or directly upsert a preview deployment (for non-main branches).
 async fn detect_and_write_deployment(state: &AppState, pipeline_id: Uuid, project_id: Uuid) {
     let image_steps = sqlx::query!(
         r#"
@@ -827,23 +826,22 @@ async fn detect_and_write_deployment(state: &AppState, pipeline_id: Uuid, projec
     let is_main = matches!(branch, "main" | "master");
 
     if is_main {
-        // Upsert deployment for production environment
-        let _ = sqlx::query!(
-            r#"
-            INSERT INTO deployments (project_id, environment, image_ref, desired_status, current_status)
-            VALUES ($1, 'production', $2, 'active', 'pending')
-            ON CONFLICT (project_id, environment)
-            DO UPDATE SET image_ref = $2, desired_status = 'active', current_status = 'pending'
-            "#,
+        // Publish ImageBuilt event — the event bus handler will commit to
+        // the ops repo and trigger deployment.
+        let event = crate::store::eventbus::PlatformEvent::ImageBuilt {
             project_id,
-            image_ref,
-        )
-        .execute(&state.pool)
-        .await;
+            environment: "production".into(),
+            image_ref: image_ref.clone(),
+            pipeline_id,
+            triggered_by: pipeline_meta.triggered_by,
+        };
+        if let Err(e) = crate::store::eventbus::publish(&state.valkey, &event).await {
+            tracing::error!(error = %e, %project_id, "failed to publish ImageBuilt event");
+        }
 
-        tracing::info!(%project_id, %image_ref, "deployment updated from pipeline");
+        tracing::info!(%project_id, %image_ref, "ImageBuilt event published from pipeline");
     } else {
-        // Create/update preview deployment for non-main branches
+        // Preview deployments bypass the event bus (no ops repo)
         if let Err(e) = upsert_preview_deployment(
             state,
             pipeline_id,

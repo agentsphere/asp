@@ -244,6 +244,278 @@ async fn user_key_too_short_rejected(pool: PgPool) {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+// ---------------------------------------------------------------------------
+// Workspace-scoped secrets
+// ---------------------------------------------------------------------------
+
+/// Create + list workspace secrets.
+#[sqlx::test(migrations = "./migrations")]
+async fn create_and_list_workspace_secrets(pool: PgPool) {
+    let state = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_token = admin_login(&app).await;
+
+    // Get admin user ID
+    let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
+    let admin_id = uuid::Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
+
+    // Create a workspace
+    let ws = platform::workspace::service::create_workspace(
+        &pool,
+        admin_id,
+        &format!("ws-{}", uuid::Uuid::new_v4()),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Create a secret
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/workspaces/{}/secrets", ws.id),
+        serde_json::json!({
+            "name": "WS_SECRET",
+            "value": "workspace-secret-val",
+            "scope": "pipeline",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "create workspace secret: {body}"
+    );
+    assert_eq!(body["name"], "WS_SECRET");
+
+    // List
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/workspaces/{}/secrets", ws.id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let secrets: Vec<serde_json::Value> = serde_json::from_value(body).unwrap();
+    assert_eq!(secrets.len(), 1);
+    assert_eq!(secrets[0]["name"], "WS_SECRET");
+}
+
+/// Delete workspace secret.
+#[sqlx::test(migrations = "./migrations")]
+async fn delete_workspace_secret(pool: PgPool) {
+    let state = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_token = admin_login(&app).await;
+
+    let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
+    let admin_id = uuid::Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
+
+    let ws = platform::workspace::service::create_workspace(
+        &pool,
+        admin_id,
+        &format!("ws-del-{}", uuid::Uuid::new_v4()),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/workspaces/{}/secrets", ws.id),
+        serde_json::json!({ "name": "DEL_ME", "value": "val", "scope": "all" }),
+    )
+    .await;
+
+    let (status, _) = helpers::delete_json(
+        &app,
+        &admin_token,
+        &format!("/api/workspaces/{}/secrets/DEL_ME", ws.id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Verify empty
+    let (_, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/workspaces/{}/secrets", ws.id),
+    )
+    .await;
+    let secrets: Vec<serde_json::Value> = serde_json::from_value(body).unwrap();
+    assert!(secrets.is_empty());
+}
+
+/// Non-admin workspace member cannot create secrets.
+#[sqlx::test(migrations = "./migrations")]
+async fn workspace_secret_requires_admin(pool: PgPool) {
+    let state = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_token = admin_login(&app).await;
+
+    let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
+    let admin_id = uuid::Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
+
+    let ws = platform::workspace::service::create_workspace(
+        &pool,
+        admin_id,
+        &format!("ws-perm-{}", uuid::Uuid::new_v4()),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Create a regular member
+    let (member_id, member_token) =
+        create_user(&app, &admin_token, "wsmember", "wsmember@test.com").await;
+    platform::workspace::service::add_member(&pool, ws.id, member_id, "member")
+        .await
+        .unwrap();
+
+    // Member cannot create secrets (requires admin/owner)
+    let (status, _) = helpers::post_json(
+        &app,
+        &member_token,
+        &format!("/api/workspaces/{}/secrets", ws.id),
+        serde_json::json!({ "name": "HACK", "value": "nope", "scope": "all" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// Non-member cannot list workspace secrets.
+#[sqlx::test(migrations = "./migrations")]
+async fn workspace_secret_list_requires_membership(pool: PgPool) {
+    let state = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_token = admin_login(&app).await;
+
+    let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
+    let admin_id = uuid::Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
+
+    let ws = platform::workspace::service::create_workspace(
+        &pool,
+        admin_id,
+        &format!("ws-nomem-{}", uuid::Uuid::new_v4()),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let (_outsider_id, outsider_token) =
+        create_user(&app, &admin_token, "wsoutsider", "wsoutsider@test.com").await;
+
+    let (status, _) = helpers::get_json(
+        &app,
+        &outsider_token,
+        &format!("/api/workspaces/{}/secrets", ws.id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// Global secret delete + environment support
+// ---------------------------------------------------------------------------
+
+/// Delete a global secret.
+#[sqlx::test(migrations = "./migrations")]
+async fn delete_global_secret(pool: PgPool) {
+    let state = test_state(pool).await;
+    let app = test_router(state);
+    let admin_token = admin_login(&app).await;
+
+    helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/admin/secrets",
+        serde_json::json!({ "name": "TO_DELETE_GLOBAL", "value": "v", "scope": "all" }),
+    )
+    .await;
+
+    let (status, _) =
+        helpers::delete_json(&app, &admin_token, "/api/admin/secrets/TO_DELETE_GLOBAL").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Verify not in list
+    let (_, body) = helpers::get_json(&app, &admin_token, "/api/admin/secrets").await;
+    let secrets: Vec<serde_json::Value> = serde_json::from_value(body).unwrap();
+    assert!(!secrets.iter().any(|s| s["name"] == "TO_DELETE_GLOBAL"));
+}
+
+/// Create project secret with environment filter.
+#[sqlx::test(migrations = "./migrations")]
+async fn create_secret_with_environment(pool: PgPool) {
+    let state = test_state(pool).await;
+    let app = test_router(state);
+    let admin_token = admin_login(&app).await;
+
+    let proj_id = create_project(&app, &admin_token, "sec-env-proj", "private").await;
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{proj_id}/secrets"),
+        serde_json::json!({
+            "name": "STAGING_DB",
+            "value": "staging-secret",
+            "scope": "pipeline",
+            "environment": "staging",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "create secret with env: {body}"
+    );
+
+    // List with environment filter
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{proj_id}/secrets?environment=staging"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let secrets: Vec<serde_json::Value> = serde_json::from_value(body).unwrap();
+    assert_eq!(secrets.len(), 1);
+    assert_eq!(secrets[0]["name"], "STAGING_DB");
+}
+
+/// Invalid environment → 400.
+#[sqlx::test(migrations = "./migrations")]
+async fn create_secret_invalid_environment(pool: PgPool) {
+    let state = test_state(pool).await;
+    let app = test_router(state);
+    let admin_token = admin_login(&app).await;
+
+    let proj_id = create_project(&app, &admin_token, "sec-badenv", "private").await;
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{proj_id}/secrets"),
+        serde_json::json!({
+            "name": "BAD_ENV",
+            "value": "val",
+            "scope": "pipeline",
+            "environment": "invalid_env",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ---------------------------------------------------------------------------
+// User provider keys
+// ---------------------------------------------------------------------------
+
 /// Delete nonexistent key → 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn user_key_delete_nonexistent(pool: PgPool) {

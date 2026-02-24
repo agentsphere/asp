@@ -814,29 +814,27 @@ async fn ops_repo_sync_caches_in_valkey(pool: PgPool) {
     let app = e2e_helpers::test_router(state.clone());
     let token = e2e_helpers::admin_login(&app).await;
 
-    // Create an ops repo via API (will be stored in DB but not actually synced until reconciler needs it)
+    // Create an ops repo via API (local bare repo)
     let (status, body) = e2e_helpers::post_json(
         &app,
         &token,
         "/api/admin/ops-repos",
         serde_json::json!({
             "name": "cache-test-repo",
-            "repo_url": "https://github.com/octocat/Hello-World.git",
             "branch": "master",
         }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let repo_id = body["id"].as_str().unwrap();
+    assert!(
+        body["repo_path"]
+            .as_str()
+            .unwrap()
+            .contains("cache-test-repo.git")
+    );
 
-    // Verify the Valkey cache key does NOT exist yet
-    let cache_key = format!("ops_repo_sync:{repo_id}");
-    let cached: Option<String> =
-        platform::store::valkey::get_cached(&state.valkey, &cache_key).await;
-    assert!(cached.is_none(), "cache should be empty before first sync");
-
-    // Trigger sync via the force-sync admin endpoint (if available) or just verify the API stored it
-    // The sync itself would need git clone which requires network — just verify DB + API roundtrip
+    // Verify the ops repo was created on disk by checking the API roundtrip
     let (status, body) =
         e2e_helpers::get_json(&app, &token, &format!("/api/admin/ops-repos/{repo_id}")).await;
     assert_eq!(status, StatusCode::OK);

@@ -103,6 +103,7 @@ pub async fn test_state(pool: PgPool) -> AppState {
         config: Arc::new(config),
         webauthn: Arc::new(webauthn),
         pipeline_notify: Arc::new(tokio::sync::Notify::new()),
+        deploy_notify: Arc::new(tokio::sync::Notify::new()),
         inprocess_sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     }
 }

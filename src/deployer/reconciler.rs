@@ -15,16 +15,25 @@ use super::{applier, ops_repo, renderer};
 pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>) {
     tracing::info!("deployer reconciler started");
 
+    let mut interval = tokio::time::interval(Duration::from_secs(10));
+
     loop {
         tokio::select! {
             _ = shutdown.changed() => {
                 tracing::info!("deployer reconciler shutting down");
                 break;
             }
-            () = tokio::time::sleep(Duration::from_secs(10)) => {
+            _ = interval.tick() => {
                 if let Err(e) = reconcile(&state).await {
                     tracing::error!(error = %e, "error polling pending deployments");
                 }
+            }
+            () = state.deploy_notify.notified() => {
+                // Immediate poll on notification from event bus
+                if let Err(e) = reconcile(&state).await {
+                    tracing::error!(error = %e, "error polling pending deployments (notified)");
+                }
+                interval.reset();
             }
         }
     }
@@ -161,35 +170,67 @@ async fn handle_active(
 }
 
 /// Rollback to the previous successful `image_ref`.
+/// If an ops repo is linked, reverts the last ops repo commit to restore
+/// the previous values file, then re-deploys.
 async fn handle_rollback(
     state: &AppState,
     deployment: &PendingDeployment,
 ) -> Result<(), DeployerError> {
-    // Find the previous successful deployment (skip the most recent)
-    let prev = sqlx::query_scalar!(
-        r#"
-        SELECT image_ref FROM deployment_history
-        WHERE deployment_id = $1 AND status = 'success' AND action = 'deploy'
-        ORDER BY created_at DESC LIMIT 1 OFFSET 1
-        "#,
-        deployment.id,
-    )
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or(DeployerError::NoPreviousDeployment)?;
+    let rollback_image = if let Some(ops_repo_id) = deployment.ops_repo_id {
+        // Ops-repo-centric rollback: revert the last commit
+        let (repo_path, _sha, branch) = ops_repo::sync_repo(&state.pool, ops_repo_id).await?;
 
-    // Update the deployment's image_ref to the rollback target
-    sqlx::query!(
-        "UPDATE deployments SET image_ref = $2 WHERE id = $1",
-        deployment.id,
-        prev,
-    )
-    .execute(&state.pool)
-    .await?;
+        let new_sha = ops_repo::revert_last_commit(&repo_path, &branch).await?;
+
+        // Read the reverted values to get the old image_ref
+        let reverted = ops_repo::read_values(&repo_path, &branch, &deployment.environment)
+            .await
+            .map_err(|_| DeployerError::NoPreviousDeployment)?;
+
+        let old_image = reverted["image_ref"]
+            .as_str()
+            .ok_or(DeployerError::NoPreviousDeployment)?
+            .to_owned();
+
+        // Update DB to match the reverted ops repo state
+        sqlx::query!(
+            "UPDATE deployments SET image_ref = $2, current_sha = $3 WHERE id = $1",
+            deployment.id,
+            old_image,
+            new_sha,
+        )
+        .execute(&state.pool)
+        .await?;
+
+        old_image
+    } else {
+        // Legacy DB-based rollback: look up previous image from history
+        let prev = sqlx::query_scalar!(
+            r#"
+            SELECT image_ref FROM deployment_history
+            WHERE deployment_id = $1 AND status = 'success' AND action = 'deploy'
+            ORDER BY created_at DESC LIMIT 1 OFFSET 1
+            "#,
+            deployment.id,
+        )
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or(DeployerError::NoPreviousDeployment)?;
+
+        sqlx::query!(
+            "UPDATE deployments SET image_ref = $2 WHERE id = $1",
+            deployment.id,
+            prev,
+        )
+        .execute(&state.pool)
+        .await?;
+
+        prev
+    };
 
     // Create a modified deployment with the rollback image
     let rollback_deployment = PendingDeployment {
-        image_ref: prev,
+        image_ref: rollback_image,
         ..copy_deployment_fields(deployment)
     };
 
@@ -245,18 +286,17 @@ async fn handle_stopped(
 // ---------------------------------------------------------------------------
 
 /// Render manifests from ops repo template or generate a basic deployment manifest.
+///
+/// When an ops repo is linked, reads the template from the repo's working tree
+/// (via git show) and merges in values from the ops repo's values file. The
+/// `image_ref` from the values file takes precedence over the DB value when
+/// the ops repo is the source of truth.
 async fn render_manifests(
     state: &AppState,
     deployment: &PendingDeployment,
 ) -> Result<(String, Option<String>), DeployerError> {
     if let Some(ops_repo_id) = deployment.ops_repo_id {
-        let sha = ops_repo::sync_repo(
-            &state.pool,
-            &state.valkey,
-            &state.config.ops_repos_path,
-            ops_repo_id,
-        )
-        .await?;
+        let (repo_path, sha, branch) = ops_repo::sync_repo(&state.pool, ops_repo_id).await?;
 
         // Look up ops repo details for path resolution
         let repo = sqlx::query!(
@@ -268,30 +308,51 @@ async fn render_manifests(
 
         let manifest_file = deployment.manifest_path.as_deref().unwrap_or("deploy.yaml");
 
-        let template_path = ops_repo::resolve_manifest_path(
-            &state.config.ops_repos_path,
-            &repo.name,
-            &repo.path,
-            manifest_file,
-        )?;
+        // Read the template from the bare repo
+        let manifest_ref_path = if repo.path == "/" || repo.path.is_empty() {
+            manifest_file.to_owned()
+        } else {
+            let subpath = repo.path.trim_matches('/');
+            format!("{subpath}/{manifest_file}")
+        };
 
-        let template_content = tokio::fs::read_to_string(&template_path)
+        let template_content = ops_repo::read_file_at_ref(&repo_path, &branch, &manifest_ref_path)
             .await
-            .map_err(|e| {
+            .map_err(|_| {
                 DeployerError::RenderFailed(format!(
-                    "failed to read template {}: {e}",
-                    template_path.display()
+                    "failed to read template {manifest_ref_path} from ops repo"
                 ))
             })?;
 
+        // Try to read values from the ops repo; fall back to DB values
+        let ops_values = ops_repo::read_values(&repo_path, &branch, &deployment.environment).await;
+
+        let mut base_values = deployment
+            .values_override
+            .clone()
+            .unwrap_or(serde_json::json!({}));
+
+        // Merge ops repo values into the render context (ops repo takes precedence)
+        if let Ok(repo_values) = ops_values
+            && let (Some(base_obj), Some(repo_obj)) =
+                (base_values.as_object_mut(), repo_values.as_object())
+        {
+            for (k, v) in repo_obj {
+                base_obj.insert(k.clone(), v.clone());
+            }
+        }
+
+        // image_ref: prefer ops repo values, then DB
+        let image_ref = base_values
+            .get("image_ref")
+            .and_then(|v| v.as_str())
+            .map_or_else(|| deployment.image_ref.clone(), String::from);
+
         let vars = renderer::RenderVars {
-            image_ref: deployment.image_ref.clone(),
+            image_ref,
             project_name: deployment.project_name.clone(),
             environment: deployment.environment.clone(),
-            values: deployment
-                .values_override
-                .clone()
-                .unwrap_or(serde_json::json!({})),
+            values: base_values,
         };
 
         let rendered = renderer::render(&template_content, &vars)?;

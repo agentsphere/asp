@@ -610,3 +610,233 @@ async fn chunked_blob_upload(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, chunk);
 }
+
+// ---------------------------------------------------------------------------
+// Registry GC tests
+// ---------------------------------------------------------------------------
+
+/// GC removes orphaned blobs (no links, older than 24h).
+#[sqlx::test(migrations = "./migrations")]
+async fn gc_removes_orphaned_blobs(pool: PgPool) {
+    let state = test_state(pool.clone()).await;
+    let app = test_router(state.clone());
+    let admin_token = admin_login(&app).await;
+
+    // Create project + API token
+    create_project(&app, &admin_token, "gc-proj1", "private").await;
+    let (_, api_token) =
+        create_user_with_api_token(&app, &admin_token, "gcuser1", "gc1@test.com", &pool).await;
+
+    // Upload a blob
+    let data = b"orphan-blob-data";
+    let digest = registry_upload_blob(&app, &api_token, "gc-proj1", data).await;
+
+    // Remove all blob links (makes it orphaned)
+    sqlx::query("DELETE FROM registry_blob_links WHERE blob_digest = $1")
+        .bind(&digest)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Backdate blob to > 24h ago
+    sqlx::query(
+        "UPDATE registry_blobs SET created_at = now() - interval '25 hours' WHERE digest = $1",
+    )
+    .bind(&digest)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Run GC
+    platform::registry::gc::collect_garbage(&state)
+        .await
+        .unwrap();
+
+    // Verify blob is gone from DB
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM registry_blobs WHERE digest = $1")
+        .bind(&digest)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 0, "orphaned blob should be deleted");
+}
+
+/// GC skips blobs that still have links.
+#[sqlx::test(migrations = "./migrations")]
+async fn gc_skips_linked_blobs(pool: PgPool) {
+    let state = test_state(pool.clone()).await;
+    let app = test_router(state.clone());
+    let admin_token = admin_login(&app).await;
+
+    create_project(&app, &admin_token, "gc-proj2", "private").await;
+    let (_, api_token) =
+        create_user_with_api_token(&app, &admin_token, "gcuser2", "gc2@test.com", &pool).await;
+
+    let data = b"linked-blob-data";
+    let digest = registry_upload_blob(&app, &api_token, "gc-proj2", data).await;
+
+    // Backdate but keep the link
+    sqlx::query(
+        "UPDATE registry_blobs SET created_at = now() - interval '25 hours' WHERE digest = $1",
+    )
+    .bind(&digest)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Run GC
+    platform::registry::gc::collect_garbage(&state)
+        .await
+        .unwrap();
+
+    // Blob should still exist (has a link)
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM registry_blobs WHERE digest = $1")
+        .bind(&digest)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 1, "linked blob should NOT be deleted");
+}
+
+/// GC skips recent orphans (within 24h grace period).
+#[sqlx::test(migrations = "./migrations")]
+async fn gc_skips_recent_orphans(pool: PgPool) {
+    let state = test_state(pool.clone()).await;
+    let app = test_router(state.clone());
+    let admin_token = admin_login(&app).await;
+
+    create_project(&app, &admin_token, "gc-proj3", "private").await;
+    let (_, api_token) =
+        create_user_with_api_token(&app, &admin_token, "gcuser3", "gc3@test.com", &pool).await;
+
+    let data = b"recent-orphan-data";
+    let digest = registry_upload_blob(&app, &api_token, "gc-proj3", data).await;
+
+    // Remove links but DON'T backdate (within grace period)
+    sqlx::query("DELETE FROM registry_blob_links WHERE blob_digest = $1")
+        .bind(&digest)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Run GC
+    platform::registry::gc::collect_garbage(&state)
+        .await
+        .unwrap();
+
+    // Blob should still exist (within 24h grace period)
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM registry_blobs WHERE digest = $1")
+        .bind(&digest)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count.0, 1,
+        "recent orphan should NOT be deleted (grace period)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Blob error paths
+// ---------------------------------------------------------------------------
+
+/// Monolithic upload with mismatched digest → error.
+#[sqlx::test(migrations = "./migrations")]
+async fn blob_digest_mismatch_rejected(pool: PgPool) {
+    let state = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_token = admin_login(&app).await;
+
+    create_project(&app, &admin_token, "mismatch-proj", "private").await;
+    let (_, api_token) =
+        create_user_with_api_token(&app, &admin_token, "mismatch-user", "mm@test.com", &pool).await;
+
+    let data = b"some data";
+    let wrong_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/v2/mismatch-proj/blobs/uploads/?digest={wrong_digest}"
+        ))
+        .header("Authorization", format!("Bearer {api_token}"))
+        .header("Content-Type", "application/octet-stream")
+        .body(axum::body::Body::from(data.to_vec()))
+        .unwrap();
+
+    let resp = tower::ServiceExt::oneshot(app.clone(), req).await.unwrap();
+    // Should be 400 (DIGEST_INVALID)
+    assert_ne!(
+        resp.status(),
+        StatusCode::CREATED,
+        "mismatched digest should be rejected"
+    );
+}
+
+/// HEAD /v2/{name}/manifests/{tag} returns correct headers.
+#[sqlx::test(migrations = "./migrations")]
+async fn head_manifest_returns_digest(pool: PgPool) {
+    let state = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_token = admin_login(&app).await;
+
+    create_project(&app, &admin_token, "head-proj", "private").await;
+    let (_, api_token) =
+        create_user_with_api_token(&app, &admin_token, "headuser", "head@test.com", &pool).await;
+
+    // Upload config + layer blobs
+    let config_data = b"config-data-head";
+    let layer_data = b"layer-data-head";
+    let config_digest = registry_upload_blob(&app, &api_token, "head-proj", config_data).await;
+    let layer_digest = registry_upload_blob(&app, &api_token, "head-proj", layer_data).await;
+
+    // Push manifest
+    registry_push_manifest(
+        &app,
+        &api_token,
+        "head-proj",
+        "v1",
+        &config_digest,
+        &[&layer_digest],
+    )
+    .await;
+
+    // HEAD manifest
+    let (status, headers, body) =
+        registry_request(&app, &api_token, "HEAD", "/v2/head-proj/manifests/v1").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers.get("docker-content-digest").is_some(),
+        "HEAD should include docker-content-digest"
+    );
+    assert!(headers.get("content-type").is_some());
+    assert!(body.is_empty(), "HEAD should have no body");
+}
+
+/// PUT manifest with invalid JSON → error.
+#[sqlx::test(migrations = "./migrations")]
+async fn manifest_invalid_json_rejected(pool: PgPool) {
+    let state = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_token = admin_login(&app).await;
+
+    create_project(&app, &admin_token, "badjson-proj", "private").await;
+    let (_, api_token) =
+        create_user_with_api_token(&app, &admin_token, "badjson-user", "bj@test.com", &pool).await;
+
+    let req = axum::http::Request::builder()
+        .method("PUT")
+        .uri("/v2/badjson-proj/manifests/bad")
+        .header("Authorization", format!("Bearer {api_token}"))
+        .header("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+        .body(axum::body::Body::from(b"not valid json".to_vec()))
+        .unwrap();
+
+    let resp = tower::ServiceExt::oneshot(app.clone(), req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::CREATED,
+        "invalid JSON should be rejected"
+    );
+}

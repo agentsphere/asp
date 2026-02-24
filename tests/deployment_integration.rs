@@ -394,7 +394,6 @@ async fn create_ops_repo(pool: PgPool) {
         "/api/admin/ops-repos",
         serde_json::json!({
             "name": "deploy-manifests",
-            "repo_url": "https://github.com/example/manifests.git",
             "branch": "main",
             "path": "/k8s",
         }),
@@ -406,25 +405,12 @@ async fn create_ops_repo(pool: PgPool) {
         "create ops repo failed: {body}"
     );
     assert_eq!(body["name"], "deploy-manifests");
-}
-
-#[sqlx::test(migrations = "./migrations")]
-async fn create_ops_repo_ssrf_blocked(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
-    let app = test_router(state);
-    let admin_token = admin_login(&app).await;
-
-    let (status, _) = helpers::post_json(
-        &app,
-        &admin_token,
-        "/api/admin/ops-repos",
-        serde_json::json!({
-            "name": "ssrf-repo",
-            "repo_url": "http://169.254.169.254/metadata",
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["repo_path"]
+            .as_str()
+            .unwrap()
+            .contains("deploy-manifests.git")
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -439,7 +425,6 @@ async fn list_and_get_ops_repo(pool: PgPool) {
         "/api/admin/ops-repos",
         serde_json::json!({
             "name": "list-repo",
-            "repo_url": "https://github.com/example/ops.git",
         }),
     )
     .await;

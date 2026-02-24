@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO ops_repos (name, repo_url, branch, path, sync_interval_s)\n        VALUES ($1, $2, COALESCE($3, 'main'), COALESCE($4, '/'), COALESCE($5, 60))\n        RETURNING id, name, repo_url, branch, path, sync_interval_s, created_at\n        ",
+  "query": "\n        SELECT id, name, repo_path, branch, path, created_at\n        FROM ops_repos WHERE id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -15,7 +15,7 @@
       },
       {
         "ordinal": 2,
-        "name": "repo_url",
+        "name": "repo_path",
         "type_info": "Text"
       },
       {
@@ -30,22 +30,13 @@
       },
       {
         "ordinal": 5,
-        "name": "sync_interval_s",
-        "type_info": "Int4"
-      },
-      {
-        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "Int4"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -54,9 +45,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "4a79e2dfd4f661db6f48f0e77620b713d26e304fcfd802dc56240e8cd8633363"
+  "hash": "d65662905fbd688ce17afe7c030e44d842a8fdd7fa4ea3d75458dd71f712ccf8"
 }

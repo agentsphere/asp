@@ -24,6 +24,15 @@ pub enum DeployerError {
     #[error("no previous successful deployment for rollback")]
     NoPreviousDeployment,
 
+    #[error("ops repo commit failed: {0}")]
+    CommitFailed(String),
+
+    #[error("ops repo revert failed: {0}")]
+    RevertFailed(String),
+
+    #[error("values file not found: {0}")]
+    ValuesNotFound(String),
+
     #[error("invalid manifest: {0}")]
     InvalidManifest(String),
 
@@ -45,7 +54,8 @@ impl From<DeployerError> for ApiError {
             }
             DeployerError::NoPreviousDeployment
             | DeployerError::RenderFailed(_)
-            | DeployerError::InvalidManifest(_) => Self::BadRequest(err.to_string()),
+            | DeployerError::InvalidManifest(_)
+            | DeployerError::ValuesNotFound(_) => Self::BadRequest(err.to_string()),
             DeployerError::Db(e) => Self::from(e),
             DeployerError::Kube(e) => Self::from(e),
             DeployerError::Other(e) => Self::Internal(e),

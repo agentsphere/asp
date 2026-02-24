@@ -107,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         config: Arc::new(cfg.clone()),
         webauthn: Arc::new(webauthn),
         pipeline_notify: Arc::new(tokio::sync::Notify::new()),
+        deploy_notify: Arc::new(tokio::sync::Notify::new()),
         inprocess_sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     };
 
@@ -119,6 +120,8 @@ async fn main() -> anyhow::Result<()> {
     // Start background tasks
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
     tokio::spawn(pipeline::executor::run(state.clone(), shutdown_rx.clone()));
+    let eventbus_shutdown_rx = shutdown_tx.subscribe();
+    tokio::spawn(store::eventbus::run(state.clone(), eventbus_shutdown_rx));
     let deployer_shutdown_rx = shutdown_tx.subscribe();
     tokio::spawn(deployer::reconciler::run(
         state.clone(),

@@ -25,7 +25,7 @@ pub async fn run(state: AppState, mut shutdown: watch::Receiver<()>) {
     }
 }
 
-async fn collect_garbage(state: &AppState) -> anyhow::Result<()> {
+pub async fn collect_garbage(state: &AppState) -> anyhow::Result<()> {
     // Find orphaned blobs: no blob_links, created more than 24h ago (grace period)
     let orphans = sqlx::query!(
         r#"SELECT digest, minio_path

@@ -1,4 +1,5 @@
 pub mod bootstrap;
+pub mod eventbus;
 pub mod pool;
 pub mod valkey;
 
@@ -22,6 +23,8 @@ pub struct AppState {
     pub webauthn: Arc<webauthn_rs::prelude::Webauthn>,
     /// Notify the pipeline executor that a new pipeline is ready.
     pub pipeline_notify: Arc<tokio::sync::Notify>,
+    /// Notify the deployer reconciler that a deployment is ready.
+    pub deploy_notify: Arc<tokio::sync::Notify>,
     /// In-process agent sessions (global/create-app sessions, not K8s pods).
     pub inprocess_sessions: Arc<std::sync::RwLock<HashMap<Uuid, InProcessHandle>>>,
 }

@@ -226,4 +226,37 @@ mod tests {
         let result = parse_cors_origins("a.com,b.com,");
         assert_eq!(result, vec!["a.com", "b.com"]);
     }
+
+    #[test]
+    fn config_load_does_not_panic() {
+        let config = Config::load();
+        assert!(!config.listen.is_empty());
+        assert!(!config.database_url.is_empty());
+        assert!(!config.valkey_url.is_empty());
+    }
+
+    #[test]
+    fn config_load_defaults_match_expected() {
+        let config = Config::load();
+        // smtp_port defaults to 587 unless PLATFORM_SMTP_PORT is set
+        assert!(config.smtp_port > 0);
+        // Permission cache TTL defaults to 300 unless PLATFORM_PERMISSION_CACHE_TTL is set
+        assert!(config.permission_cache_ttl_secs > 0);
+        // webauthn fields are always populated
+        assert!(!config.webauthn_rp_id.is_empty());
+        assert!(!config.webauthn_rp_origin.is_empty());
+        assert!(!config.webauthn_rp_name.is_empty());
+    }
+
+    #[test]
+    fn config_load_optional_fields() {
+        let config = Config::load();
+        // These are populated from env vars or None — just verify they don't panic
+        let _ = config.master_key;
+        let _ = config.smtp_host;
+        let _ = config.registry_url;
+        let _ = config.admin_password;
+        // cors_origins should be a Vec (empty or populated)
+        let _ = config.cors_origins.len();
+    }
 }

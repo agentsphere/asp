@@ -59,7 +59,6 @@ pub async fn invalidate_pattern(pool: &fred::clients::Pool, pattern: &str) -> an
     Ok(())
 }
 
-#[allow(dead_code)] // used by later modules (not yet wired)
 pub async fn publish(
     pool: &fred::clients::Pool,
     channel: &str,

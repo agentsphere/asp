@@ -723,3 +723,111 @@ async fn rotate_metrics_archives_old_data(pool: PgPool) {
         .unwrap();
     assert!(rotated >= 1);
 }
+
+// ---------------------------------------------------------------------------
+// Store — empty input early returns
+// ---------------------------------------------------------------------------
+
+/// write_spans with empty input is a no-op.
+#[sqlx::test(migrations = "./migrations")]
+async fn write_spans_empty_is_noop(pool: PgPool) {
+    platform::observe::store::write_spans(&pool, &[])
+        .await
+        .expect("write_spans with empty input should succeed");
+}
+
+/// write_logs with empty input is a no-op.
+#[sqlx::test(migrations = "./migrations")]
+async fn write_logs_empty_is_noop(pool: PgPool) {
+    platform::observe::store::write_logs(&pool, &[])
+        .await
+        .expect("write_logs with empty input should succeed");
+}
+
+/// write_metrics with empty input is a no-op.
+#[sqlx::test(migrations = "./migrations")]
+async fn write_metrics_empty_is_noop(pool: PgPool) {
+    platform::observe::store::write_metrics(&pool, &[])
+        .await
+        .expect("write_metrics with empty input should succeed");
+}
+
+// ---------------------------------------------------------------------------
+// Correlation — resolve_session
+// ---------------------------------------------------------------------------
+
+/// resolve_session fills project_id and user_id from agent_sessions table.
+#[sqlx::test(migrations = "./migrations")]
+async fn resolve_session_fills_project_and_user(pool: PgPool) {
+    let state = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_token = admin_login(&app).await;
+
+    let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
+    let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
+
+    let proj_id = helpers::create_project(&app, &admin_token, "corr-proj", "private").await;
+
+    // Insert an agent session row
+    let session_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO agent_sessions (id, project_id, user_id, prompt, status, provider)
+         VALUES ($1, $2, $3, 'test prompt', 'completed', 'anthropic')",
+    )
+    .bind(session_id)
+    .bind(proj_id)
+    .bind(admin_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut envelope = platform::observe::correlation::CorrelationEnvelope {
+        session_id: Some(session_id),
+        project_id: None,
+        user_id: None,
+        ..Default::default()
+    };
+
+    platform::observe::correlation::resolve_session(&pool, &mut envelope)
+        .await
+        .expect("resolve_session should succeed");
+
+    assert_eq!(envelope.project_id, Some(proj_id));
+    assert_eq!(envelope.user_id, Some(admin_id));
+}
+
+/// resolve_session is a no-op when project_id and user_id already set.
+#[sqlx::test(migrations = "./migrations")]
+async fn resolve_session_no_op_when_already_set(pool: PgPool) {
+    let proj_id = Uuid::new_v4();
+    let user_id = Uuid::new_v4();
+    let session_id = Uuid::new_v4();
+
+    let mut envelope = platform::observe::correlation::CorrelationEnvelope {
+        session_id: Some(session_id),
+        project_id: Some(proj_id),
+        user_id: Some(user_id),
+        ..Default::default()
+    };
+
+    platform::observe::correlation::resolve_session(&pool, &mut envelope)
+        .await
+        .expect("resolve_session should succeed");
+
+    // Values should remain unchanged (early return, no DB query)
+    assert_eq!(envelope.project_id, Some(proj_id));
+    assert_eq!(envelope.user_id, Some(user_id));
+}
+
+/// resolve_session is a no-op without session_id.
+#[sqlx::test(migrations = "./migrations")]
+async fn resolve_session_no_op_without_session(pool: PgPool) {
+    let mut envelope = platform::observe::correlation::CorrelationEnvelope::default();
+
+    platform::observe::correlation::resolve_session(&pool, &mut envelope)
+        .await
+        .expect("resolve_session should succeed");
+
+    assert!(envelope.project_id.is_none());
+    assert!(envelope.user_id.is_none());
+}

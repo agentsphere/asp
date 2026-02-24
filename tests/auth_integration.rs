@@ -2,6 +2,7 @@ mod helpers;
 
 use axum::http::StatusCode;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // E2: Auth Integration Tests (13 tests)
@@ -90,31 +91,47 @@ async fn login_inactive_user(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn login_rate_limited(pool: PgPool) {
+    use fred::interfaces::KeysInterface;
+
     let state = helpers::test_state(pool).await;
-    let app = helpers::test_router(state);
+    let app = helpers::test_router(state.clone());
 
-    // Use a dedicated user to avoid Valkey key collision with admin_login() in other tests.
+    // Use a UUID-based username so the rate limit key never collides with other tests.
+    let unique_name = format!("rl-{}", Uuid::new_v4());
     let admin_token = helpers::admin_login(&app).await;
-    helpers::create_user(&app, &admin_token, "ratelimit-user", "rl@test.com").await;
+    helpers::create_user(
+        &app,
+        &admin_token,
+        &unique_name,
+        &format!("{unique_name}@test.com"),
+    )
+    .await;
 
-    // Send 11 rapid login attempts — rate limit is 10 per 5min
-    let mut got_429 = false;
-    for i in 0..12 {
-        let (status, _) = helpers::post_json(
-            &app,
-            "",
-            "/api/auth/login",
-            serde_json::json!({ "name": "ratelimit-user", "password": format!("wrong{i}") }),
-        )
-        .await;
+    // Pre-set the rate limit counter to just below the threshold (10) so we only
+    // need one login attempt to trigger 429. This avoids the race where another
+    // test's FLUSHDB resets our counter mid-loop.
+    let rate_key = format!("rate:login:{unique_name}");
+    let _: () = state
+        .valkey
+        .set(&rate_key, 10i64, None, None, false)
+        .await
+        .unwrap();
+    let _: () = state.valkey.expire(&rate_key, 300, None).await.unwrap();
 
-        if status == StatusCode::TOO_MANY_REQUESTS {
-            got_429 = true;
-            break;
-        }
-    }
+    // This attempt should exceed the limit (count goes from 10 → 11 > 10)
+    let (status, _) = helpers::post_json(
+        &app,
+        "",
+        "/api/auth/login",
+        serde_json::json!({ "name": &unique_name, "password": "wrong" }),
+    )
+    .await;
 
-    assert!(got_429, "expected 429 after exceeding rate limit");
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "expected 429 after exceeding rate limit"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]

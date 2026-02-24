@@ -61,28 +61,23 @@ pub struct HistoryResponse {
 #[derive(Debug, Deserialize)]
 pub struct CreateOpsRepoRequest {
     pub name: String,
-    pub repo_url: String,
     pub branch: Option<String>,
     pub path: Option<String>,
-    pub sync_interval_s: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateOpsRepoRequest {
-    pub repo_url: Option<String>,
     pub branch: Option<String>,
     pub path: Option<String>,
-    pub sync_interval_s: Option<i32>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct OpsRepoResponse {
     pub id: Uuid,
     pub name: String,
-    pub repo_url: String,
+    pub repo_path: String,
     pub branch: String,
     pub path: String,
-    pub sync_interval_s: i32,
     pub created_at: DateTime<Utc>,
 }
 
@@ -146,10 +141,6 @@ pub fn router() -> Router<AppState> {
             get(get_ops_repo)
                 .patch(update_ops_repo)
                 .delete(delete_ops_repo),
-        )
-        .route(
-            "/api/admin/ops-repos/{repo_id}/sync",
-            axum::routing::post(force_sync_ops_repo),
         )
 }
 
@@ -345,7 +336,6 @@ async fn update_deployment(
             values_override = COALESCE($5, values_override),
             ops_repo_id = COALESCE($6, ops_repo_id),
             manifest_path = COALESCE($7, manifest_path),
-            current_status = 'pending',
             deployed_by = $8
         WHERE project_id = $1 AND environment = $2
         RETURNING id, project_id, environment, ops_repo_id, manifest_path,
@@ -379,6 +369,20 @@ async fn update_deployment(
         },
     )
     .await;
+
+    // If image_ref was updated, publish a DeployRequested event
+    // to commit the new image to the ops repo and trigger deployment
+    if let Some(ref new_image) = body.image_ref {
+        let event = crate::store::eventbus::PlatformEvent::DeployRequested {
+            project_id: id,
+            environment: env.clone(),
+            image_ref: new_image.clone(),
+            requested_by: Some(auth.user_id),
+        };
+        if let Err(e) = crate::store::eventbus::publish(&state.valkey, &event).await {
+            tracing::error!(error = %e, "failed to publish DeployRequested event");
+        }
+    }
 
     crate::api::webhooks::fire_webhooks(
         &state.pool,
@@ -433,6 +437,7 @@ async fn rollback_deployment(
     validate_environment(&env)?;
     require_deploy_promote(&state, &auth, id).await?;
 
+    // Verify deployment exists
     let result = sqlx::query!(
         r#"
         UPDATE deployments
@@ -447,6 +452,17 @@ async fn rollback_deployment(
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| ApiError::NotFound("deployment".into()))?;
+
+    // Publish RollbackRequested event — the event bus handler will revert
+    // the ops repo and wake the deployer
+    let event = crate::store::eventbus::PlatformEvent::RollbackRequested {
+        project_id: id,
+        environment: env.clone(),
+        requested_by: Some(auth.user_id),
+    };
+    if let Err(e) = crate::store::eventbus::publish(&state.valkey, &event).await {
+        tracing::error!(error = %e, "failed to publish RollbackRequested event");
+    }
 
     write_audit(
         &state.pool,
@@ -682,17 +698,27 @@ async fn create_ops_repo(
     require_admin(&state, &auth).await?;
     validate_ops_repo_create(&body)?;
 
+    let branch = body.branch.as_deref().unwrap_or("main");
+    let path = body.path.as_deref().unwrap_or("/");
+
+    // Initialize the bare repo on disk
+    let repo_path =
+        crate::deployer::ops_repo::init_ops_repo(&state.config.ops_repos_path, &body.name, branch)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+
+    let repo_path_str = repo_path.to_string_lossy().to_string();
+
     let r = sqlx::query!(
         r#"
-        INSERT INTO ops_repos (name, repo_url, branch, path, sync_interval_s)
-        VALUES ($1, $2, COALESCE($3, 'main'), COALESCE($4, '/'), COALESCE($5, 60))
-        RETURNING id, name, repo_url, branch, path, sync_interval_s, created_at
+        INSERT INTO ops_repos (name, repo_path, branch, path)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, name, repo_path, branch, path, created_at
         "#,
         body.name,
-        body.repo_url,
-        body.branch,
-        body.path,
-        body.sync_interval_s,
+        repo_path_str,
+        branch,
+        path,
     )
     .fetch_one(&state.pool)
     .await?;
@@ -717,10 +743,9 @@ async fn create_ops_repo(
         Json(OpsRepoResponse {
             id: r.id,
             name: r.name,
-            repo_url: r.repo_url,
+            repo_path: r.repo_path,
             branch: r.branch,
             path: r.path,
-            sync_interval_s: r.sync_interval_s,
             created_at: r.created_at,
         }),
     ))
@@ -728,20 +753,11 @@ async fn create_ops_repo(
 
 fn validate_ops_repo_create(body: &CreateOpsRepoRequest) -> Result<(), ApiError> {
     validation::check_name(&body.name)?;
-    validation::check_url(&body.repo_url)?;
-    validation::check_ssrf_url(&body.repo_url, &["http", "https"])?;
     if let Some(ref branch) = body.branch {
         validation::check_branch_name(branch)?;
     }
     if let Some(ref path) = body.path {
         validation::check_length("path", path, 1, 500)?;
-    }
-    if let Some(interval) = body.sync_interval_s
-        && !(10..=86400).contains(&interval)
-    {
-        return Err(ApiError::BadRequest(
-            "sync_interval_s must be between 10 and 86400".into(),
-        ));
     }
     Ok(())
 }
@@ -754,7 +770,7 @@ async fn list_ops_repos(
 
     let rows = sqlx::query!(
         r#"
-        SELECT id, name, repo_url, branch, path, sync_interval_s, created_at
+        SELECT id, name, repo_path, branch, path, created_at
         FROM ops_repos ORDER BY name
         "#,
     )
@@ -766,10 +782,9 @@ async fn list_ops_repos(
         .map(|r| OpsRepoResponse {
             id: r.id,
             name: r.name,
-            repo_url: r.repo_url,
+            repo_path: r.repo_path,
             branch: r.branch,
             path: r.path,
-            sync_interval_s: r.sync_interval_s,
             created_at: r.created_at,
         })
         .collect();
@@ -786,7 +801,7 @@ async fn get_ops_repo(
 
     let r = sqlx::query!(
         r#"
-        SELECT id, name, repo_url, branch, path, sync_interval_s, created_at
+        SELECT id, name, repo_path, branch, path, created_at
         FROM ops_repos WHERE id = $1
         "#,
         repo_id,
@@ -798,10 +813,9 @@ async fn get_ops_repo(
     Ok(Json(OpsRepoResponse {
         id: r.id,
         name: r.name,
-        repo_url: r.repo_url,
+        repo_path: r.repo_path,
         branch: r.branch,
         path: r.path,
-        sync_interval_s: r.sync_interval_s,
         created_at: r.created_at,
     }))
 }
@@ -819,18 +833,14 @@ async fn update_ops_repo(
     let r = sqlx::query!(
         r#"
         UPDATE ops_repos SET
-            repo_url = COALESCE($2, repo_url),
-            branch = COALESCE($3, branch),
-            path = COALESCE($4, path),
-            sync_interval_s = COALESCE($5, sync_interval_s)
+            branch = COALESCE($2, branch),
+            path = COALESCE($3, path)
         WHERE id = $1
-        RETURNING id, name, repo_url, branch, path, sync_interval_s, created_at
+        RETURNING id, name, repo_path, branch, path, created_at
         "#,
         repo_id,
-        body.repo_url,
         body.branch,
         body.path,
-        body.sync_interval_s,
     )
     .fetch_optional(&state.pool)
     .await?
@@ -854,31 +864,19 @@ async fn update_ops_repo(
     Ok(Json(OpsRepoResponse {
         id: r.id,
         name: r.name,
-        repo_url: r.repo_url,
+        repo_path: r.repo_path,
         branch: r.branch,
         path: r.path,
-        sync_interval_s: r.sync_interval_s,
         created_at: r.created_at,
     }))
 }
 
 fn validate_ops_repo_update(body: &UpdateOpsRepoRequest) -> Result<(), ApiError> {
-    if let Some(ref repo_url) = body.repo_url {
-        validation::check_url(repo_url)?;
-        validation::check_ssrf_url(repo_url, &["http", "https"])?;
-    }
     if let Some(ref branch) = body.branch {
         validation::check_branch_name(branch)?;
     }
     if let Some(ref path) = body.path {
         validation::check_length("path", path, 1, 500)?;
-    }
-    if let Some(interval) = body.sync_interval_s
-        && !(10..=86400).contains(&interval)
-    {
-        return Err(ApiError::BadRequest(
-            "sync_interval_s must be between 10 and 86400".into(),
-        ));
     }
     Ok(())
 }
@@ -928,39 +926,4 @@ async fn delete_ops_repo(
     .await;
 
     Ok(Json(serde_json::json!({"ok": true})))
-}
-
-#[tracing::instrument(skip(state), fields(%repo_id), err)]
-async fn force_sync_ops_repo(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Path(repo_id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    require_admin(&state, &auth).await?;
-
-    let sha: String = crate::deployer::ops_repo::force_sync(
-        &state.pool,
-        &state.valkey,
-        &state.config.ops_repos_path,
-        repo_id,
-    )
-    .await
-    .map_err(ApiError::from)?;
-
-    write_audit(
-        &state.pool,
-        &AuditEntry {
-            actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "ops_repo.sync",
-            resource: "ops_repo",
-            resource_id: Some(repo_id),
-            project_id: None,
-            detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
-        },
-    )
-    .await;
-
-    Ok(Json(serde_json::json!({"ok": true, "sha": sha})))
 }

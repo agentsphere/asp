@@ -362,6 +362,107 @@ async fn on_mr_created_notifies_owner(pool: PgPool) {
     assert_eq!(count.0, 1);
 }
 
+/// on_deploy_status creates a notification for the project owner.
+#[sqlx::test(migrations = "./migrations")]
+async fn on_deploy_status_notifies_owner(pool: PgPool) {
+    let state = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state.clone());
+    let admin_token = helpers::admin_login(&app).await;
+
+    let proj_id = helpers::create_project(&app, &admin_token, "deploy-notif-proj", "private").await;
+
+    platform::notify::dispatch::on_deploy_status(&state, proj_id, "healthy").await;
+
+    let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
+    let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
+
+    let count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND notification_type = 'deploy_status'",
+    )
+    .bind(admin_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(count.0, 1, "expected deploy_status notification");
+}
+
+/// on_alert_firing creates a notification for the given user.
+#[sqlx::test(migrations = "./migrations")]
+async fn on_alert_firing_notifies_user(pool: PgPool) {
+    let state = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state.clone());
+    let admin_token = helpers::admin_login(&app).await;
+
+    let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
+    let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
+
+    let alert_id = Uuid::new_v4();
+    platform::notify::dispatch::on_alert_firing(&state, admin_id, alert_id).await;
+
+    let count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND notification_type = 'alert_firing'",
+    )
+    .bind(admin_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(count.0, 1, "expected alert_firing notification");
+
+    // Verify ref_id is set
+    let ref_id: (Option<Uuid>,) = sqlx::query_as(
+        "SELECT ref_id FROM notifications WHERE user_id = $1 AND notification_type = 'alert_firing'",
+    )
+    .bind(admin_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(ref_id.0, Some(alert_id));
+}
+
+/// notify() with Email channel and no SMTP → status='sent' (email::send returns Ok when unconfigured).
+#[sqlx::test(migrations = "./migrations")]
+async fn notify_email_channel_without_smtp(pool: PgPool) {
+    let state = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state.clone());
+    let admin_token = helpers::admin_login(&app).await;
+
+    let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
+    let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
+
+    platform::notify::dispatch::notify(
+        &state,
+        platform::notify::dispatch::NewNotification {
+            user_id: admin_id,
+            notification_type: "email_test".into(),
+            subject: "Email test".into(),
+            body: Some("Body".into()),
+            channel: platform::notify::dispatch::NotifyChannel::Email,
+            ref_type: None,
+            ref_id: None,
+        },
+    )
+    .await
+    .expect("notify should not error");
+
+    // When SMTP is not configured, email::send() returns Ok with a warning log,
+    // so the notification status is "sent" (not "failed").
+    let row: (String,) = sqlx::query_as(
+        "SELECT status FROM notifications WHERE user_id = $1 AND notification_type = 'email_test'",
+    )
+    .bind(admin_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        row.0, "sent",
+        "email channel without SMTP should still be marked sent"
+    );
+}
+
 /// on_agent_completed creates a notification for the given user.
 #[sqlx::test(migrations = "./migrations")]
 async fn on_agent_completed_notifies_user(pool: PgPool) {
