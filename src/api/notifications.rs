@@ -5,6 +5,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use ts_rs::TS;
+
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::store::AppState;
@@ -24,7 +26,8 @@ pub struct ListParams {
 
 use super::helpers::ListResponse;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "Notification")]
 pub struct NotificationResponse {
     pub id: Uuid,
     pub notification_type: String,
@@ -37,8 +40,10 @@ pub struct NotificationResponse {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct UnreadCountResponse {
+    #[ts(type = "number")]
     pub count: i64,
 }
 

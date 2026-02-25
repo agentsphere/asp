@@ -3,8 +3,11 @@ use std::str::FromStr;
 
 /// Discriminator for user accounts. Controls which auth methods and
 /// capabilities are available to a given identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, ts_rs::TS,
+)]
 #[serde(rename_all = "snake_case")]
+#[ts(export)]
 pub enum UserType {
     Human,
     Agent,

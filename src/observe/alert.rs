@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use uuid::Uuid;
 
+use ts_rs::TS;
+
+use crate::api::helpers::ListResponse;
 use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
@@ -20,12 +23,6 @@ use crate::validation;
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Serialize)]
-pub struct ListResponse<T: Serialize> {
-    pub items: Vec<T>,
-    pub total: i64,
-}
 
 #[derive(Debug, Deserialize)]
 pub struct CreateAlertRequest {
@@ -65,7 +62,8 @@ pub struct ListAlertParams {
     pub offset: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "AlertRule")]
 pub struct AlertRuleResponse {
     pub id: Uuid,
     pub name: String,
@@ -83,7 +81,8 @@ pub struct AlertRuleResponse {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "AlertEvent")]
 pub struct AlertEventResponse {
     pub id: Uuid,
     #[serde(rename = "alert_rule_id")]
@@ -646,9 +645,9 @@ fn validate_condition(condition: &str) -> Result<(), ApiError> {
 // Background evaluation
 // ---------------------------------------------------------------------------
 
-struct AlertState {
-    first_triggered: Option<DateTime<Utc>>,
-    firing: bool,
+pub struct AlertState {
+    pub first_triggered: Option<DateTime<Utc>>,
+    pub firing: bool,
 }
 
 /// Background task that evaluates alert rules every 30 seconds.
@@ -671,7 +670,8 @@ pub async fn evaluate_alerts_loop(state: AppState, mut shutdown: tokio::sync::wa
     }
 }
 
-async fn evaluate_all(
+#[allow(clippy::implicit_hasher)]
+pub async fn evaluate_all(
     state: &AppState,
     alert_states: &mut HashMap<Uuid, AlertState>,
 ) -> Result<(), anyhow::Error> {
@@ -807,7 +807,7 @@ fn check_condition(condition: &str, threshold: Option<f64>, value: Option<f64>) 
     }
 }
 
-async fn evaluate_metric(
+pub async fn evaluate_metric(
     pool: &sqlx::PgPool,
     name: &str,
     labels: Option<&serde_json::Value>,
@@ -887,7 +887,7 @@ async fn evaluate_metric(
     }
 }
 
-async fn fire_alert(
+pub async fn fire_alert(
     pool: &sqlx::PgPool,
     rule_id: Uuid,
     value: Option<f64>,
@@ -907,7 +907,7 @@ async fn fire_alert(
     Ok(())
 }
 
-async fn resolve_alert(pool: &sqlx::PgPool, rule_id: Uuid) -> Result<(), sqlx::Error> {
+pub async fn resolve_alert(pool: &sqlx::PgPool, rule_id: Uuid) -> Result<(), sqlx::Error> {
     // Resolve the most recent firing event for this rule
     sqlx::query(
         r"

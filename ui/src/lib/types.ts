@@ -1,393 +1,102 @@
-// Auth / Users
-export interface User {
-  id: string;
-  name: string;
-  display_name: string | null;
-  email: string;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
-}
+// Re-export all generated types from ts-rs.
+// Run `just types` after changing any Rust response struct to regenerate.
 
-export interface LoginResponse {
-  token: string;
-  expires_at: string;
-  user: User;
-}
+// Auth / Users
+export type { User } from './generated/User';
+export type { UserType } from './generated/UserType';
+export type { LoginResponse } from './generated/LoginResponse';
+export type { ApiToken } from './generated/ApiToken';
+export type { CreateTokenResponse } from './generated/CreateTokenResponse';
 
 // Projects
-export interface Project {
-  id: string;
-  owner_id: string;
-  workspace_id: string | null;
-  name: string;
-  display_name: string | null;
-  description: string | null;
-  visibility: string;
-  default_branch: string;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
-}
+export type { Project } from './generated/Project';
 
-// Issues
-export interface Issue {
-  id: string;
-  project_id: string;
-  number: number;
-  author_id: string;
-  title: string;
-  body: string | null;
-  status: string;
-  labels: string[];
-  assignee_id: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-// Comments (shared by issues + MRs)
-export interface Comment {
-  id: string;
-  author_id: string;
-  body: string;
-  created_at: string;
-  updated_at: string;
-}
+// Issues & Comments
+export type { Issue } from './generated/Issue';
+export type { Comment } from './generated/Comment';
 
 // Merge Requests
-export interface MergeRequest {
-  id: string;
-  project_id: string;
-  number: number;
-  author_id: string;
-  source_branch: string;
-  target_branch: string;
-  title: string;
-  body: string | null;
-  status: string;
-  merged_by: string | null;
-  merged_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface Review {
-  id: string;
-  mr_id: string;
-  reviewer_id: string;
-  verdict: string;
-  body: string | null;
-  created_at: string;
-}
+export type { MergeRequest } from './generated/MergeRequest';
+export type { Review } from './generated/Review';
 
 // Pipelines
-export interface Pipeline {
-  id: string;
-  project_id: string;
-  trigger: string;
-  git_ref: string;
-  commit_sha: string | null;
-  status: string;
-  triggered_by: string | null;
-  started_at: string | null;
-  finished_at: string | null;
-  created_at: string;
-}
-
-export interface PipelineStep {
-  id: string;
-  step_order: number;
-  name: string;
-  image: string;
-  status: string;
-  exit_code: number | null;
-  duration_ms: number | null;
-  log_ref: string | null;
-  created_at: string;
-}
-
-export interface PipelineDetail extends Pipeline {
-  steps: PipelineStep[];
-}
-
-export interface Artifact {
-  id: string;
-  name: string;
-  content_type: string | null;
-  size_bytes: number | null;
-  expires_at: string | null;
-  created_at: string;
-}
+export type { Pipeline } from './generated/Pipeline';
+export type { PipelineDetail } from './generated/PipelineDetail';
+export type { PipelineStep } from './generated/PipelineStep';
+export type { Artifact } from './generated/Artifact';
 
 // Deployments
-export interface Deployment {
-  id: string;
-  project_id: string;
-  environment: string;
-  image_ref: string;
-  desired_status: string;
-  current_status: string;
-  current_sha: string | null;
-  deployed_by: string | null;
-  deployed_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
+export type { Deployment } from './generated/Deployment';
+export type { DeploymentHistory } from './generated/DeploymentHistory';
+export type { OpsRepo } from './generated/OpsRepo';
+export type { PreviewDeployment } from './generated/PreviewDeployment';
 
 // Git Browser
-export interface TreeEntry {
-  name: string;
-  entry_type: string;
-  mode: string;
-  size: number | null;
-  sha: string;
-}
-
-export interface BlobResponse {
-  path: string;
-  size: number;
-  content: string;
-  encoding: string;
-}
-
-export interface BranchInfo {
-  name: string;
-  sha: string;
-  updated_at: string;
-}
-
-export interface CommitInfo {
-  sha: string;
-  message: string;
-  author_name: string;
-  author_email: string;
-  authored_at: string;
-}
+export type { TreeEntry } from './generated/TreeEntry';
+export type { BlobResponse } from './generated/BlobResponse';
+export type { BranchInfo } from './generated/BranchInfo';
+export type { CommitInfo } from './generated/CommitInfo';
 
 // Admin
-export interface Role {
-  id: string;
-  name: string;
-  description: string | null;
-  is_system: boolean;
-  created_at: string;
-}
-
-export interface Permission {
-  id: string;
-  name: string;
-  resource: string;
-  action: string;
-  description: string | null;
-}
-
-export interface Delegation {
-  id: string;
-  delegator_id: string;
-  delegate_id: string;
-  permission: string;
-  project_id: string | null;
-  expires_at: string | null;
-  reason: string | null;
-  created_at: string;
-}
-
-// Tokens
-export interface ApiToken {
-  id: string;
-  name: string;
-  scopes: string[];
-  project_id: string | null;
-  last_used_at: string | null;
-  expires_at: string | null;
-  created_at: string;
-}
-
-export interface CreateTokenResponse extends ApiToken {
-  token: string;
-}
+export type { Role } from './generated/Role';
+export type { Permission } from './generated/Permission';
+export type { Delegation } from './generated/Delegation';
+export type { ServiceAccountResponse } from './generated/ServiceAccountResponse';
 
 // Webhooks
-export interface Webhook {
-  id: string;
-  project_id: string;
-  url: string;
-  events: string[];
-  active: boolean;
-  created_at: string;
-}
+export type { Webhook } from './generated/Webhook';
 
-// Observability — Logs
-export interface LogEntry {
-  id: string;
-  timestamp: string;
-  trace_id?: string;
-  span_id?: string;
-  project_id?: string;
-  session_id?: string;
-  service: string;
-  level: string;
-  message: string;
-  attributes?: Record<string, any>;
-}
-
-// Observability — Traces
-export interface TraceSummary {
-  trace_id: string;
-  root_span: string;
-  service: string;
-  status: string;
-  duration_ms?: number;
-  started_at: string;
-  project_id?: string;
-}
-
-export interface Span {
-  span_id: string;
-  parent_span_id?: string;
-  name: string;
-  service: string;
-  kind: string;
-  status: string;
-  duration_ms?: number;
-  started_at: string;
-  finished_at?: string;
-  attributes?: Record<string, any>;
-  events?: SpanEvent[];
-}
-
-export interface SpanEvent {
-  name: string;
-  timestamp: string;
-  attributes?: Record<string, any>;
-}
+// Observability — Logs & Traces
+export type { LogEntry } from './generated/LogEntry';
+export type { TraceSummary } from './generated/TraceSummary';
+export type { TraceDetail } from './generated/TraceDetail';
+export type { Span } from './generated/Span';
 
 // Observability — Metrics
-export interface MetricDataPoint {
-  timestamp: string;
-  value: number;
-}
-
-export interface MetricSeries {
-  name: string;
-  labels: Record<string, string>;
-  points: MetricDataPoint[];
-}
+export type { MetricDataPoint } from './generated/MetricDataPoint';
+export type { MetricSeries } from './generated/MetricSeries';
 
 // Observability — Alerts
-export interface AlertRule {
-  id: string;
-  project_id?: string;
-  name: string;
-  query: string;
-  condition: string;
-  threshold: number;
-  window_seconds: number;
-  channels: string[];
-  enabled: boolean;
-  created_at: string;
-}
-
-export interface AlertEvent {
-  id: string;
-  alert_rule_id: string;
-  status: string;
-  value: number | null;
-  message: string | null;
-  created_at: string;
-}
+export type { AlertRule } from './generated/AlertRule';
+export type { AlertEvent } from './generated/AlertEvent';
 
 // Agent Sessions
-export interface AgentSession {
-  id: string;
-  project_id: string;
-  user_id: string;
-  agent_user_id?: string;
-  prompt: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped';
-  branch?: string;
-  pod_name?: string;
-  provider: string;
-  cost_tokens?: number;
-  created_at: string;
-  finished_at: string | null;
-}
+export type { AgentSession } from './generated/AgentSession';
+export type { SessionDetail } from './generated/SessionDetail';
+export type { SessionMessage } from './generated/SessionMessage';
 
+// Notifications
+export type { Notification } from './generated/Notification';
+export type { UnreadCountResponse } from './generated/UnreadCountResponse';
+
+// Workspaces
+export type { Workspace } from './generated/Workspace';
+export type { WorkspaceMember } from './generated/WorkspaceMember';
+
+// Secrets
+export type { Secret } from './generated/Secret';
+
+// Passkeys
+export type { PasskeyResponse } from './generated/PasskeyResponse';
+export type { BeginLoginResponse } from './generated/BeginLoginResponse';
+export type { PasskeyLoginResponse } from './generated/PasskeyLoginResponse';
+
+// Dashboard
+export type { DashboardStats } from './generated/DashboardStats';
+export type { AuditLogEntry } from './generated/AuditLogEntry';
+export type { OnboardingStatus } from './generated/OnboardingStatus';
+
+// Validation
+export type { ValidateKeyResponse } from './generated/ValidateKeyResponse';
+
+// Pagination (also re-exported from api.ts)
+export type { ListResponse } from './generated/ListResponse';
+
+// --- Manual types (not backed by a Rust struct) ---
+
+// WebSocket progress events from agent sessions
 export interface ProgressEvent {
   kind: 'Thinking' | 'ToolCall' | 'ToolResult' | 'Milestone' | 'Error' | 'Completed' | 'Text';
   message: string;
   metadata?: Record<string, any>;
-}
-
-// Notifications
-export interface Notification {
-  id: string;
-  notification_type: string;
-  subject: string;
-  body?: string;
-  channel: string;
-  status: string;
-  ref_type?: string;
-  ref_id?: string;
-  created_at: string;
-}
-
-// Preview Deployments
-export interface PreviewDeployment {
-  id: string;
-  project_id: string;
-  branch: string;
-  branch_slug: string;
-  image_ref: string;
-  desired_status: string;
-  current_status: string;
-  ttl_hours: number;
-  expires_at: string;
-  created_at: string;
-}
-
-// Audit Log
-export interface AuditLogEntry {
-  id: string;
-  actor_id: string;
-  actor_name: string;
-  action: string;
-  resource: string;
-  resource_id?: string;
-  project_id?: string;
-  detail?: Record<string, any>;
-  ip_addr?: string;
-  created_at: string;
-}
-
-// Workspaces
-export interface Workspace {
-  id: string;
-  name: string;
-  display_name: string | null;
-  description: string | null;
-  owner_id: string;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WorkspaceMember {
-  id: string;
-  workspace_id: string;
-  user_id: string;
-  user_name: string;
-  role: string;
-  created_at: string;
-}
-
-// Secrets
-export interface Secret {
-  id: string;
-  project_id: string;
-  name: string;
-  scope: string;
-  version: number;
-  created_at: string;
-  updated_at: string;
 }

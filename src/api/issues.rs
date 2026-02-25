@@ -7,6 +7,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use ts_rs::TS;
+
 use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
@@ -53,7 +55,8 @@ pub struct UpdateCommentRequest {
     pub body: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "Issue")]
 pub struct IssueResponse {
     pub id: Uuid,
     pub project_id: Uuid,
@@ -68,7 +71,8 @@ pub struct IssueResponse {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "Comment")]
 pub struct CommentResponse {
     pub id: Uuid,
     pub author_id: Uuid,

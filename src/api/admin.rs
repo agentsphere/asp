@@ -7,6 +7,8 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use ts_rs::TS;
+
 use crate::api::helpers::ListResponse;
 use crate::api::users::{CreateTokenResponse, ListParams, TokenResponse, UserResponse};
 use crate::audit::{AuditEntry, write_audit};
@@ -22,7 +24,8 @@ use crate::validation;
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "Role")]
 pub struct RoleResponse {
     pub id: Uuid,
     pub name: String,
@@ -37,7 +40,8 @@ pub struct CreateRoleRequest {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "Permission")]
 pub struct PermissionResponse {
     pub id: Uuid,
     pub name: String,
@@ -83,7 +87,8 @@ pub struct CreateServiceAccountRequest {
     pub project_id: Option<Uuid>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct ServiceAccountResponse {
     pub user: UserResponse,
     pub token: Option<CreateTokenResponse>,

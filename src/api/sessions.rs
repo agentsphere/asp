@@ -8,6 +8,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use ts_rs::TS;
+
 use crate::agent::service;
 use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
@@ -68,7 +70,8 @@ pub struct UpdateSessionRequest {
     pub project_id: Option<Uuid>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "AgentSession")]
 pub struct SessionResponse {
     pub id: Uuid,
     pub project_id: Option<Uuid>,
@@ -79,20 +82,23 @@ pub struct SessionResponse {
     pub branch: Option<String>,
     pub pod_name: Option<String>,
     pub provider: String,
+    #[ts(type = "number | null")]
     pub cost_tokens: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
     pub browser_enabled: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "SessionDetail")]
 pub struct SessionDetailResponse {
     #[serde(flatten)]
     pub session: SessionResponse,
     pub messages: Vec<MessageResponse>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "SessionMessage")]
 pub struct MessageResponse {
     pub id: Uuid,
     pub role: String,
@@ -1035,4 +1041,77 @@ async fn handle_ws_global(state: AppState, session_id: Uuid, mut socket: ws::Web
     }
 
     tracing::info!(%session_id, "global websocket connection closed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_provider_config_empty_ok() {
+        let config = serde_json::json!({});
+        assert!(validate_provider_config(&config, false, Uuid::new_v4()).is_ok());
+    }
+
+    #[test]
+    fn validate_provider_config_valid_image() {
+        let config = serde_json::json!({ "image": "alpine:3.19" });
+        assert!(validate_provider_config(&config, false, Uuid::new_v4()).is_ok());
+    }
+
+    #[test]
+    fn validate_provider_config_invalid_image() {
+        let config = serde_json::json!({ "image": "image;rm -rf /" });
+        assert!(validate_provider_config(&config, false, Uuid::new_v4()).is_err());
+    }
+
+    #[test]
+    fn validate_provider_config_too_many_setup_commands() {
+        let cmds: Vec<String> = (0..21).map(|i| format!("cmd {i}")).collect();
+        let config = serde_json::json!({ "setup_commands": cmds });
+        assert!(validate_provider_config(&config, false, Uuid::new_v4()).is_err());
+    }
+
+    #[test]
+    fn validate_provider_config_browser_requires_ui_role() {
+        let config = serde_json::json!({
+            "browser": { "allowed_origins": ["http://localhost:3000"] },
+            "role": "dev"
+        });
+        let result = validate_provider_config(&config, false, Uuid::new_v4());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_provider_config_browser_ui_ok() {
+        let config = serde_json::json!({
+            "browser": { "allowed_origins": ["http://localhost:3000"] },
+            "role": "ui"
+        });
+        assert!(validate_provider_config(&config, false, Uuid::new_v4()).is_ok());
+    }
+
+    #[test]
+    fn validate_provider_config_browser_test_ok() {
+        let config = serde_json::json!({
+            "browser": { "allowed_origins": ["http://localhost:3000"] },
+            "role": "test"
+        });
+        assert!(validate_provider_config(&config, false, Uuid::new_v4()).is_ok());
+    }
+
+    #[test]
+    fn truncate_prompt_short() {
+        assert_eq!(truncate_prompt("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_prompt_long() {
+        assert_eq!(truncate_prompt("hello world", 5), "hello...");
+    }
+
+    #[test]
+    fn truncate_prompt_exact_length() {
+        assert_eq!(truncate_prompt("exact", 5), "exact");
+    }
 }

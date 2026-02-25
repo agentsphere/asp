@@ -9,8 +9,11 @@ This document covers all testing tiers for the platform: unit, integration, and 
 | Unit | 442 | ~1s | None | `just test-unit` |
 | Integration | varies | ~30s | Postgres (Kind or local) | `just test-integration` |
 | E2E | 40 | ~90s | Kind cluster (Postgres, Valkey, MinIO, K8s) | `just test-e2e` |
+| FE-BE | 33+ | ~30s | Postgres | `just test-integration` / `just types` / `just test-ui` |
 
 All tests use [cargo-nextest](https://nexte.st/) as the test runner.
+
+**Frontend-Backend integration testing** is covered in a dedicated guide: [`docs/fe-be-testing.md`](fe-be-testing.md). It describes three tiers that prevent type drift between the Rust API and the Preact UI: ts-rs auto-generated types, API contract integration tests, and Playwright browser E2E tests.
 
 ## Unit Tests
 

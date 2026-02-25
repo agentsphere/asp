@@ -10,6 +10,8 @@ use uuid::Uuid;
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 
+use ts_rs::TS;
+
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::rbac::{Permission, resolver};
@@ -19,31 +21,37 @@ use crate::store::AppState;
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct TreeEntry {
     pub name: String,
     pub entry_type: String, // "blob" or "tree"
     pub mode: String,
+    #[ts(type = "number | null")]
     pub size: Option<i64>,
     pub sha: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct BlobResponse {
     pub path: String,
+    #[ts(type = "number")]
     pub size: i64,
     pub content: String,
     pub encoding: String, // "utf-8" or "base64"
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct BranchInfo {
     pub name: String,
     pub sha: String,
     pub updated_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct CommitInfo {
     pub sha: String,
     pub message: String,

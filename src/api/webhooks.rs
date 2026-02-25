@@ -14,6 +14,8 @@ use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
+use ts_rs::TS;
+
 use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
@@ -103,7 +105,8 @@ pub struct UpdateWebhookRequest {
     pub active: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "Webhook")]
 pub struct WebhookResponse {
     pub id: Uuid,
     pub project_id: Uuid,

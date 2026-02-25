@@ -1,4 +1,5 @@
 use serde::Serialize;
+use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::auth::middleware::AuthUser;
@@ -6,9 +7,11 @@ use crate::error::ApiError;
 use crate::rbac::{Permission, resolver};
 use crate::store::AppState;
 
-#[derive(Debug, Serialize)]
-pub struct ListResponse<T: Serialize> {
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct ListResponse<T> {
     pub items: Vec<T>,
+    #[ts(type = "number")]
     pub total: i64,
 }
 

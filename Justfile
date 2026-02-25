@@ -1,5 +1,8 @@
 # platform/Justfile
 
+export DATABASE_URL := env("DATABASE_URL", "postgres://platform:dev@localhost:5432/platform_dev")
+export VALKEY_URL := env("VALKEY_URL", "redis://localhost:6379")
+
 default:
     @just --list
 
@@ -19,6 +22,12 @@ run:
 
 ui:
     cd ui && npm run build
+
+# -- Types (ts-rs) --------------------------------------------------
+types:
+    SQLX_OFFLINE=true cargo test --lib -- export_bindings
+    cd ui && npx tsc --noEmit --skipLibCheck 2>&1 | grep -v "path.*IntrinsicAttributes" || true
+    @echo "Types generated in ui/src/lib/generated/"
 
 # -- Quality --------------------------------------------------------
 fmt:
@@ -48,6 +57,10 @@ test-integration:
 test-e2e:
     @echo "Requires Kind cluster: just cluster-up"
     cargo nextest run --test 'e2e_*' --run-ignored ignored-only --test-threads 2
+
+test-ui:
+    @echo "Requires running server: just run"
+    cd ui && npx playwright test
 
 # -- Coverage -------------------------------------------------------
 cov-unit:

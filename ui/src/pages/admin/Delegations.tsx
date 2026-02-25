@@ -50,7 +50,7 @@ export function Delegations() {
             <tbody>
               {delegations.map(d => (
                 <tr key={d.id}>
-                  <td class="mono text-sm">{d.permission}</td>
+                  <td class="mono text-sm">{d.permission_name}</td>
                   <td class="text-sm">{d.delegate_id.substring(0, 8)}...</td>
                   <td class="text-sm">{d.project_id ? d.project_id.substring(0, 8) + '...' : '—'}</td>
                   <td class="text-sm text-muted">{d.expires_at ? timeAgo(d.expires_at) : 'never'}</td>

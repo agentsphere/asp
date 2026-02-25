@@ -8,6 +8,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use ts_rs::TS;
+
 use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
@@ -31,7 +33,8 @@ pub struct ListPipelinesParams {
     pub trigger: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "Pipeline")]
 pub struct PipelineResponse {
     pub id: Uuid,
     pub project_id: Uuid,
@@ -45,14 +48,16 @@ pub struct PipelineResponse {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "PipelineDetail")]
 pub struct PipelineDetailResponse {
     #[serde(flatten)]
     pub pipeline: PipelineResponse,
     pub steps: Vec<StepResponse>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "PipelineStep")]
 pub struct StepResponse {
     pub id: Uuid,
     pub step_order: i32,
@@ -65,11 +70,13 @@ pub struct StepResponse {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "Artifact")]
 pub struct ArtifactResponse {
     pub id: Uuid,
     pub name: String,
     pub content_type: Option<String>,
+    #[ts(type = "number | null")]
     pub size_bytes: Option<i64>,
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,

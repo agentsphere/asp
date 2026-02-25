@@ -8,6 +8,8 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use ts_rs::TS;
+
 use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
@@ -22,7 +24,8 @@ use super::helpers::ListResponse;
 // Response types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "Workspace")]
 pub struct WorkspaceResponse {
     pub id: Uuid,
     pub name: String,
@@ -49,7 +52,8 @@ impl From<workspace::Workspace> for WorkspaceResponse {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "WorkspaceMember")]
 pub struct MemberResponse {
     pub id: Uuid,
     pub user_id: Uuid,

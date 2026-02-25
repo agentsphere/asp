@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use webauthn_rs::prelude::*;
 
+use ts_rs::TS;
+
 use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
 use crate::auth::{passkey, token};
@@ -24,7 +26,8 @@ pub struct BeginRegisterRequest {
     pub name: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct PasskeyResponse {
     pub id: Uuid,
     pub name: String,
@@ -35,8 +38,10 @@ pub struct PasskeyResponse {
     pub transports: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct BeginLoginResponse {
+    #[ts(type = "any")]
     pub challenge: RequestChallengeResponse,
     pub challenge_id: String,
 }
@@ -52,7 +57,8 @@ pub struct RenameRequest {
     pub name: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "PasskeyLoginResponse")]
 pub struct LoginResponse {
     pub token: String,
     pub expires_at: DateTime<Utc>,

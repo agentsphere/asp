@@ -41,10 +41,8 @@ export const api = {
   del: <T>(path: string) => request<T>('DELETE', path),
 };
 
-export interface ListResponse<T> {
-  items: T[];
-  total: number;
-}
+// Re-export generated ListResponse for backward compatibility
+export type { ListResponse } from './generated/ListResponse';
 
 export function qs(params: Record<string, string | number | boolean | undefined | null>): string {
   const entries = Object.entries(params).filter(([, v]) => v != null && v !== '');

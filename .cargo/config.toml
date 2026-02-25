@@ -1,6 +1,10 @@
 # mold linker is only available in the Docker build stage (see docker/Dockerfile).
 # Do not set a Linux linker here — it breaks GitHub Actions runners.
 
+[env]
+# ts-rs: export TypeScript bindings to ui/src/lib/generated/
+TS_RS_EXPORT_DIR = { value = "ui/src/lib/generated", relative = true }
+
 [profile.dev.package."*"]
 # Optimize deps even in dev (speeds up sqlx proc macros ~3-5x after first build)
 # Note: this is duplicated in Cargo.toml [profile.dev.package."*"] which takes precedence.

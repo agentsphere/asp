@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use uuid::Uuid;
 
+use ts_rs::TS;
+
+use crate::api::helpers::ListResponse;
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::rbac::{Permission, resolver};
@@ -18,12 +21,6 @@ use crate::validation;
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Serialize)]
-pub struct ListResponse<T: Serialize> {
-    pub items: Vec<T>,
-    pub total: i64,
-}
 
 // --- Log types ---
 
@@ -41,7 +38,8 @@ pub struct LogSearchParams {
     pub offset: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "LogEntry")]
 pub struct LogEntryResponse {
     pub id: Uuid,
     pub timestamp: DateTime<Utc>,
@@ -69,7 +67,8 @@ pub struct TraceListParams {
     pub offset: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "TraceSummary")]
 pub struct TraceSummaryResponse {
     pub trace_id: String,
     pub root_span: String,
@@ -80,7 +79,8 @@ pub struct TraceSummaryResponse {
     pub project_id: Option<Uuid>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "TraceDetail")]
 pub struct TraceDetailResponse {
     pub trace_id: String,
     pub root_span: String,
@@ -91,7 +91,8 @@ pub struct TraceDetailResponse {
     pub spans: Vec<SpanResponse>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "Span")]
 pub struct SpanResponse {
     pub span_id: String,
     pub parent_span_id: Option<String>,
@@ -102,7 +103,11 @@ pub struct SpanResponse {
     pub duration_ms: Option<i32>,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
+    #[ts(type = "Record<string, any> | null")]
     pub attributes: Option<serde_json::Value>,
+    #[ts(
+        type = "Array<{name: string, timestamp: string, attributes?: Record<string, any>}> | null"
+    )]
     pub events: Option<serde_json::Value>,
 }
 
@@ -126,20 +131,23 @@ pub struct MetricQueryParams {
     _offset: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct MetricDataPoint {
     pub timestamp: DateTime<Utc>,
     pub value: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct MetricSeries {
     pub name: String,
     pub labels: std::collections::HashMap<String, String>,
     pub points: Vec<MetricDataPoint>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "MetricName")]
 pub struct MetricNameResponse {
     pub name: String,
     pub labels: serde_json::Value,
@@ -779,4 +787,64 @@ fn should_forward(text: &str, params: &LiveTailParams) -> bool {
     }
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(level: Option<&str>, service: Option<&str>) -> LiveTailParams {
+        LiveTailParams {
+            project_id: None,
+            level: level.map(String::from),
+            service: service.map(String::from),
+        }
+    }
+
+    #[test]
+    fn should_forward_no_filters() {
+        let p = params(None, None);
+        assert!(should_forward(r#"{"level":"error","service":"api"}"#, &p));
+    }
+
+    #[test]
+    fn should_forward_level_match() {
+        let p = params(Some("error"), None);
+        assert!(should_forward(r#"{"level":"error","service":"api"}"#, &p));
+    }
+
+    #[test]
+    fn should_forward_level_mismatch() {
+        let p = params(Some("error"), None);
+        assert!(!should_forward(r#"{"level":"info","service":"api"}"#, &p));
+    }
+
+    #[test]
+    fn should_forward_service_match() {
+        let p = params(None, Some("api"));
+        assert!(should_forward(r#"{"level":"info","service":"api"}"#, &p));
+    }
+
+    #[test]
+    fn should_forward_service_mismatch() {
+        let p = params(None, Some("worker"));
+        assert!(!should_forward(r#"{"level":"info","service":"api"}"#, &p));
+    }
+
+    #[test]
+    fn should_forward_invalid_json() {
+        let p = params(Some("error"), None);
+        assert!(should_forward("not json", &p));
+    }
+
+    #[test]
+    fn should_forward_combined_filters() {
+        let p = params(Some("error"), Some("api"));
+        assert!(should_forward(r#"{"level":"error","service":"api"}"#, &p));
+        assert!(!should_forward(r#"{"level":"info","service":"api"}"#, &p));
+        assert!(!should_forward(
+            r#"{"level":"error","service":"worker"}"#,
+            &p
+        ));
+    }
 }

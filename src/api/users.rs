@@ -7,6 +7,8 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use ts_rs::TS;
+
 use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
 use crate::auth::user_type::UserType;
@@ -48,7 +50,8 @@ pub struct ListParams {
     pub offset: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "User")]
 pub struct UserResponse {
     pub id: Uuid,
     pub name: String,
@@ -62,7 +65,8 @@ pub struct UserResponse {
 
 use super::helpers::ListResponse;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct LoginResponse {
     pub token: String,
     pub expires_at: DateTime<Utc>,
@@ -77,7 +81,8 @@ pub struct CreateTokenRequest {
     pub expires_in_days: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "ApiToken")]
 pub struct TokenResponse {
     pub id: Uuid,
     pub name: String,
@@ -88,7 +93,8 @@ pub struct TokenResponse {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct CreateTokenResponse {
     pub token: String,
     #[serde(flatten)]

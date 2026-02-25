@@ -74,7 +74,8 @@ pub fn decrypt(encrypted: &[u8], master_key: &[u8; 32]) -> anyhow::Result<Vec<u8
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export, rename = "Secret")]
 pub struct SecretMetadata {
     pub id: Uuid,
     pub project_id: Option<Uuid>,

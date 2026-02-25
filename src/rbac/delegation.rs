@@ -17,7 +17,8 @@ pub struct CreateDelegationParams {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct Delegation {
     pub id: Uuid,
     pub delegator_id: Uuid,

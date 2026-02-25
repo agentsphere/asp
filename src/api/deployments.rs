@@ -7,6 +7,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use ts_rs::TS;
+
 use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
@@ -18,7 +20,8 @@ use crate::validation;
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "Deployment")]
 pub struct DeploymentResponse {
     pub id: Uuid,
     pub project_id: Uuid,
@@ -45,7 +48,8 @@ pub struct UpdateDeploymentRequest {
     pub manifest_path: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "DeploymentHistory")]
 pub struct HistoryResponse {
     pub id: Uuid,
     pub deployment_id: Uuid,
@@ -71,7 +75,8 @@ pub struct UpdateOpsRepoRequest {
     pub path: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "OpsRepo")]
 pub struct OpsRepoResponse {
     pub id: Uuid,
     pub name: String,
@@ -81,7 +86,8 @@ pub struct OpsRepoResponse {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "PreviewDeployment")]
 pub struct PreviewResponse {
     pub id: Uuid,
     pub project_id: Uuid,

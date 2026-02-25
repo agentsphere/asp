@@ -5,6 +5,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
+use ts_rs::TS;
+
 use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
@@ -26,7 +28,8 @@ pub struct ValidateKeyRequest {
     pub api_key: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct ValidateKeyResponse {
     pub valid: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

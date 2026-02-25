@@ -113,6 +113,9 @@ rust-embed = { version = "8", features = ["compression"] }
 # TLS crypto provider (needed by kube-client, reqwest, lettre)
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
+# TypeScript type generation
+ts-rs = { version = "12", features = ["chrono-impl", "uuid-impl", "serde-compat", "serde-json-impl"] }
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 hyper = { version = "1", features = ["full"] }

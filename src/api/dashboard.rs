@@ -5,6 +5,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use ts_rs::TS;
+
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::store::AppState;
@@ -15,17 +17,25 @@ use super::helpers::ListResponse;
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct DashboardStats {
+    #[ts(type = "number")]
     pub projects: i64,
+    #[ts(type = "number")]
     pub active_sessions: i64,
+    #[ts(type = "number")]
     pub running_builds: i64,
+    #[ts(type = "number")]
     pub failed_builds: i64,
+    #[ts(type = "number")]
     pub healthy_deployments: i64,
+    #[ts(type = "number")]
     pub degraded_deployments: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct AuditLogEntry {
     pub id: Uuid,
     pub actor_id: Uuid,
@@ -44,7 +54,8 @@ pub struct AuditLogParams {
     pub offset: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
 pub struct OnboardingStatus {
     pub has_projects: bool,
     pub has_provider_key: bool,
@@ -203,6 +214,6 @@ async fn onboarding_status(
     Ok(Json(OnboardingStatus {
         has_projects,
         has_provider_key,
-        needs_onboarding: !has_projects && !has_provider_key,
+        needs_onboarding: !has_projects,
     }))
 }
