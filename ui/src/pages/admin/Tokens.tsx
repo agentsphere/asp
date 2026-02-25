@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'preact/hooks';
-import { api, type ListResponse } from '../../lib/api';
+import { api } from '../../lib/api';
 import type { ApiToken, CreateTokenResponse } from '../../lib/types';
 import { timeAgo } from '../../lib/format';
 import { Modal } from '../../components/Modal';
@@ -12,8 +12,8 @@ export function Tokens() {
   const [error, setError] = useState('');
 
   const load = () => {
-    api.get<ListResponse<ApiToken>>('/api/tokens?limit=100')
-      .then(r => setTokens(r.items)).catch(() => {});
+    api.get<ApiToken[]>('/api/tokens?limit=100')
+      .then(r => setTokens(r)).catch(() => {});
   };
   useEffect(load, []);
 
