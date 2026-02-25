@@ -591,7 +591,7 @@ async fn on_push_invalid_yaml_returns_error(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn notify_executor_does_not_panic(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let pipeline_id = Uuid::new_v4();
 
     // Should not panic even though no executor is listening

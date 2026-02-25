@@ -10,9 +10,8 @@ use sqlx::PgPool;
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_create_user(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, body) = helpers::post_json(
         &app,
@@ -37,9 +36,8 @@ async fn admin_create_user(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_create_user_duplicate_name(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     helpers::create_user(&app, &admin_token, "dupeuser", "dupe@test.com").await;
 
@@ -61,9 +59,8 @@ async fn admin_create_user_duplicate_name(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_create_user_invalid_email(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, _) = helpers::post_json(
         &app,
@@ -82,9 +79,8 @@ async fn admin_create_user_invalid_email(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_create_user_short_password(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, _) = helpers::post_json(
         &app,
@@ -103,9 +99,8 @@ async fn admin_create_user_short_password(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_list_users(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     helpers::create_user(&app, &admin_token, "listuser1", "list1@test.com").await;
     helpers::create_user(&app, &admin_token, "listuser2", "list2@test.com").await;
@@ -119,9 +114,8 @@ async fn admin_list_users(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_get_user_by_id(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, _) = helpers::create_user(&app, &admin_token, "getuser", "get@test.com").await;
 
@@ -135,9 +129,8 @@ async fn admin_get_user_by_id(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_update_user(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, _) =
         helpers::create_user(&app, &admin_token, "updateuser", "update@test.com").await;
@@ -156,9 +149,8 @@ async fn admin_update_user(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_deactivate_user(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, _) = helpers::create_user(&app, &admin_token, "deacuser", "deac@test.com").await;
 
@@ -175,9 +167,8 @@ async fn admin_deactivate_user(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn deactivated_user_cannot_login(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, _) =
         helpers::create_user(&app, &admin_token, "nologin", "nologin@test.com").await;
@@ -198,9 +189,8 @@ async fn deactivated_user_cannot_login(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn deactivated_user_token_revoked(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, user_token) =
         helpers::create_user(&app, &admin_token, "tokenrevoke", "tokenrev@test.com").await;
@@ -219,9 +209,8 @@ async fn deactivated_user_token_revoked(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn non_admin_cannot_create_user(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, user_token) =
         helpers::create_user(&app, &admin_token, "regular", "regular@test.com").await;
@@ -243,9 +232,8 @@ async fn non_admin_cannot_create_user(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn non_admin_cannot_list_users(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, user_token) =
         helpers::create_user(&app, &admin_token, "nolist", "nolist@test.com").await;
@@ -256,9 +244,8 @@ async fn non_admin_cannot_list_users(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_create_token_for_user(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Create a service account with auto-token
     let (status, body) = helpers::post_json(
@@ -288,9 +275,8 @@ async fn admin_create_token_for_user(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_actions_create_audit_log(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     helpers::create_user(&app, &admin_token, "audituser", "audit@test.com").await;
 
@@ -309,9 +295,8 @@ async fn admin_actions_create_audit_log(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_create_role(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, body) = helpers::post_json(
         &app,
@@ -330,9 +315,8 @@ async fn admin_create_role(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_create_role_duplicate_fails(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     helpers::post_json(
         &app,
@@ -355,9 +339,8 @@ async fn admin_create_role_duplicate_fails(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_list_roles(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;
 
@@ -369,9 +352,8 @@ async fn admin_list_roles(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_list_role_permissions(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Get the admin role ID
     let (_, roles) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;
@@ -397,9 +379,8 @@ async fn admin_list_role_permissions(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_set_role_permissions(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Create a custom role
     let (_, role) = helpers::post_json(
@@ -442,9 +423,8 @@ async fn admin_set_role_permissions(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_set_system_role_permissions_fails(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Get the admin role ID (which is a system role)
     let (_, roles) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;
@@ -473,9 +453,8 @@ async fn admin_set_system_role_permissions_fails(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_create_delegation(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, _) =
         helpers::create_user(&app, &admin_token, "delegate-target", "del@test.com").await;
@@ -500,9 +479,8 @@ async fn admin_create_delegation(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_revoke_delegation(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, _) =
         helpers::create_user(&app, &admin_token, "revoke-target", "revoke@test.com").await;
@@ -543,9 +521,8 @@ async fn admin_revoke_delegation(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_list_delegations(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, _) =
         helpers::create_user(&app, &admin_token, "list-deleg", "listdel@test.com").await;
@@ -575,9 +552,8 @@ async fn admin_list_delegations(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_create_service_account(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, body) = helpers::post_json(
         &app,
@@ -600,9 +576,8 @@ async fn admin_create_service_account(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_create_service_account_with_token(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, body) = helpers::post_json(
         &app,
@@ -628,9 +603,8 @@ async fn admin_create_service_account_with_token(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_list_service_accounts(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Create a service account first
     helpers::post_json(
@@ -651,9 +625,8 @@ async fn admin_list_service_accounts(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_deactivate_service_account(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, sa) = helpers::post_json(
         &app,
@@ -677,9 +650,8 @@ async fn admin_deactivate_service_account(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_deactivate_non_service_account_fails(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Create a regular user (not a service account)
     let (user_id, _) =
@@ -698,9 +670,8 @@ async fn admin_deactivate_non_service_account_fails(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_remove_role(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, _) =
         helpers::create_user(&app, &admin_token, "role-user", "roleuser@test.com").await;
@@ -738,9 +709,8 @@ async fn admin_remove_role(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_remove_role_not_found(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, _) =
         helpers::create_user(&app, &admin_token, "norole-user", "norole@test.com").await;

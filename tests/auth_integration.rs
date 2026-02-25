@@ -64,7 +64,7 @@ async fn get_with_auth_header(
 
 #[sqlx::test(migrations = "./migrations")]
 async fn login_valid_credentials(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let (status, body) = helpers::post_json(
@@ -85,7 +85,7 @@ async fn login_valid_credentials(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn login_wrong_password(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let (status, body) = helpers::post_json(
@@ -103,7 +103,7 @@ async fn login_wrong_password(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn login_nonexistent_user(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let (status, body) = helpers::post_json(
@@ -120,10 +120,9 @@ async fn login_nonexistent_user(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn login_inactive_user(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
-    let admin_token = helpers::admin_login(&app).await;
     let (user_id, _user_token) =
         helpers::create_user(&app, &admin_token, "inactiveuser", "inactive@test.com").await;
 
@@ -147,12 +146,11 @@ async fn login_inactive_user(pool: PgPool) {
 async fn login_rate_limited(pool: PgPool) {
     use fred::interfaces::KeysInterface;
 
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state.clone());
 
     // Use a UUID-based username so the rate limit key never collides with other tests.
     let unique_name = format!("rl-{}", Uuid::new_v4());
-    let admin_token = helpers::admin_login(&app).await;
     helpers::create_user(
         &app,
         &admin_token,
@@ -190,11 +188,10 @@ async fn login_rate_limited(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_me_with_valid_token(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
-    let token = helpers::admin_login(&app).await;
-    let (status, body) = helpers::get_json(&app, &token, "/api/auth/me").await;
+    let (status, body) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["name"], "admin");
@@ -202,7 +199,7 @@ async fn get_me_with_valid_token(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_me_without_token(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let (status, _) = helpers::get_json(&app, "", "/api/auth/me").await;
@@ -211,7 +208,7 @@ async fn get_me_without_token(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_me_with_expired_token(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, _admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
     let token = helpers::admin_login(&app).await;
@@ -233,10 +230,10 @@ async fn get_me_with_expired_token(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_api_token(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
-    let token = helpers::admin_login(&app).await;
+    let token = admin_token;
 
     let (status, body) = helpers::post_json(
         &app,
@@ -256,10 +253,9 @@ async fn create_api_token(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_api_token_scope_escalation_blocked(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
-    let admin_token = helpers::admin_login(&app).await;
     // Create a regular user with viewer role
     let (user_id, user_token) =
         helpers::create_user(&app, &admin_token, "vieweruser", "viewer@test.com").await;
@@ -282,10 +278,10 @@ async fn create_api_token_scope_escalation_blocked(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_and_delete_api_token(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
-    let token = helpers::admin_login(&app).await;
+    let token = admin_token;
 
     // Create a token
     let (status, create_body) = helpers::post_json(
@@ -327,10 +323,8 @@ async fn list_and_delete_api_token(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_own_profile(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-
-    let admin_token = helpers::admin_login(&app).await;
 
     // Get admin user ID
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
@@ -350,10 +344,8 @@ async fn update_own_profile(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn non_human_user_cannot_login(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-
-    let admin_token = helpers::admin_login(&app).await;
 
     // Create a service account (non-human) via admin API
     let (status, _) = helpers::post_json(
@@ -390,9 +382,8 @@ async fn non_human_user_cannot_login(pool: PgPool) {
 /// An expired API token should return 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn expired_api_token_returns_401(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -428,7 +419,7 @@ async fn expired_api_token_returns_401(pool: PgPool) {
 /// Malformed Authorization header (wrong scheme) should return 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn malformed_auth_header_basic_scheme(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     // Basic auth header instead of Bearer
@@ -439,7 +430,7 @@ async fn malformed_auth_header_basic_scheme(pool: PgPool) {
 /// Authorization header with "Bearer " but no token should return 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn auth_header_empty_bearer_token(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let (status, _) = get_with_auth_header(&app, "Bearer ", "/api/auth/me").await;
@@ -450,7 +441,7 @@ async fn auth_header_empty_bearer_token(pool: PgPool) {
 /// (case-sensitive prefix check).
 #[sqlx::test(migrations = "./migrations")]
 async fn auth_header_lowercase_bearer(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let (status, _) = get_with_auth_header(&app, "bearer sometoken", "/api/auth/me").await;
@@ -460,7 +451,7 @@ async fn auth_header_lowercase_bearer(pool: PgPool) {
 /// A completely bogus bearer token (not in any table) returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn bearer_token_not_in_db(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let (status, _) =
@@ -475,7 +466,7 @@ async fn bearer_token_not_in_db(pool: PgPool) {
 /// Valid session cookie should authenticate the user.
 #[sqlx::test(migrations = "./migrations")]
 async fn session_cookie_auth_works(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, _admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
     // Login to get a session token
@@ -498,7 +489,7 @@ async fn session_cookie_auth_works(pool: PgPool) {
 /// Missing session cookie (no Cookie header at all) returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn missing_cookie_header_returns_401(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     // Request with neither Bearer nor Cookie
@@ -515,7 +506,7 @@ async fn missing_cookie_header_returns_401(pool: PgPool) {
 /// Session cookie with empty value should return 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn empty_session_cookie_returns_401(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let (status, _) = get_with_cookie(&app, "", "/api/auth/me").await;
@@ -526,7 +517,7 @@ async fn empty_session_cookie_returns_401(pool: PgPool) {
 /// Invalid session token in cookie (not matching any session in DB) returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn invalid_session_cookie_returns_401(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let (status, _) = get_with_cookie(&app, "plat_bogus_session_token_value", "/api/auth/me").await;
@@ -536,7 +527,7 @@ async fn invalid_session_cookie_returns_401(pool: PgPool) {
 /// Expired session cookie returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn expired_session_cookie_returns_401(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, _admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
     // Login to get a session
@@ -567,10 +558,8 @@ async fn expired_session_cookie_returns_401(pool: PgPool) {
 /// An active API token belonging to a deactivated user should return 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn deactivated_user_api_token_returns_401(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-
-    let admin_token = helpers::admin_login(&app).await;
 
     // Create a user and get their token
     let (user_id, _user_token) =
@@ -617,10 +606,9 @@ async fn deactivated_user_api_token_returns_401(pool: PgPool) {
 /// A session token belonging to a deactivated user should return 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn deactivated_user_session_token_returns_401(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
-    let admin_token = helpers::admin_login(&app).await;
     let (_user_id, user_token) =
         helpers::create_user(&app, &admin_token, "deact-sess", "deactsess@test.com").await;
 
@@ -642,10 +630,9 @@ async fn deactivated_user_session_token_returns_401(pool: PgPool) {
 /// Deactivated user's session cookie should also return 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn deactivated_user_session_cookie_returns_401(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
-    let admin_token = helpers::admin_login(&app).await;
     let (user_id, _) =
         helpers::create_user(&app, &admin_token, "deact-cookie", "deactcookie@test.com").await;
 
@@ -681,7 +668,7 @@ async fn deactivated_user_session_cookie_returns_401(pool: PgPool) {
 /// A service_account with a valid session should be blocked by can_login() check.
 #[sqlx::test(migrations = "./migrations")]
 async fn service_account_bearer_session_blocked(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, _admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
     // Create a service account directly in DB
@@ -721,7 +708,7 @@ async fn service_account_bearer_session_blocked(pool: PgPool) {
 /// A service_account with a session cookie should also be blocked.
 #[sqlx::test(migrations = "./migrations")]
 async fn service_account_cookie_session_blocked(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, _admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
     // Create a service account directly
@@ -764,7 +751,7 @@ async fn service_account_cookie_session_blocked(pool: PgPool) {
 /// The middleware only checks can_login() for session auth, not for API tokens.
 #[sqlx::test(migrations = "./migrations")]
 async fn service_account_api_token_succeeds(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, _admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
     // Create a service account directly
@@ -811,7 +798,7 @@ async fn service_account_api_token_succeeds(pool: PgPool) {
 /// The middleware tries api_tokens first, then falls back to auth_sessions.
 #[sqlx::test(migrations = "./migrations")]
 async fn session_token_as_bearer_fallback(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, _admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
     // Login to get a session token
@@ -837,10 +824,9 @@ async fn session_token_as_bearer_fallback(pool: PgPool) {
 /// Using an API token should update its last_used_at.
 #[sqlx::test(migrations = "./migrations")]
 async fn api_token_updates_last_used_at(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
-    let admin_token = helpers::admin_login(&app).await;
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
 
@@ -902,10 +888,8 @@ async fn api_token_updates_last_used_at(pool: PgPool) {
 /// We verify indirectly by creating a scoped token and attempting an action.
 #[sqlx::test(migrations = "./migrations")]
 async fn scoped_api_token_authenticates(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-
-    let admin_token = helpers::admin_login(&app).await;
 
     // Create a scoped API token via the API
     let (status, create_body) = helpers::post_json(
@@ -934,7 +918,7 @@ async fn scoped_api_token_authenticates(pool: PgPool) {
 /// Session cookie extraction works when mixed with other cookies.
 #[sqlx::test(migrations = "./migrations")]
 async fn session_cookie_among_other_cookies(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, _admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
     // Login to get a session token
@@ -965,7 +949,7 @@ async fn session_cookie_among_other_cookies(pool: PgPool) {
 /// Cookie header present but no "session=" cookie falls through to 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn cookie_header_without_session_returns_401(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let req = Request::builder()
@@ -986,7 +970,7 @@ async fn cookie_header_without_session_returns_401(pool: PgPool) {
 /// After logout, the session token should no longer be valid.
 #[sqlx::test(migrations = "./migrations")]
 async fn logout_invalidates_session(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let token = helpers::admin_login(&app).await;

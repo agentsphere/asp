@@ -10,9 +10,8 @@ use uuid::Uuid;
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_project(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, body) = helpers::post_json(
         &app,
@@ -30,9 +29,8 @@ async fn create_project(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_project_with_visibility(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, body) = helpers::post_json(
         &app,
@@ -48,9 +46,8 @@ async fn create_project_with_visibility(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_project_invalid_name(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, _) = helpers::post_json(
         &app,
@@ -65,9 +62,8 @@ async fn create_project_invalid_name(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_project_empty_name(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, _) = helpers::post_json(
         &app,
@@ -82,9 +78,8 @@ async fn create_project_empty_name(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_project_name_too_long(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let long_name = "a".repeat(256);
     let (status, _) = helpers::post_json(
@@ -100,9 +95,8 @@ async fn create_project_name_too_long(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_project_duplicate_name(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     helpers::create_project(&app, &admin_token, "dupe-proj", "private").await;
 
@@ -119,9 +113,8 @@ async fn create_project_duplicate_name(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_project_by_id(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "getproj", "private").await;
 
@@ -134,9 +127,8 @@ async fn get_project_by_id(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_nonexistent_project(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let random_id = Uuid::new_v4();
     let (status, _) =
@@ -147,9 +139,8 @@ async fn get_nonexistent_project(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_project(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "updateproj", "private").await;
 
@@ -171,9 +162,8 @@ async fn update_project(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_project_soft_delete(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "delproj", "private").await;
 
@@ -190,9 +180,8 @@ async fn delete_project_soft_delete(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_projects_pagination(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     for i in 0..5 {
         helpers::create_project(&app, &admin_token, &format!("pagproj{i}"), "public").await;
@@ -208,9 +197,8 @@ async fn list_projects_pagination(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_projects_pagination_offset(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     for i in 0..5 {
         helpers::create_project(&app, &admin_token, &format!("offproj{i}"), "public").await;
@@ -243,9 +231,8 @@ async fn list_projects_pagination_offset(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn private_project_hidden_from_non_owner(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "secret-proj", "private").await;
 
@@ -261,9 +248,8 @@ async fn private_project_hidden_from_non_owner(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn public_project_visible_to_all(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "open-proj", "public").await;
 
@@ -278,9 +264,8 @@ async fn public_project_visible_to_all(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn project_owner_has_implicit_access(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Give user project:write so they can create projects
     let (user_id, user_token) =
@@ -307,9 +292,8 @@ async fn project_owner_has_implicit_access(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_project_requires_permission(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "nodel-proj", "public").await;
 

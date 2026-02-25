@@ -15,8 +15,8 @@ just deny           # cargo deny check
 just check          # fmt + lint + deny
 just test           # cargo nextest run (all tests)
 just test-unit      # cargo nextest run --lib (unit only, no DB)
-just test-integration  # integration tests (requires DB)
-just test-e2e       # E2E tests (requires Kind cluster, run-ignored)
+just test-integration  # integration tests (ephemeral Kind services)
+just test-e2e       # E2E tests (ephemeral Kind services, run-ignored)
 just test-doc       # cargo test --doc
 just ui             # build Preact SPA (esbuild)
 just db-add <name>  # create new migration
@@ -572,100 +572,85 @@ platform::main
 
 ## Testing Standards
 
-Full testing guide: `docs/testing.md`.
+Full testing guide: `docs/testing.md`. Frontend-backend testing: `docs/fe-be-testing.md`.
+
+### MANDATORY: Run all tests before finishing
+
+**Before considering any code change complete, you MUST run all three test tiers and verify they pass:**
+
+```bash
+just ci-full          # fmt + lint + deny + test-unit + test-integration + test-e2e + build
+```
+
+If `just ci-full` is too slow for iterative development, run at minimum:
+```bash
+just test-unit        # fast (~1s), run after every code change
+just test-integration # after API/DB/auth changes (~2.5 min, requires Kind cluster)
+just test-e2e         # after K8s/pipeline/deployer/agent/git/webhook changes (~2.5 min)
+```
+
+**Never skip E2E tests.** They catch real issues that unit and integration tests miss (K8s pod behavior, git operations, webhook delivery, cross-service interactions). If any tier fails, fix the issue before declaring the work done.
 
 ### Testing pyramid
 
-1. **Unit tests** (442 tests, fast, no I/O) — `#[cfg(test)] mod tests` in source files. Run: `just test-unit`.
-2. **Integration tests** (real DB) — `tests/*_integration.rs` with `#[sqlx::test]`. Run: `just test-integration`.
-3. **E2E tests** (40 tests, Kind cluster) — `tests/e2e_*.rs` (marked `#[ignore]`). Run: `just test-e2e`.
+| Tier | Count | Runtime | Infra | Command | When to run |
+|---|---|---|---|---|---|
+| Unit | 716 | ~1s | None | `just test-unit` | Every code change |
+| Integration | 574 | ~2.5 min | Kind cluster | `just test-integration` | API/DB/auth changes |
+| E2E | 49 | ~2.5 min | Kind cluster | `just test-e2e` | K8s/pipeline/deploy/git/webhook changes |
+| FE-BE | 33+ | ~30s | Kind cluster | `just test-integration` / `just types` | API response shape changes |
 
-### E2E test infrastructure
+### Test helpers — integration (`tests/helpers/mod.rs`)
 
-**Prerequisites**: Kind cluster with Postgres, Valkey, MinIO (buckets: `platform`, `platform-e2e`), plus e2e namespaces. Set up with `just cluster-up`.
+- `test_state(pool: PgPool) -> (AppState, String)` — builds full state with real Valkey, MinIO, dummy K8s. Returns `(state, admin_token)`. The admin API token is created directly in the DB, bypassing the login endpoint's rate limiter.
+- `test_router(state: AppState) -> Router` — merges API + observe + registry routers.
+- `admin_login(&app) -> String` — login via POST `/api/auth/login`. Only for tests that test login/session behavior (~2 tests). All other tests use the pre-created `admin_token` from `test_state()`.
+- `create_user(&app, token, name, email) -> (Uuid, String)` — create user + login.
+- `assign_role(&app, token, user_id, role, project_id, &pool)` — assign role.
+- `get_json`, `post_json`, `patch_json`, `put_json`, `delete_json` — HTTP helpers with bearer auth.
 
-**Key requirement**: Git repos must be created under `/tmp/platform-e2e/` (shared mount between host and Kind node). The helpers `create_bare_repo()` and `create_working_copy()` handle this automatically.
+### Test helpers — E2E (`tests/e2e_helpers/mod.rs`)
 
-E2E tests in `tests/e2e_helpers/mod.rs` provide:
-- `e2e_state(pool)` — real K8s, MinIO (bucket: `platform-e2e`), Valkey, Postgres
-- `test_router(state)` — full API router with `.with_state(state)`
-- Auth helpers: `admin_login()`, `create_user()`, `assign_role()`
-- Git helpers: `create_bare_repo()`, `create_working_copy()`, `git_cmd()`
-- K8s helpers: `wait_for_pod()`, `cleanup_k8s()`, `poll_pipeline_status()`
-- HTTP helpers: `get_json()`, `post_json()`, `patch_json()`, `delete_json()`, `get_bytes()`
+- `e2e_state(pool: PgPool) -> (AppState, String)` — full state with real K8s, MinIO (bucket: `platform-e2e`), Valkey. Returns `(state, admin_token)`.
+- `test_router(state: AppState) -> Router` — full API router.
+- Git: `create_bare_repo()`, `create_working_copy()`, `git_cmd()`.
+- K8s: `wait_for_pod()`, `cleanup_k8s()`, `poll_pipeline_status()`.
 
-E2E test files (40 tests total):
-- `e2e_pipeline.rs` (10) — pipeline trigger, execution, multi-step, cancel, logs, MinIO, artifacts
-- `e2e_agent.rs` (8) — session lifecycle, identity, pod specs, provider config, cleanup
-- `e2e_deployer.rs` (8) — deployment CRUD, status transitions, rollback, preview envs
-- `e2e_git.rs` (8) — bare repo init, push, clone, branches, commits, tree, blob, MR merge
-- `e2e_webhook.rs` (6) — webhook dispatch, HMAC signing, pipeline events, concurrency, timeout
-
-### E2E test patterns
-
-**Pipeline tests must spawn an executor** — the test router doesn't include the background executor:
+### Integration test pattern
 
 ```rust
-struct ExecutorGuard { shutdown_tx: watch::Sender<()>, handle: JoinHandle<()> }
-impl ExecutorGuard {
-    fn spawn(state: &AppState) -> Self {
-        let (shutdown_tx, shutdown_rx) = watch::channel(());
-        let handle = tokio::spawn(platform::pipeline::executor::run(state.clone(), shutdown_rx));
-        Self { shutdown_tx, handle }
-    }
+#[sqlx::test(migrations = "./migrations")]
+async fn my_test(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state.clone());
+    let (status, body) = helpers::get_json(&app, &admin_token, "/api/my-endpoint").await;
+    assert_eq!(status, StatusCode::OK);
 }
-// Usage: let _executor = ExecutorGuard::spawn(&state);
-// After trigger: state.pipeline_notify.notify_one();
 ```
 
-**`.platform.yaml` must use `pipeline:` wrapper** — matches `PipelineFile` struct:
+### Critical test patterns
 
-```yaml
-pipeline:
-  steps:
-    - name: test
-      image: alpine:3.19
-      commands:
-        - echo hello
-```
+**No FLUSHDB** — test helpers never call FLUSHDB on Valkey. All Valkey keys are UUID-scoped and never collide between parallel tests. The admin token bypasses the only shared key (`rate:login:admin`).
 
-**SSRF blocks localhost webhook URLs** — insert webhooks directly into DB in tests, bypassing API validation:
-
+**Pipeline tests must spawn an executor** — the test router doesn't include background tasks:
 ```rust
-sqlx::query("INSERT INTO webhooks (id, project_id, url, events, is_active) VALUES ($1,$2,$3,$4,true)")
-    .bind(webhook_id).bind(project_id).bind(&wiremock_url).bind(&["push"]).execute(&pool).await?;
+let _executor = ExecutorGuard::spawn(&state);
+state.pipeline_notify.notify_one();  // wake executor after trigger
 ```
 
-**Use dynamic queries in test files** — avoid `sqlx::query!` macros in `tests/` to prevent stale `.sqlx/` cache issues. Use `sqlx::query()` / `sqlx::query_as()` instead.
+**SSRF blocks localhost webhook URLs** — insert webhooks directly into DB in tests.
 
-### Running E2E tests
+**Use dynamic queries in test files** — `sqlx::query()` not `sqlx::query!()` in `tests/`.
 
-```bash
-# Full setup (one-time)
-just cluster-up                    # Kind + Postgres + Valkey + MinIO + namespaces + buckets
-just db-migrate                    # Apply migrations (against Kind Postgres at localhost:5432)
-
-# Run all E2E tests
-just test-e2e                      # or: cargo nextest run --test 'e2e_*' --run-ignored ignored-only --test-threads 2
-
-# Run specific E2E test file or test
-KUBECONFIG=$HOME/.kube/kind-platform DATABASE_URL="postgres://platform:dev@127.0.0.1:5432/platform_dev" \
-  SQLX_OFFLINE=true cargo nextest run --run-ignored=only --test e2e_pipeline -E 'test(step_logs_captured)'
-```
+**Git repos under `/tmp/platform-e2e/`** — shared mount between host and Kind node.
 
 ### When to write tests first (TDD)
 
-- State machine transitions
-- Permission resolution logic
-- Parsers (OTLP protobuf, pipeline definitions)
-- Encryption/hashing round-trips
-- Business rules (webhook filtering, alert conditions)
+State machine transitions, permission resolution, parsers, encryption round-trips, business rules.
 
 ### When tests come alongside
 
-- HTTP handler wiring
-- Database CRUD
-- Integration glue (WebSocket setup, K8s client wiring)
+HTTP handler wiring, database CRUD, integration glue.
 
 ## API Design
 
@@ -724,7 +709,7 @@ pub struct ListResponse<T: serde::Serialize> {
 
 ## Git Workflow
 
-- Run `just ci` before pushing
+- Run `just ci-full` before pushing (includes E2E tests)
 - Pre-commit hooks enforce `rustfmt --check` and `clippy`
 - Never commit `.env` (gitignored), update `.env.example` for new vars
 - Commit `Cargo.lock` (binary project)

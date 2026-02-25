@@ -33,9 +33,8 @@ async fn insert_notification(
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_notifications_empty(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/notifications").await;
 
@@ -46,9 +45,8 @@ async fn list_notifications_empty(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_notifications_with_data(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Get admin user ID
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
@@ -67,9 +65,8 @@ async fn list_notifications_with_data(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_notifications_pagination(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -87,9 +84,8 @@ async fn list_notifications_pagination(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_notifications_filter_status(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -108,9 +104,8 @@ async fn list_notifications_filter_status(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_notifications_filter_type(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -128,9 +123,8 @@ async fn list_notifications_filter_type(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn unread_count(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -148,9 +142,8 @@ async fn unread_count(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mark_notification_read(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -176,9 +169,8 @@ async fn mark_notification_read(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mark_already_read_notification(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -199,9 +191,8 @@ async fn mark_already_read_notification(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn notification_scoped_to_user(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Create another user
     let (_, user_token) =
@@ -222,9 +213,8 @@ async fn notification_scoped_to_user(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn cannot_mark_other_users_notification(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, me_admin) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me_admin["id"].as_str().unwrap()).unwrap();
@@ -253,9 +243,8 @@ async fn cannot_mark_other_users_notification(pool: PgPool) {
 /// notify() with InApp channel creates a row with status='sent'.
 #[sqlx::test(migrations = "./migrations")]
 async fn notify_in_app_creates_row(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -290,9 +279,8 @@ async fn notify_in_app_creates_row(pool: PgPool) {
 /// on_build_complete with "failure" creates a notification for the project owner.
 #[sqlx::test(migrations = "./migrations")]
 async fn on_build_failed_notifies_owner(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
 
     let proj_id = helpers::create_project(&app, &admin_token, "fail-proj", "private").await;
 
@@ -316,9 +304,8 @@ async fn on_build_failed_notifies_owner(pool: PgPool) {
 /// on_build_complete with "success" does NOT create a notification.
 #[sqlx::test(migrations = "./migrations")]
 async fn on_build_success_skips_notification(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
 
     let proj_id = helpers::create_project(&app, &admin_token, "success-proj", "private").await;
 
@@ -340,9 +327,8 @@ async fn on_build_success_skips_notification(pool: PgPool) {
 /// on_mr_created creates a notification for the project owner.
 #[sqlx::test(migrations = "./migrations")]
 async fn on_mr_created_notifies_owner(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
 
     let proj_id = helpers::create_project(&app, &admin_token, "mr-proj", "private").await;
 
@@ -365,9 +351,8 @@ async fn on_mr_created_notifies_owner(pool: PgPool) {
 /// on_deploy_status creates a notification for the project owner.
 #[sqlx::test(migrations = "./migrations")]
 async fn on_deploy_status_notifies_owner(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
 
     let proj_id = helpers::create_project(&app, &admin_token, "deploy-notif-proj", "private").await;
 
@@ -390,9 +375,8 @@ async fn on_deploy_status_notifies_owner(pool: PgPool) {
 /// on_alert_firing creates a notification for the given user.
 #[sqlx::test(migrations = "./migrations")]
 async fn on_alert_firing_notifies_user(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -425,9 +409,8 @@ async fn on_alert_firing_notifies_user(pool: PgPool) {
 /// notify() with Email channel and no SMTP → status='sent' (email::send returns Ok when unconfigured).
 #[sqlx::test(migrations = "./migrations")]
 async fn notify_email_channel_without_smtp(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -466,9 +449,8 @@ async fn notify_email_channel_without_smtp(pool: PgPool) {
 /// on_agent_completed creates a notification for the given user.
 #[sqlx::test(migrations = "./migrations")]
 async fn on_agent_completed_notifies_user(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();

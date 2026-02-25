@@ -10,9 +10,8 @@ use sqlx::PgPool;
 
 #[sqlx::test(migrations = "./migrations")]
 async fn set_provider_key(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, _) = helpers::put_json(
         &app,
@@ -27,9 +26,8 @@ async fn set_provider_key(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn set_provider_key_invalid_name(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, _) = helpers::put_json(
         &app,
@@ -44,9 +42,8 @@ async fn set_provider_key_invalid_name(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn set_provider_key_short_key(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, _) = helpers::put_json(
         &app,
@@ -61,9 +58,8 @@ async fn set_provider_key_short_key(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_provider_keys_empty(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/users/me/provider-keys").await;
 
@@ -73,9 +69,8 @@ async fn list_provider_keys_empty(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_provider_keys_after_set(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     helpers::put_json(
         &app,
@@ -95,9 +90,8 @@ async fn list_provider_keys_after_set(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_provider_key(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Set key first
     helpers::put_json(
@@ -120,9 +114,8 @@ async fn delete_provider_key(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_provider_key_not_found(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, _) = helpers::delete_json(
         &app,
@@ -136,9 +129,8 @@ async fn delete_provider_key_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn set_provider_key_overwrites(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Set key
     helpers::put_json(
@@ -170,9 +162,8 @@ async fn set_provider_key_overwrites(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn set_provider_key_too_long(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // api_key max is 500 chars; send 501
     let long_key = "x".repeat(501);
@@ -193,9 +184,8 @@ async fn set_provider_key_too_long(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_shows_key_suffix_not_raw_key(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     helpers::put_json(
         &app,
@@ -223,9 +213,8 @@ async fn list_shows_key_suffix_not_raw_key(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_multiple_providers(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Set keys for two different providers
     helpers::put_json(
@@ -264,9 +253,8 @@ async fn list_multiple_providers(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_includes_timestamps(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     helpers::put_json(
         &app,
@@ -291,9 +279,8 @@ async fn list_includes_timestamps(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn keys_are_per_user(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Create a second user
     let (_user2_id, user2_token) =
@@ -337,7 +324,7 @@ async fn keys_are_per_user(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn unauthenticated_list_rejected(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let (status, _) = helpers::get_json(&app, "", "/api/users/me/provider-keys").await;
@@ -346,7 +333,7 @@ async fn unauthenticated_list_rejected(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn unauthenticated_set_rejected(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let (status, _) = helpers::put_json(
@@ -362,7 +349,7 @@ async fn unauthenticated_set_rejected(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn unauthenticated_delete_rejected(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let (status, _) = helpers::delete_json(&app, "", "/api/users/me/provider-keys/anthropic").await;
@@ -375,9 +362,8 @@ async fn unauthenticated_delete_rejected(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn validate_key_returns_structured_response(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Validate with a fake key — will fail because it's not a real Anthropic key,
     // but the endpoint should return 200 with { valid: false, error: "..." }
@@ -396,9 +382,8 @@ async fn validate_key_returns_structured_response(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn validate_key_short_key_rejected(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Key shorter than 10 chars should fail validation check
     let (status, _) = helpers::post_json(
@@ -414,7 +399,7 @@ async fn validate_key_short_key_rejected(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn validate_key_unauthenticated_rejected(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
     let (status, _) = helpers::post_json(
@@ -434,9 +419,8 @@ async fn validate_key_unauthenticated_rejected(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn overwrite_updates_key_suffix(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Set initial key ending in "AAAA"
     helpers::put_json(
@@ -469,9 +453,8 @@ async fn overwrite_updates_key_suffix(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_invalid_provider_name(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, _) = helpers::delete_json(
         &app,

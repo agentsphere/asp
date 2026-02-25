@@ -7,8 +7,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use helpers::{
-    admin_login, assign_role, create_project, create_user, set_user_api_key, test_router,
-    test_state,
+    assign_role, create_project, create_user, set_user_api_key, test_router, test_state,
 };
 
 // ---------------------------------------------------------------------------
@@ -18,9 +17,8 @@ use helpers::{
 /// Empty DB → all zeros.
 #[sqlx::test(migrations = "./migrations")]
 async fn dashboard_stats_empty(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/dashboard/stats").await;
 
@@ -37,9 +35,8 @@ async fn dashboard_stats_empty(pool: PgPool) {
 /// With data inserted → stats reflect counts.
 #[sqlx::test(migrations = "./migrations")]
 async fn dashboard_stats_with_data(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Create a project (adds 1 to project count)
     let proj_id = create_project(&app, &admin_token, "dash-proj", "private").await;
@@ -71,9 +68,8 @@ async fn dashboard_stats_with_data(pool: PgPool) {
 /// Creating a project generates an audit entry visible via /api/audit-log.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_audit_log(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Creating a project should write an audit entry
     create_project(&app, &admin_token, "audit-proj", "private").await;
@@ -107,9 +103,8 @@ async fn list_audit_log(pool: PgPool) {
 /// Fresh user with no projects or provider keys → needs_onboarding = true.
 #[sqlx::test(migrations = "./migrations")]
 async fn onboarding_status_fresh_user(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_user_id, token) = create_user(&app, &admin_token, "newbie", "newbie@test.com").await;
 
@@ -124,9 +119,8 @@ async fn onboarding_status_fresh_user(pool: PgPool) {
 /// User with a project → has_projects = true.
 #[sqlx::test(migrations = "./migrations")]
 async fn onboarding_status_with_project(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Admin already has projects if they create one
     create_project(&app, &admin_token, "onboard-proj", "private").await;
@@ -140,9 +134,8 @@ async fn onboarding_status_with_project(pool: PgPool) {
 /// User with API key but no projects → needs_onboarding = true (new behavior).
 #[sqlx::test(migrations = "./migrations")]
 async fn onboarding_status_with_key_but_no_projects(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (user_id, token) = create_user(&app, &admin_token, "haskey", "haskey@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
@@ -160,9 +153,8 @@ async fn onboarding_status_with_key_but_no_projects(pool: PgPool) {
 /// User with API key AND a project → needs_onboarding = false.
 #[sqlx::test(migrations = "./migrations")]
 async fn onboarding_status_with_key_and_project(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (user_id, token) = create_user(&app, &admin_token, "fulluser", "full@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;

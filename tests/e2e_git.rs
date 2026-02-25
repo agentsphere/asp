@@ -15,9 +15,9 @@ use sqlx::PgPool;
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn bare_repo_init_on_project_create(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = e2e_helpers::create_project(&app, &token, "git-init-test", "private").await;
 
@@ -59,9 +59,9 @@ async fn bare_repo_init_on_project_create(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn smart_http_push(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let _project_id = e2e_helpers::create_project(&app, &token, "push-test", "private").await;
 
@@ -97,9 +97,9 @@ async fn smart_http_push(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn smart_http_clone(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let _project_id = e2e_helpers::create_project(&app, &token, "clone-test", "public").await;
 
@@ -127,9 +127,9 @@ async fn smart_http_clone(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn branch_listing(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = e2e_helpers::create_project(&app, &token, "branch-list", "public").await;
 
@@ -184,9 +184,9 @@ async fn branch_listing(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn tree_browsing(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = e2e_helpers::create_project(&app, &token, "tree-browse", "public").await;
 
@@ -232,9 +232,9 @@ async fn tree_browsing(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn blob_content(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = e2e_helpers::create_project(&app, &token, "blob-test", "public").await;
 
@@ -271,9 +271,9 @@ async fn blob_content(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn commit_history(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = e2e_helpers::create_project(&app, &token, "commit-log", "public").await;
 
@@ -323,9 +323,9 @@ async fn commit_history(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn merge_request_merge(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = e2e_helpers::create_project(&app, &token, "mr-merge", "private").await;
 

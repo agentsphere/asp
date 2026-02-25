@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use helpers::{admin_login, create_project, create_user, test_router, test_state};
+use helpers::{create_project, create_user, test_router, test_state};
 
 /// Insert a session row directly (bypasses K8s pod creation).
 async fn insert_session(
@@ -51,9 +51,8 @@ async fn insert_message(pool: &PgPool, session_id: Uuid, role: &str, content: &s
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_sessions_empty(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "sess-empty", "private").await;
 
@@ -70,9 +69,8 @@ async fn list_sessions_empty(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_sessions_with_data(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -94,9 +92,8 @@ async fn list_sessions_with_data(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_sessions_filter_by_status(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -132,9 +129,8 @@ async fn list_sessions_filter_by_status(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_session_detail_includes_messages(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -160,9 +156,8 @@ async fn get_session_detail_includes_messages(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_session_wrong_project_returns_404(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -187,9 +182,8 @@ async fn get_session_wrong_project_returns_404(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn stop_session_updates_status(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -217,9 +211,8 @@ async fn stop_session_updates_status(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn stop_session_wrong_project_returns_404(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -244,9 +237,8 @@ async fn stop_session_wrong_project_returns_404(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_sessions_requires_project_read(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "sess-perm", "private").await;
     let (_uid, user_token) =
@@ -264,9 +256,8 @@ async fn list_sessions_requires_project_read(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_children_empty(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -290,9 +281,8 @@ async fn list_children_empty(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_sessions_pagination(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -334,9 +324,8 @@ async fn get_admin_id(app: &axum::Router, token: &str) -> Uuid {
 /// Spawning a child session from a running parent succeeds.
 #[sqlx::test(migrations = "./migrations")]
 async fn spawn_child_session(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let admin_id = get_admin_id(&app, &admin_token).await;
 
     let project_id = create_project(&app, &admin_token, "spawn-proj", "private").await;
@@ -367,9 +356,8 @@ async fn spawn_child_session(pool: PgPool) {
 /// Spawning at max depth (5) is rejected.
 #[sqlx::test(migrations = "./migrations")]
 async fn spawn_child_max_depth_rejected(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let admin_id = get_admin_id(&app, &admin_token).await;
 
     let project_id = create_project(&app, &admin_token, "spawn-depth", "private").await;
@@ -404,9 +392,8 @@ async fn spawn_child_max_depth_rejected(pool: PgPool) {
 /// Spawning under wrong project returns 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn spawn_child_wrong_project_404(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let admin_id = get_admin_id(&app, &admin_token).await;
 
     let project_a = create_project(&app, &admin_token, "spawn-a", "private").await;
@@ -431,9 +418,8 @@ async fn spawn_child_wrong_project_404(pool: PgPool) {
 /// Send message to a non-running session returns 400.
 #[sqlx::test(migrations = "./migrations")]
 async fn send_message_global_not_running(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let admin_id = get_admin_id(&app, &admin_token).await;
 
     let project_id = create_project(&app, &admin_token, "msg-notrun", "private").await;
@@ -453,9 +439,8 @@ async fn send_message_global_not_running(pool: PgPool) {
 /// Send message to nonexistent session returns 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn send_message_global_not_found(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let fake_id = Uuid::new_v4();
     let (status, _) = helpers::post_json(
@@ -471,9 +456,8 @@ async fn send_message_global_not_found(pool: PgPool) {
 /// Non-owner cannot send a message via the global endpoint.
 #[sqlx::test(migrations = "./migrations")]
 async fn send_message_global_non_owner_forbidden(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let admin_id = get_admin_id(&app, &admin_token).await;
 
     let project_id = create_project(&app, &admin_token, "msg-forbid", "private").await;
@@ -498,9 +482,8 @@ async fn send_message_global_non_owner_forbidden(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_session_link_project(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let admin_id = get_admin_id(&app, &admin_token).await;
 
     // Create a project-less session
@@ -531,9 +514,8 @@ async fn update_session_link_project(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_session_non_owner_forbidden(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let admin_id = get_admin_id(&app, &admin_token).await;
 
     let session_id = Uuid::new_v4();
@@ -566,9 +548,8 @@ async fn update_session_non_owner_forbidden(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_session_invalid_project(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let admin_id = get_admin_id(&app, &admin_token).await;
 
     let session_id = Uuid::new_v4();
@@ -599,9 +580,8 @@ async fn update_session_invalid_project(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn send_message_project_scoped_wrong_project(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let admin_id = get_admin_id(&app, &admin_token).await;
 
     let project_a = create_project(&app, &admin_token, "msg-proj-a", "private").await;
@@ -621,9 +601,8 @@ async fn send_message_project_scoped_wrong_project(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn send_message_project_scoped_non_owner(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let admin_id = get_admin_id(&app, &admin_token).await;
 
     let project_id = create_project(&app, &admin_token, "msg-perm", "public").await;
@@ -646,9 +625,8 @@ async fn send_message_project_scoped_non_owner(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn send_message_project_scoped_empty_content(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let admin_id = get_admin_id(&app, &admin_token).await;
 
     let project_id = create_project(&app, &admin_token, "msg-empty", "private").await;
@@ -670,9 +648,8 @@ async fn send_message_project_scoped_empty_content(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_session_invalid_provider(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let project_id = create_project(&app, &admin_token, "sess-bad-prov", "private").await;
 
     // Provider too long
@@ -692,9 +669,8 @@ async fn create_session_invalid_provider(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_session_empty_prompt(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let project_id = create_project(&app, &admin_token, "sess-no-prompt", "private").await;
 
     let (status, _) = helpers::post_json(
@@ -709,9 +685,8 @@ async fn create_session_empty_prompt(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_session_with_browser_wrong_role(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let project_id = create_project(&app, &admin_token, "sess-browser", "private").await;
 
     let (status, _) = helpers::post_json(
@@ -733,9 +708,8 @@ async fn create_session_with_browser_wrong_role(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn stop_session_non_owner_forbidden(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let admin_id = get_admin_id(&app, &admin_token).await;
 
     let project_id = create_project(&app, &admin_token, "sess-stop-perm", "public").await;

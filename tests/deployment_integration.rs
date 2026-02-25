@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use helpers::{admin_login, assign_role, create_project, create_user, test_router, test_state};
+use helpers::{assign_role, create_project, create_user, test_router, test_state};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -75,9 +75,8 @@ async fn setup_history(pool: &PgPool, deployment_id: Uuid, image_ref: &str, acti
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_deployments(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "deploy-list", "private").await;
     setup_deployment(&pool, project_id, "staging", "app:v1").await;
@@ -96,9 +95,8 @@ async fn list_deployments(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_deployment_by_env(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "deploy-get", "private").await;
     setup_deployment(&pool, project_id, "staging", "myapp:v3").await;
@@ -116,9 +114,8 @@ async fn get_deployment_by_env(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_deployment_not_found(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "deploy-nf", "private").await;
 
@@ -134,9 +131,8 @@ async fn get_deployment_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_deployment_image(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "deploy-upd", "private").await;
     setup_deployment(&pool, project_id, "staging", "app:old").await;
@@ -154,9 +150,8 @@ async fn update_deployment_image(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_deployment_desired_status(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "deploy-stop", "private").await;
     setup_deployment(&pool, project_id, "staging", "app:v1").await;
@@ -174,9 +169,8 @@ async fn update_deployment_desired_status(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_deployment_validation(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "deploy-val", "private").await;
     setup_deployment(&pool, project_id, "staging", "app:v1").await;
@@ -194,9 +188,8 @@ async fn update_deployment_validation(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn rollback_deployment(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "deploy-rb", "private").await;
     setup_deployment(&pool, project_id, "staging", "app:v2").await;
@@ -214,9 +207,8 @@ async fn rollback_deployment(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_deployment_history(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "deploy-hist", "private").await;
     let deploy_id = setup_deployment(&pool, project_id, "staging", "app:v1").await;
@@ -240,9 +232,8 @@ async fn list_deployment_history(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn deployment_read_requires_permission(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "deploy-perm-r", "private").await;
     setup_deployment(&pool, project_id, "staging", "app:v1").await;
@@ -265,9 +256,8 @@ async fn deployment_read_requires_permission(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn deployment_update_requires_deploy_promote(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "deploy-perm-w", "private").await;
     setup_deployment(&pool, project_id, "staging", "app:v1").await;
@@ -287,9 +277,8 @@ async fn deployment_update_requires_deploy_promote(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn deployment_rollback_requires_deploy_promote(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "deploy-perm-rb", "private").await;
     setup_deployment(&pool, project_id, "staging", "app:v1").await;
@@ -313,9 +302,8 @@ async fn deployment_rollback_requires_deploy_promote(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_previews(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "preview-list", "private").await;
     setup_preview(&pool, project_id, "feat-login", "app:feat-login").await;
@@ -334,9 +322,8 @@ async fn list_previews(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_preview_by_slug(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "preview-get", "private").await;
     setup_preview(&pool, project_id, "feat-x", "app:feat-x").await;
@@ -353,9 +340,8 @@ async fn get_preview_by_slug(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_preview(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "preview-del", "private").await;
     setup_preview(&pool, project_id, "feat-del", "app:feat-del").await;
@@ -384,9 +370,8 @@ async fn delete_preview(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_ops_repo(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, body) = helpers::post_json(
         &app,
@@ -415,9 +400,8 @@ async fn create_ops_repo(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_and_get_ops_repo(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, body) = helpers::post_json(
         &app,
@@ -454,9 +438,8 @@ async fn list_and_get_ops_repo(pool: PgPool) {
 /// finalize_success updates deployment to healthy and writes history.
 #[sqlx::test(migrations = "./migrations")]
 async fn finalize_success_updates_deployment(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state.clone());
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "finalize-ok", "private").await;
     let deploy_id = setup_deployment(&pool, project_id, "staging", "app:v3").await;
@@ -504,9 +487,8 @@ async fn finalize_success_updates_deployment(pool: PgPool) {
 /// mark_failed updates deployment to failed and writes failure history.
 #[sqlx::test(migrations = "./migrations")]
 async fn mark_failed_updates_status(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state.clone());
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "mark-fail", "private").await;
     let deploy_id = setup_deployment(&pool, project_id, "production", "app:broken").await;

@@ -91,25 +91,54 @@ See `plans/unified-platform.md` for the full architecture and `plans/01-foundati
 ## Commands
 
 ```bash
-just watch          # bacon file watcher
-just run            # cargo run
-just fmt            # cargo fmt
-just lint           # cargo clippy --all-features -- -D warnings
-just deny           # cargo deny check
-just check          # fmt + lint + deny
-just test           # cargo nextest run (all tests)
-just test-unit      # unit tests only (no DB)
-just test-doc       # doc tests
-just db-add <name>  # create new migration
-just db-migrate     # apply migrations
-just db-revert      # revert last migration
-just db-prepare     # regenerate .sqlx/ offline cache
-just build          # UI + release build
-just docker <tag>   # docker build
-just ci             # full local CI: fmt lint deny test-unit build
-just cluster-up     # create kind cluster + Postgres + Valkey + MinIO
-just cluster-down   # destroy kind cluster
+just watch              # bacon file watcher
+just run                # cargo run
+just fmt                # cargo fmt
+just lint               # cargo clippy --all-features -- -D warnings
+just deny               # cargo deny check
+just check              # fmt + lint + deny
+just test               # cargo nextest run (all tests)
+just test-unit          # unit tests only (no DB) — 716 tests, ~1s
+just test-integration   # integration tests (ephemeral Kind services) — 574 tests, ~2.5 min
+just test-e2e           # E2E tests (ephemeral Kind services) — 49 tests, ~2.5 min
+just test-ui            # Playwright browser tests (requires running server)
+just test-doc           # doc tests
+just test-cleanup       # delete stale test namespaces
+just types              # regenerate TypeScript types from Rust (ts-rs)
+just db-add <name>      # create new migration
+just db-migrate         # apply migrations
+just db-revert          # revert last migration
+just db-prepare         # regenerate .sqlx/ offline cache
+just build              # UI + release build
+just docker <tag>       # docker build
+just ci                 # full local CI: fmt lint deny test-unit test-integration build
+just ci-full            # ci + E2E tests (the full verification suite)
+just cov-unit           # unit test coverage
+just cov-integration    # integration test coverage (ephemeral Kind services)
+just cov-total          # combined coverage: unit + integration + E2E
+just cov-html           # unit coverage as HTML report
+just cluster-up         # create kind cluster + Postgres + Valkey + MinIO
+just cluster-down       # destroy kind cluster
 ```
+
+## Testing
+
+Three-tier testing pyramid with 1,339 total tests:
+
+| Tier | Tests | Runtime | Requires | Command |
+|------|-------|---------|----------|---------|
+| Unit | 716 | ~1s | Nothing | `just test-unit` |
+| Integration | 574 | ~2.5 min | Kind cluster | `just test-integration` |
+| E2E | 49 | ~2.5 min | Kind cluster | `just test-e2e` |
+
+All integration and E2E tests run against ephemeral services (Postgres, Valkey, MinIO) deployed in isolated Kind namespaces. No manual setup beyond `just cluster-up` (one-time).
+
+```bash
+just cluster-up       # one-time: create Kind cluster
+just ci-full          # run everything: fmt, lint, deny, unit, integration, E2E, build
+```
+
+See [`docs/testing.md`](docs/testing.md) for the full testing guide and [`docs/fe-be-testing.md`](docs/fe-be-testing.md) for frontend-backend type safety testing.
 
 ## Configuration
 

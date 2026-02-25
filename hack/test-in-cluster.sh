@@ -9,29 +9,48 @@
 #   bash hack/test-in-cluster.sh                          # integration tests
 #   bash hack/test-in-cluster.sh --filter '*_integration' # specific filter
 #   bash hack/test-in-cluster.sh --type e2e               # E2E tests
+#   bash hack/test-in-cluster.sh --type total              # all tiers with coverage
 #   bash hack/test-in-cluster.sh --threads 4              # custom parallelism
+#   bash hack/test-in-cluster.sh --coverage               # with coverage instrumentation
+#   bash hack/test-in-cluster.sh --coverage --lcov out.lcov  # coverage → LCOV file
 
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────
 TEST_FILTER="*_integration"
-TEST_TYPE="integration"   # "integration" or "e2e"
+TEST_TYPE="integration"   # "integration", "e2e", or "total"
 TEST_THREADS=""
 KIND_CLUSTER="platform"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Coverage options
+COVERAGE_MODE=false
+LCOV_PATH=""
+COV_NO_REPORT=false
+COV_CLEAN=false
+
 # ── Parse arguments ───────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --filter)     TEST_FILTER="$2"; shift 2 ;;
-    --type)       TEST_TYPE="$2"; shift 2 ;;
-    --threads)    TEST_THREADS="$2"; shift 2 ;;
-    *)            echo "Unknown arg: $1"; exit 1 ;;
+    --filter)       TEST_FILTER="$2"; shift 2 ;;
+    --type)         TEST_TYPE="$2"; shift 2 ;;
+    --threads)      TEST_THREADS="$2"; shift 2 ;;
+    --coverage)     COVERAGE_MODE=true; shift ;;
+    --lcov)         LCOV_PATH="$2"; shift 2 ;;
+    --cov-no-report) COV_NO_REPORT=true; COVERAGE_MODE=true; shift ;;
+    --cov-clean)    COV_CLEAN=true; shift ;;
+    *)              echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
 
-# For E2E, override default filter
+# --type total implies coverage mode
+if [[ "$TEST_TYPE" == "total" ]]; then
+  COVERAGE_MODE=true
+  COV_CLEAN=true
+fi
+
+# For E2E, override default filter (not for total — tiers are run separately)
 if [[ "$TEST_TYPE" == "e2e" && "$TEST_FILTER" == "*_integration" ]]; then
   TEST_FILTER="e2e_*"
 fi
@@ -58,7 +77,7 @@ cleanup() {
 
   echo "  Deleting namespace: ${NS}"
   kubectl delete namespace "${NS}" --wait=false 2>/dev/null || true
-  if [[ "$TEST_TYPE" == "e2e" ]]; then
+  if [[ "$TEST_TYPE" == "e2e" || "$TEST_TYPE" == "total" ]]; then
     kubectl delete namespace "${PIPELINE_NS}" --wait=false 2>/dev/null || true
     kubectl delete namespace "${AGENT_NS}" --wait=false 2>/dev/null || true
     kubectl delete clusterrolebinding "test-runner-${RUN_ID}" 2>/dev/null || true
@@ -173,7 +192,7 @@ for pid in "${PF_PIDS[@]}"; do
 done
 
 # ── E2E-specific setup ───────────────────────────────────────────────────
-if [[ "$TEST_TYPE" == "e2e" ]]; then
+if [[ "$TEST_TYPE" == "e2e" || "$TEST_TYPE" == "total" ]]; then
   echo ""
   echo "==> E2E setup: creating pipeline/agent namespaces + RBAC"
 
@@ -203,27 +222,88 @@ export VALKEY_URL="redis://127.0.0.1:${VALKEY_PORT}"
 export MINIO_ENDPOINT="http://127.0.0.1:${MINIO_PORT}"
 export MINIO_ACCESS_KEY="platform"
 export MINIO_SECRET_KEY="devdevdev"
-export SQLX_OFFLINE=true
 export PLATFORM_MASTER_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 export PLATFORM_DEV=true
 export RUST_LOG="warn"
 
-if [[ "$TEST_TYPE" == "e2e" ]]; then
+# Always use offline sqlx cache — it contains pre-computed types needed by
+# sqlx::query! macros. Under coverage mode (--cfg=coverage), type inference
+# breaks without the offline cache.
+export SQLX_OFFLINE=true
+
+if [[ "$TEST_TYPE" == "e2e" || "$TEST_TYPE" == "total" ]]; then
   export PLATFORM_PIPELINE_NAMESPACE="${PIPELINE_NS}"
   export PLATFORM_AGENT_NAMESPACE="${AGENT_NS}"
 fi
 
-# Build nextest args
-NEXTEST_ARGS=(--test "${TEST_FILTER}")
-
-if [[ -n "$TEST_THREADS" ]]; then
-  NEXTEST_ARGS+=(--test-threads "${TEST_THREADS}")
-elif [[ "$TEST_TYPE" == "e2e" ]]; then
-  NEXTEST_ARGS+=(--test-threads 2)
+# ── Coverage: clean previous data ────────────────────────────────────────
+if $COV_CLEAN; then
+  echo "==> Cleaning previous coverage data"
+  cargo llvm-cov clean --workspace
 fi
 
-if [[ "$TEST_TYPE" == "e2e" ]]; then
-  NEXTEST_ARGS+=(--run-ignored ignored-only)
-fi
+# ── Filename regex for coverage exclusions ────────────────────────────────
+COV_IGNORE_REGEX='(proto\.rs|ui\.rs)'
+COV_REPORT_IGNORE_REGEX='(proto\.rs|ui\.rs|main\.rs)'
 
-cargo nextest run "${NEXTEST_ARGS[@]}"
+# ── Run tests ─────────────────────────────────────────────────────────────
+if [[ "$TEST_TYPE" == "total" ]]; then
+  # Combined coverage: unit + integration + E2E in one instrumented build
+  # Track failures but continue through all tiers to generate the report
+  TIER_FAILURES=0
+
+  echo ""
+  echo "==> Running unit tests (coverage, no report)"
+  cargo llvm-cov nextest --no-report --lib \
+    --ignore-filename-regex "${COV_IGNORE_REGEX}" \
+    || TIER_FAILURES=$((TIER_FAILURES + 1))
+
+  echo ""
+  echo "==> Running integration tests (coverage, no report)"
+  cargo llvm-cov nextest --no-report --test '*_integration' \
+    --ignore-filename-regex "${COV_IGNORE_REGEX}" --no-fail-fast \
+    || TIER_FAILURES=$((TIER_FAILURES + 1))
+
+  echo ""
+  echo "==> Running E2E tests (coverage, no report)"
+  cargo llvm-cov nextest --no-report --test 'e2e_*' \
+    --run-ignored ignored-only --test-threads 2 \
+    --ignore-filename-regex "${COV_IGNORE_REGEX}" --no-fail-fast \
+    || TIER_FAILURES=$((TIER_FAILURES + 1))
+
+  echo ""
+  echo "==> Generating combined coverage report"
+  echo "────────────────────────────────────────────────────────────────"
+  cargo llvm-cov report --ignore-filename-regex "${COV_REPORT_IGNORE_REGEX}"
+
+  if [[ $TIER_FAILURES -gt 0 ]]; then
+    echo ""
+    echo "WARNING: ${TIER_FAILURES} test tier(s) had failures (see above)"
+    exit 1
+  fi
+else
+  # Single tier run
+  NEXTEST_ARGS=(--test "${TEST_FILTER}")
+
+  if [[ -n "$TEST_THREADS" ]]; then
+    NEXTEST_ARGS+=(--test-threads "${TEST_THREADS}")
+  elif [[ "$TEST_TYPE" == "e2e" ]]; then
+    NEXTEST_ARGS+=(--test-threads 2)
+  fi
+
+  if [[ "$TEST_TYPE" == "e2e" ]]; then
+    NEXTEST_ARGS+=(--run-ignored ignored-only)
+  fi
+
+  if $COVERAGE_MODE; then
+    COV_ARGS=(--ignore-filename-regex "${COV_IGNORE_REGEX}")
+    if $COV_NO_REPORT; then
+      COV_ARGS+=(--no-report)
+    elif [[ -n "$LCOV_PATH" ]]; then
+      COV_ARGS+=(--lcov --output-path "${LCOV_PATH}")
+    fi
+    cargo llvm-cov nextest "${COV_ARGS[@]}" "${NEXTEST_ARGS[@]}"
+  else
+    cargo nextest run "${NEXTEST_ARGS[@]}"
+  fi
+fi

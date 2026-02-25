@@ -14,13 +14,18 @@ use uuid::Uuid;
 use platform::config::Config;
 use platform::store::AppState;
 
-/// Build a test `AppState` from the given pool.
+/// Build a test `AppState` and pre-authenticated admin API token.
 ///
 /// - Bootstraps permissions, roles, admin user (password = "testpassword")
-/// - Connects to real Valkey (flushes DB to prevent cross-test pollution)
+/// - Connects to real Valkey (no FLUSHDB — keys are UUID-scoped)
 /// - Connects to real MinIO (S3 backend, bucket: `platform-e2e`)
+/// - Creates an API token for the admin user directly in the DB
 /// - Uses a dummy `Kube` client (panics if actually called)
-pub async fn test_state(pool: PgPool) -> AppState {
+///
+/// Returns `(state, admin_token)`. The admin token bypasses the login
+/// endpoint's rate limiter, which was the only source of cross-test
+/// Valkey key collision (`rate:login:admin`).
+pub async fn test_state(pool: PgPool) -> (AppState, String) {
     // Ensure a rustls CryptoProvider is installed (needed by reqwest/fred)
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -29,23 +34,15 @@ pub async fn test_state(pool: PgPool) -> AppState {
         .await
         .expect("bootstrap failed");
 
-    // Connect to real Valkey and flush
+    // Connect to real Valkey — no FLUSHDB needed. All Valkey keys are UUID-scoped
+    // (permission cache, upload sessions, WebAuthn challenges) and never collide
+    // between parallel tests. The admin token is created directly in the DB,
+    // bypassing the login endpoint's rate limiter.
     let valkey_url =
         std::env::var("VALKEY_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let valkey = platform::store::valkey::connect(&valkey_url)
         .await
         .expect("valkey connection failed");
-    // Flush Valkey to prevent cross-test pollution.
-    {
-        use fred::interfaces::ClientLike;
-        let _: fred::types::Value = valkey
-            .custom(
-                fred::types::CustomCommand::new_static("FLUSHDB", None, false),
-                Vec::<fred::types::Value>::new(),
-            )
-            .await
-            .expect("FLUSHDB failed");
-    }
 
     // Real MinIO (S3 backend) — same instance as Postgres/Valkey from Kind cluster.
     // Uses a dedicated test bucket to avoid polluting production data.
@@ -109,7 +106,7 @@ pub async fn test_state(pool: PgPool) -> AppState {
     // Build WebAuthn
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");
 
-    AppState {
+    let state = AppState {
         pool,
         valkey,
         minio,
@@ -119,7 +116,27 @@ pub async fn test_state(pool: PgPool) -> AppState {
         pipeline_notify: Arc::new(tokio::sync::Notify::new()),
         deploy_notify: Arc::new(tokio::sync::Notify::new()),
         inprocess_sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-    }
+    };
+
+    // Create an API token for the bootstrap admin directly in the DB,
+    // bypassing the login endpoint and its rate limiter.
+    let admin_row: (Uuid,) = sqlx::query_as("SELECT id FROM users WHERE name = 'admin'")
+        .fetch_one(&state.pool)
+        .await
+        .expect("admin user must exist after bootstrap");
+
+    let (raw_token, token_hash) = platform::auth::token::generate_api_token();
+    sqlx::query(
+        "INSERT INTO api_tokens (user_id, name, token_hash, expires_at)
+         VALUES ($1, 'test-admin', $2, now() + interval '1 day')",
+    )
+    .bind(admin_row.0)
+    .bind(&token_hash)
+    .execute(&state.pool)
+    .await
+    .expect("create admin api token");
+
+    (state, raw_token)
 }
 
 /// Build the full API router with the given state.

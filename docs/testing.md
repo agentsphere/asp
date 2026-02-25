@@ -6,9 +6,9 @@ This document covers all testing tiers for the platform: unit, integration, and 
 
 | Tier | Count | Runtime | Infra required | Command |
 |---|---|---|---|---|
-| Unit | 442 | ~1s | None | `just test-unit` |
+| Unit | 716 | ~1s | None | `just test-unit` |
 | Integration | 574 | ~4 min | Kind cluster | `just test-integration` |
-| E2E | 40 | ~90s | Kind cluster | `just test-e2e` |
+| E2E | 49 | ~160s | Kind cluster | `just test-e2e` |
 | FE-BE | 33+ | ~30s | Kind cluster | `just test-integration` / `just types` / `just test-ui` |
 
 All tests use [cargo-nextest](https://nexte.st/) as the test runner.
@@ -32,7 +32,6 @@ just test-doc           # cargo test --doc (doc examples)
 - Use `#[test]` for sync tests, `#[tokio::test]` for async.
 - Mock dependencies with in-memory structs (no external crate needed).
 - `proptest` for parser/serialization round-trips.
-- `insta` for API response snapshot stability.
 - Keep test modules at the bottom of each source file.
 
 **Examples of well-tested modules**:
@@ -140,20 +139,22 @@ async fn create_and_fetch_user(pool: PgPool) {
 All shared helpers are in `tests/helpers/mod.rs`:
 
 **State & Router**:
-- `test_state(pool: PgPool) -> AppState` — builds full state with real Valkey, MinIO, dummy K8s client. Reads service URLs from env vars with localhost defaults.
+- `test_state(pool: PgPool) -> (AppState, String)` — builds full state with real Valkey, MinIO, dummy K8s client. Returns `(state, admin_token)`. The admin API token is created directly in the DB, bypassing the login endpoint's rate limiter. No FLUSHDB — all Valkey keys are UUID-scoped and never collide between parallel tests.
 - `test_router(state: AppState) -> Router` — merges API + observe + registry routers with state.
 
 **Auth**:
-- `admin_login(&app) -> String` — login as bootstrap admin, returns bearer token.
+- `admin_login(&app) -> String` — login as bootstrap admin via POST `/api/auth/login`, returns bearer token. **Only use for tests that specifically test login/session behavior** (~2 tests in `auth_integration.rs`). All other tests should use the pre-created `admin_token` from `test_state()`.
 - `create_user(&app, admin_token, name, email) -> (Uuid, String)` — create user + login.
 - `assign_role(&app, admin_token, user_id, role_name, project_id, &pool)` — assign role.
 
 **HTTP**:
 - `get_json`, `post_json`, `patch_json`, `put_json`, `delete_json` — HTTP helpers with bearer auth.
 
+**Important**: The admin token from `test_state()` bypasses the login rate limiter entirely. This avoids the `rate:login:admin` Valkey key collision that caused flaky tests when 574 parallel tests all called `admin_login()`. The rate limit key was the only cross-test Valkey key — all other keys (permission cache, upload sessions, WebAuthn challenges) contain per-test UUIDs.
+
 ## E2E Tests
 
-**Location**: `tests/e2e_*.rs` (5 files, 40 tests total) + `tests/e2e_helpers/mod.rs`.
+**Location**: `tests/e2e_*.rs` (5 files, 49 tests total) + `tests/e2e_helpers/mod.rs`.
 
 **What they cover**: full system behavior with real K8s pods, MinIO object storage, Valkey caching, and Postgres. Pipeline execution, git operations, webhook delivery, agent lifecycle, deployment management.
 
@@ -170,7 +171,7 @@ This creates the Kind cluster with shared mount, Postgres, Valkey, MinIO, namesp
 ### Running E2E Tests
 
 ```bash
-# All 40 E2E tests (ephemeral namespace, auto port-forward)
+# All 49 E2E tests (ephemeral namespace, auto port-forward)
 just test-e2e
 
 # Specific test file
@@ -186,9 +187,9 @@ For E2E tests, the script additionally creates `{namespace}-pipelines` and `{nam
 
 Each E2E test:
 1. Gets a fresh `PgPool` from `#[sqlx::test(migrations = "./migrations")]` (ephemeral DB)
-2. Builds an `AppState` with real K8s, MinIO, Valkey via `e2e_helpers::e2e_state(pool)`
+2. Builds an `(AppState, admin_token)` with real K8s, MinIO, Valkey via `e2e_helpers::e2e_state(pool)`
 3. Creates a test router via `e2e_helpers::test_router(state)`
-4. Logs in as admin via `e2e_helpers::admin_login(&app)`
+4. Uses the pre-created `admin_token` (bypasses login rate limiter — same pattern as integration tests)
 5. Exercises API endpoints using HTTP helpers (`get_json`, `post_json`, etc.)
 6. Asserts on HTTP status codes and JSON response bodies
 
@@ -199,11 +200,11 @@ The test router is an in-memory axum `Router` — no TCP listener. Requests go t
 All helpers are in `tests/e2e_helpers/mod.rs`:
 
 **State & Router**:
-- `e2e_state(pool: PgPool) -> AppState` — builds full state with real services. MinIO bucket: `platform-e2e`. Reads pipeline/agent namespace from env vars (set by orchestration script).
+- `e2e_state(pool: PgPool) -> (AppState, String)` — builds full state with real services. MinIO bucket: `platform-e2e`. Reads pipeline/agent namespace from env vars (set by orchestration script). Returns `(state, admin_token)` — the admin API token is created directly in the DB, bypassing the login endpoint's rate limiter.
 - `test_router(state: AppState) -> Router` — merges `platform::api::router()` with state.
 
 **Auth**:
-- `admin_login(&app) -> String` — login as bootstrap admin (password: `testpassword`), returns bearer token.
+- `admin_login(&app) -> String` — login as bootstrap admin (password: `testpassword`), returns bearer token. **Only for tests that specifically test login/session behavior.** All other tests use the pre-created `admin_token`.
 - `create_user(&app, admin_token, name, email) -> (Uuid, String)` — create user + login, returns (user_id, token).
 - `assign_role(&app, admin_token, user_id, role_name, project_id, &pool)` — assign role to user.
 
@@ -284,13 +285,13 @@ Tests agent session lifecycle: creation, identity provisioning, pod spec generat
 
 Tests: `agent_session_creation`, `agent_identity_created`, `agent_identity_cleanup`, `agent_pod_spec_correct`, `agent_role_determines_mcp_config`, `agent_session_stop`, `agent_session_with_custom_image`, `agent_reaper_captures_logs`.
 
-#### `e2e_deployer.rs` (8 tests)
+#### `e2e_deployer.rs` (17 tests)
 
-Tests deployment API layer: CRUD, status transitions, history recording, rollback, image updates, stop, and preview environment lifecycle.
+Tests deployment API layer: CRUD, status transitions, history recording, rollback, image updates, stop, preview environment lifecycle, reconciler behavior, multi-env, optimistic locking, and preview TTL cleanup.
 
-**Pattern**: tests exercise the API without running the reconciler loop. Deployments are created and managed via API calls; the reconciler is a separate background task not spawned in tests.
+**Pattern**: API-only tests exercise CRUD without the reconciler. Reconciler tests spawn a `ReconcilerGuard` (similar to `ExecutorGuard` for pipelines) that runs the reconciler loop in a background task.
 
-Tests: `deployment_status_transitions`, `deployment_get_returns_correct_fields`, `deployment_history_recorded`, `deployment_rollback`, `deployment_update_image`, `deployment_stop`, `preview_deployment_lifecycle`, `preview_cleanup_on_mr_merge`.
+Tests: `deployment_status_transitions`, `deployment_get_returns_correct_fields`, `deployment_history_recorded`, `deployment_rollback`, `deployment_update_image`, `deployment_stop`, `deployment_failed_state_visible`, `ops_repo_sync_caches_in_valkey`, `preview_deployment_lifecycle`, `preview_cleanup_on_mr_merge`, `preview_expired_cleanup`, `reconciler_deploys_basic_manifest`, `reconciler_history_actions`, `reconciler_multi_env`, `reconciler_optimistic_lock`, `reconciler_stop_scales_to_zero`, `reconciler_rollback_restores_previous`.
 
 ## Ephemeral Test Infrastructure
 
@@ -399,6 +400,10 @@ just test-cleanup   # deletes all test-* namespaces
 
 10. **AppState changes require test helper updates** — when fields are added to `AppState`, both `tests/helpers/mod.rs` and `tests/e2e_helpers/mod.rs` must be updated. Missing fields cause all integration and E2E tests to fail to compile.
 
+11. **Never add FLUSHDB to test helpers** — all Valkey keys are UUID-scoped and never collide between parallel tests. The admin token is created directly in the DB, bypassing the only cross-test key (`rate:login:admin`). FLUSHDB caused flaky failures when one test wiped another's in-flight upload sessions.
+
+12. **Use `admin_token` from `test_state()`, not `admin_login()`** — `test_state()` returns `(AppState, String)` where the second value is a pre-created admin API token. Only call `admin_login()` if you are specifically testing login/session behavior. Using `admin_login()` in all 574 parallel tests would exceed the login rate limit (10/300s).
+
 ## Cluster Management
 
 ```bash
@@ -416,7 +421,6 @@ just cluster-up
 - Valkey at `localhost:6379`
 - MinIO at `localhost:9000` (S3 API) / `localhost:9001` (console), credentials: `platform`/`devdevdev`
 - MinIO buckets: `platform` and `platform-e2e`
-- K8s namespaces: `e2e-pipelines`, `e2e-agents`
 - Shared directory: `/tmp/platform-e2e`
 - OTel Collector (for observe module)
 - `CREATEDB` grant for `platform` DB user (required by `#[sqlx::test]`)
@@ -425,12 +429,33 @@ Note: the always-running cluster services (via `just cluster-up`) are used for a
 
 ## CI Integration
 
+### Local CI
+
 ```bash
 just ci              # fmt + lint + deny + test-unit + test-integration + build
-just ci-full         # ci + test-e2e
+just ci-full         # ci + test-e2e (the full verification suite)
 ```
 
 Both `just ci` and `just ci-full` require a running Kind cluster since integration tests deploy ephemeral services inside it. `just test-unit` can run standalone without any infrastructure.
+
+**Always run `just ci-full` before considering work complete.** E2E tests catch real issues that unit and integration tests miss.
+
+### GitHub Actions CI (`.github/workflows/ci.yaml`)
+
+The CI workflow runs all three test tiers plus linting and build:
+
+| Job | What it does | Services |
+|---|---|---|
+| `fmt` | `cargo fmt --check` | None |
+| `lint` | `cargo clippy -- -D warnings` | None |
+| `test-unit` | `cargo nextest run --lib` | None |
+| `test-integration` | `cargo nextest run --test '*_integration'` | Postgres, Valkey, MinIO (container sidecars) |
+| `test-e2e` | `hack/test-in-cluster.sh --type e2e` | Kind cluster with ephemeral services |
+| `deny` | `cargo deny check` | None |
+| `coverage` | Unit + integration coverage → Codecov | Postgres, Valkey, MinIO |
+| `build` | `cargo build --release` (amd64 + arm64) | None (depends on all test jobs) |
+
+The build job gates on all test tiers — a failing E2E test blocks the release build.
 
 ## Coverage
 
@@ -446,47 +471,35 @@ rustup component add llvm-tools-preview
 ### Commands
 
 ```bash
-just cov-unit         # unit coverage → coverage-unit.lcov
-just cov-integration  # integration coverage → coverage-integration.lcov
-just cov-e2e          # E2E coverage → coverage-e2e.lcov (requires Kind cluster)
-just cov-all          # all tiers combined → coverage-all.lcov
-just cov-total        # ★ combined report: unit + integration + E2E (requires Kind cluster + DB)
+just cov-unit         # unit coverage → coverage-unit.lcov (no infra needed)
+just cov-integration  # integration coverage → coverage-integration.lcov (ephemeral Kind services)
+just cov-e2e          # E2E coverage → coverage-e2e.lcov (ephemeral Kind services)
+just cov-total        # ★ combined report: unit + integration + E2E (ephemeral Kind services)
 just cov-html         # unit coverage as HTML report → coverage-html/
-just cov-summary      # quick terminal summary of unit + integration coverage
 ```
 
 Generated files (`*.lcov`, `coverage-html/`) are gitignored.
+
+All coverage commands except `cov-unit` use `hack/test-in-cluster.sh --coverage` to deploy ephemeral services in isolated Kind namespaces — the same approach used by `just test-integration` and `just test-e2e`. No manual port-forwarding or database setup is needed.
 
 ### Combined coverage (the meaningful number)
 
 Separate per-tier coverage is diagnostic. The number that matters is combined: "when all tests run, what % of lines are hit?"
 
-The easiest way is `just cov-total`, which requires a live database and Kind cluster:
-
 ```bash
-# Prerequisites: Kind cluster running (just cluster-up), DB migrated (just db-migrate)
-export KUBECONFIG=$HOME/.kube/kind-platform
-export DATABASE_URL="postgres://platform:dev@127.0.0.1:5432/platform_dev"
+# Prerequisites: Kind cluster running (just cluster-up)
 just cov-total
 ```
 
-Under the hood, `just cov-total` runs:
+Under the hood, `just cov-total` runs `hack/test-in-cluster.sh --type total` which:
 
-```bash
-# 1. Clean previous profiling data
-cargo llvm-cov clean --workspace
-
-# 2. Run all three test tiers in a single instrumented build
-#    --no-report: accumulate coverage without generating a report yet
-cargo llvm-cov nextest --no-report \
-  --lib --test '*_integration' --test 'e2e_*' \
-  --run-ignored all --test-threads 2 --no-fail-fast
-
-# 3. Generate the combined report (text summary to stdout)
-cargo llvm-cov report --ignore-filename-regex '(proto\.rs|ui\.rs|main\.rs)'
-```
-
-**Note**: `SQLX_OFFLINE=true` does NOT work with `cargo llvm-cov` because it uses a separate target directory (`llvm-cov-target`) and some type annotations fail under the coverage configuration. Always use a live database connection for coverage runs.
+1. Creates an ephemeral K8s namespace with fresh Postgres, Valkey, MinIO
+2. Cleans previous profiling data (`cargo llvm-cov clean --workspace`)
+3. Runs unit tests with coverage instrumentation (`--lib`)
+4. Runs integration tests with coverage instrumentation (`--test '*_integration'`)
+5. Runs E2E tests with coverage instrumentation (`--test 'e2e_*'`)
+6. Generates the combined report (`cargo llvm-cov report`)
+7. Cleans up the ephemeral namespace
 
 ### Excluded from coverage
 
@@ -495,9 +508,9 @@ cargo llvm-cov report --ignore-filename-regex '(proto\.rs|ui\.rs|main\.rs)'
 - `src/main.rs` — bootstrap wiring (tested via E2E)
 - `tests/`, `ui/`, `mcp/` — non-source code
 
-### CI
+### CI coverage
 
-The `coverage` job in `.github/workflows/ci.yaml` runs after unit tests pass, generates unit and integration lcov reports, and uploads them to Codecov with separate flags (`unit`, `integration`). E2E coverage runs nightly or on demand.
+The `coverage` job in `.github/workflows/ci.yaml` runs after unit tests pass, generates unit and integration lcov reports (with Postgres, Valkey, and MinIO service containers), and uploads them to Codecov with separate flags (`unit`, `integration`). E2E coverage runs locally via `just cov-total`.
 
 Codecov configuration is in `codecov.yml`:
 - **Unit coverage**: gated — target is auto-ratcheting, new code (patch) must have 70% coverage

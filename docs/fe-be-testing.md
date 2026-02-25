@@ -80,11 +80,10 @@ Follow the existing pattern — one test per endpoint or logical group:
 ```rust
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_my_endpoint(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
 
-    let (status, body) = helpers::get_json(&app, &token, "/api/my-endpoint").await;
+    let (status, body) = helpers::get_json(&app, &admin_token, "/api/my-endpoint").await;
 
     assert_eq!(status, StatusCode::OK);
     // For list endpoints:
@@ -151,5 +150,5 @@ Use `apiLogin()` for speed (skips the login form). Use `login()` only when testi
 ```
 just ci              # includes test-unit (has ts-rs export tests) + test-integration (has contract tests)
 just test-ui         # run separately (needs running server)
-just ci-full         # everything except Playwright
+just ci-full         # ci + E2E tests (excludes Playwright)
 ```

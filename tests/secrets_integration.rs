@@ -5,7 +5,7 @@ mod helpers;
 use axum::http::StatusCode;
 use sqlx::PgPool;
 
-use helpers::{admin_login, assign_role, create_project, create_user, test_router, test_state};
+use helpers::{assign_role, create_project, create_user, test_router, test_state};
 
 // ---------------------------------------------------------------------------
 // Project-scoped secrets
@@ -15,9 +15,8 @@ use helpers::{admin_login, assign_role, create_project, create_user, test_router
 /// Uses admin token since secret:write requires admin permissions (developer role only has secret:read).
 #[sqlx::test(migrations = "./migrations")]
 async fn create_and_list_project_secrets(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let proj_id = create_project(&app, &admin_token, "sec-proj1", "private").await;
 
@@ -55,9 +54,8 @@ async fn create_and_list_project_secrets(pool: PgPool) {
 /// Delete project secret.
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_project_secret(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let proj_id = create_project(&app, &admin_token, "sec-proj2", "private").await;
 
@@ -91,9 +89,8 @@ async fn delete_project_secret(pool: PgPool) {
 /// Invalid scope → 400.
 #[sqlx::test(migrations = "./migrations")]
 async fn secret_scope_validation(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let proj_id = create_project(&app, &admin_token, "sec-proj3", "private").await;
 
@@ -114,9 +111,8 @@ async fn secret_scope_validation(pool: PgPool) {
 /// Admin can create and list global secrets.
 #[sqlx::test(migrations = "./migrations")]
 async fn create_and_list_global_secrets(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, body) = helpers::post_json(
         &app,
@@ -143,9 +139,8 @@ async fn create_and_list_global_secrets(pool: PgPool) {
 /// Non-admin cannot manage global secrets.
 #[sqlx::test(migrations = "./migrations")]
 async fn non_admin_cannot_manage_global_secrets(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (user_id, token) = create_user(&app, &admin_token, "secdev4", "secdev4@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
@@ -170,9 +165,8 @@ async fn non_admin_cannot_manage_global_secrets(pool: PgPool) {
 /// PUT + GET /api/users/me/provider-keys/{provider} → key_suffix visible.
 #[sqlx::test(migrations = "./migrations")]
 async fn user_key_set_and_list(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (user_id, token) = create_user(&app, &admin_token, "keyuser1", "keyuser1@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
@@ -199,9 +193,8 @@ async fn user_key_set_and_list(pool: PgPool) {
 /// Set + DELETE provider key → gone.
 #[sqlx::test(migrations = "./migrations")]
 async fn user_key_delete(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (user_id, token) = create_user(&app, &admin_token, "keyuser2", "keyuser2@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
@@ -227,9 +220,8 @@ async fn user_key_delete(pool: PgPool) {
 /// Short api_key (<10 chars) → 400.
 #[sqlx::test(migrations = "./migrations")]
 async fn user_key_too_short_rejected(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (user_id, token) = create_user(&app, &admin_token, "keyuser3", "keyuser3@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
@@ -251,9 +243,8 @@ async fn user_key_too_short_rejected(pool: PgPool) {
 /// Create + list workspace secrets.
 #[sqlx::test(migrations = "./migrations")]
 async fn create_and_list_workspace_secrets(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Get admin user ID
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
@@ -305,9 +296,8 @@ async fn create_and_list_workspace_secrets(pool: PgPool) {
 /// Delete workspace secret.
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_workspace_secret(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = uuid::Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -352,9 +342,8 @@ async fn delete_workspace_secret(pool: PgPool) {
 /// Non-admin workspace member cannot create secrets.
 #[sqlx::test(migrations = "./migrations")]
 async fn workspace_secret_requires_admin(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = uuid::Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -390,9 +379,8 @@ async fn workspace_secret_requires_admin(pool: PgPool) {
 /// Non-member cannot list workspace secrets.
 #[sqlx::test(migrations = "./migrations")]
 async fn workspace_secret_list_requires_membership(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = uuid::Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -426,9 +414,8 @@ async fn workspace_secret_list_requires_membership(pool: PgPool) {
 /// Delete a global secret.
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_global_secret(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     helpers::post_json(
         &app,
@@ -451,9 +438,8 @@ async fn delete_global_secret(pool: PgPool) {
 /// Create project secret with environment filter.
 #[sqlx::test(migrations = "./migrations")]
 async fn create_secret_with_environment(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let proj_id = create_project(&app, &admin_token, "sec-env-proj", "private").await;
 
@@ -491,9 +477,8 @@ async fn create_secret_with_environment(pool: PgPool) {
 /// Invalid environment → 400.
 #[sqlx::test(migrations = "./migrations")]
 async fn create_secret_invalid_environment(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let proj_id = create_project(&app, &admin_token, "sec-badenv", "private").await;
 
@@ -519,9 +504,8 @@ async fn create_secret_invalid_environment(pool: PgPool) {
 /// Delete nonexistent key → 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn user_key_delete_nonexistent(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (user_id, token) = create_user(&app, &admin_token, "keyuser4", "keyuser4@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;

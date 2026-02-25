@@ -50,12 +50,15 @@ fn resolve_kubeconfig_candidates() -> Vec<std::path::PathBuf> {
 // AppState builders
 // ---------------------------------------------------------------------------
 
-/// Build a full E2E `AppState` with real K8s, MinIO, Valkey, and Postgres.
+/// Build a full E2E `AppState` and pre-authenticated admin API token.
 ///
 /// This is similar to the integration test `test_state` but connects to real
 /// external services rather than using stubs. Falls back gracefully when
 /// services are unavailable (tests should be `#[ignore]`).
-pub async fn e2e_state(pool: PgPool) -> AppState {
+///
+/// Returns `(state, admin_token)`. The admin token bypasses the login
+/// endpoint's rate limiter.
+pub async fn e2e_state(pool: PgPool) -> (AppState, String) {
     // Ensure a rustls CryptoProvider is installed (needed by reqwest/fred)
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -64,22 +67,12 @@ pub async fn e2e_state(pool: PgPool) -> AppState {
         .await
         .expect("bootstrap failed");
 
-    // Connect to real Valkey and flush
+    // Connect to real Valkey — no FLUSHDB needed (see tests/helpers/mod.rs).
     let valkey_url =
         std::env::var("VALKEY_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let valkey = platform::store::valkey::connect(&valkey_url)
         .await
         .expect("valkey connection failed");
-    {
-        use fred::interfaces::ClientLike;
-        let _: fred::types::Value = valkey
-            .custom(
-                fred::types::CustomCommand::new_static("FLUSHDB", None, false),
-                Vec::<fred::types::Value>::new(),
-            )
-            .await
-            .expect("FLUSHDB failed");
-    }
 
     // Real MinIO via S3 operator
     let minio_endpoint =
@@ -155,9 +148,9 @@ pub async fn e2e_state(pool: PgPool) -> AppState {
         smtp_password: None,
         admin_password: None,
         pipeline_namespace: std::env::var("PLATFORM_PIPELINE_NAMESPACE")
-            .unwrap_or_else(|_| "e2e-pipelines".into()),
+            .expect("PLATFORM_PIPELINE_NAMESPACE must be set — run via: just test-e2e"),
         agent_namespace: std::env::var("PLATFORM_AGENT_NAMESPACE")
-            .unwrap_or_else(|_| "e2e-agents".into()),
+            .expect("PLATFORM_AGENT_NAMESPACE must be set — run via: just test-e2e"),
         registry_url: None,
         secure_cookies: false,
         cors_origins: vec![],
@@ -171,7 +164,7 @@ pub async fn e2e_state(pool: PgPool) -> AppState {
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");
 
-    AppState {
+    let state = AppState {
         pool,
         valkey,
         minio,
@@ -181,7 +174,27 @@ pub async fn e2e_state(pool: PgPool) -> AppState {
         pipeline_notify: Arc::new(tokio::sync::Notify::new()),
         deploy_notify: Arc::new(tokio::sync::Notify::new()),
         inprocess_sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-    }
+    };
+
+    // Create an API token for the bootstrap admin directly in the DB,
+    // bypassing the login endpoint and its rate limiter.
+    let admin_row: (Uuid,) = sqlx::query_as("SELECT id FROM users WHERE name = 'admin'")
+        .fetch_one(&state.pool)
+        .await
+        .expect("admin user must exist after bootstrap");
+
+    let (raw_token, token_hash) = platform::auth::token::generate_api_token();
+    sqlx::query(
+        "INSERT INTO api_tokens (user_id, name, token_hash, expires_at)
+         VALUES ($1, 'test-admin', $2, now() + interval '1 day')",
+    )
+    .bind(admin_row.0)
+    .bind(&token_hash)
+    .execute(&state.pool)
+    .await
+    .expect("create admin api token");
+
+    (state, raw_token)
 }
 
 // ---------------------------------------------------------------------------

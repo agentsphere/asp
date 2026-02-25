@@ -15,9 +15,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use helpers::{
-    admin_login, create_project, create_user, set_user_api_key, test_router, test_state,
-};
+use helpers::{create_project, create_user, set_user_api_key, test_router, test_state};
 
 // =========================================================================
 // Helpers — reusable shape assertions
@@ -60,7 +58,7 @@ fn assert_list_response<'a>(body: &'a Value, ctx: &str) -> &'a Vec<Value> {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_login_response(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, _admin_token) = test_state(pool).await;
     let app = test_router(state);
 
     let (status, body) = helpers::post_json(
@@ -92,9 +90,9 @@ async fn contract_login_response(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_me_response(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (status, body) = helpers::get_json(&app, &token, "/api/auth/me").await;
 
@@ -112,9 +110,9 @@ async fn contract_me_response(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_logout(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (status, _) =
         helpers::post_json(&app, &token, "/api/auth/logout", serde_json::json!({})).await;
@@ -132,9 +130,9 @@ async fn contract_logout(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_dashboard_stats(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (status, body) = helpers::get_json(&app, &token, "/api/dashboard/stats").await;
 
@@ -151,9 +149,9 @@ async fn contract_dashboard_stats(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_audit_log_list(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     // Create something to generate audit entries
     create_project(&app, &token, "audit-contract", "private").await;
@@ -182,9 +180,9 @@ async fn contract_audit_log_list(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_onboarding_status(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (status, body) = helpers::get_json(&app, &token, "/api/onboarding/status").await;
 
@@ -211,9 +209,9 @@ async fn contract_onboarding_status(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_notifications_list(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (status, body) = helpers::get_json(&app, &token, "/api/notifications?limit=10").await;
 
@@ -224,9 +222,9 @@ async fn contract_notifications_list(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_notifications_unread_count(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (status, body) = helpers::get_json(&app, &token, "/api/notifications/unread-count").await;
 
@@ -240,9 +238,9 @@ async fn contract_notifications_unread_count(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_project_create(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (status, body) = helpers::post_json(
         &app,
@@ -271,9 +269,9 @@ async fn contract_project_create(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_project_list(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     create_project(&app, &token, "list-proj", "private").await;
 
@@ -291,9 +289,9 @@ async fn contract_project_list(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_project_get(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let proj_id = create_project(&app, &token, "get-proj", "private").await;
 
@@ -309,9 +307,9 @@ async fn contract_project_get(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_project_update(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let proj_id = create_project(&app, &token, "update-proj", "private").await;
 
@@ -334,9 +332,9 @@ async fn contract_project_update(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_issue_crud(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let proj_id = create_project(&app, &token, "issue-proj", "private").await;
 
     // Create issue
@@ -421,9 +419,9 @@ async fn contract_issue_crud(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_merge_request_list(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let proj_id = create_project(&app, &token, "mr-proj", "private").await;
 
     // MR list should return ListResponse even if empty
@@ -444,9 +442,9 @@ async fn contract_merge_request_list(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_pipeline_list(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let proj_id = create_project(&app, &token, "pipe-proj", "private").await;
 
     let (status, body) = helpers::get_json(
@@ -466,9 +464,9 @@ async fn contract_pipeline_list(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_deployment_list(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let proj_id = create_project(&app, &token, "dep-proj", "private").await;
 
     let (status, body) = helpers::get_json(
@@ -484,9 +482,9 @@ async fn contract_deployment_list(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_deployment_with_data(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let proj_id = create_project(&app, &token, "dep-data-proj", "private").await;
 
     // Insert a deployment directly
@@ -529,9 +527,9 @@ async fn contract_deployment_with_data(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_webhook_crud(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let proj_id = create_project(&app, &token, "wh-proj", "private").await;
 
     // Create webhook
@@ -566,9 +564,9 @@ async fn contract_webhook_crud(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_secrets_list(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let proj_id = create_project(&app, &token, "sec-proj", "private").await;
 
     // Create a secret
@@ -609,9 +607,8 @@ async fn contract_secrets_list(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_create_app_session(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Admin needs an API key to create app sessions
     let admin_id: (Uuid,) = sqlx::query_as("SELECT id FROM users WHERE name = 'admin'")
@@ -641,9 +638,9 @@ async fn contract_create_app_session(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_project_sessions_list(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let proj_id = create_project(&app, &token, "sess-proj", "private").await;
 
     let (status, body) = helpers::get_json(
@@ -663,9 +660,9 @@ async fn contract_project_sessions_list(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_admin_user_create(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (status, body) = helpers::post_json(
         &app,
@@ -686,9 +683,9 @@ async fn contract_admin_user_create(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_admin_user_list(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (status, body) = helpers::get_json(&app, &token, "/api/users/list?limit=10").await;
 
@@ -708,9 +705,9 @@ async fn contract_admin_user_list(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_admin_roles(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (status, body) = helpers::get_json(&app, &token, "/api/admin/roles").await;
 
@@ -732,9 +729,9 @@ async fn contract_admin_roles(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_admin_delegation_shape(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (user_id, _) = create_user(&app, &token, "deleg-target", "deleg@test.com").await;
 
@@ -779,9 +776,9 @@ async fn contract_admin_delegation_shape(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_admin_permissions(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     // Get any role to list its permissions
     let (_, roles) = helpers::get_json(&app, &token, "/api/admin/roles").await;
@@ -816,9 +813,9 @@ async fn contract_admin_permissions(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_api_tokens(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     // Create token
     let (status, body) = helpers::post_json(
@@ -862,9 +859,9 @@ async fn contract_api_tokens(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_preview_list(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let proj_id = create_project(&app, &token, "preview-proj", "private").await;
 
     let (status, body) = helpers::get_json(
@@ -884,9 +881,9 @@ async fn contract_preview_list(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_alert_rules_list(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (status, body) = helpers::get_json(&app, &token, "/api/observe/alerts?limit=10").await;
 
@@ -896,9 +893,9 @@ async fn contract_alert_rules_list(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_alert_rule_create(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (status, body) = helpers::post_json(
         &app,
@@ -945,9 +942,9 @@ async fn contract_alert_rule_create(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_observe_logs_list(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (status, body) =
         helpers::get_json(&app, &token, "/api/observe/logs?limit=10&time_range=1h").await;
@@ -958,9 +955,9 @@ async fn contract_observe_logs_list(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_observe_traces_list(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let (status, body) =
         helpers::get_json(&app, &token, "/api/observe/traces?limit=10&time_range=1h").await;
@@ -975,9 +972,9 @@ async fn contract_observe_traces_list(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn contract_branches_list(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let proj_id = create_project(&app, &token, "git-proj", "private").await;
 
     // Branches for a fresh project (may be empty or have default branch)

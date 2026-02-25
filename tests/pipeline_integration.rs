@@ -14,8 +14,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 use helpers::{
-    admin_login, assign_role, create_project, create_user, get_json, post_json, test_router,
-    test_state,
+    assign_role, create_project, create_user, get_json, post_json, test_router, test_state,
 };
 
 // ---------------------------------------------------------------------------
@@ -159,9 +158,9 @@ async fn get_bytes(app: &axum::Router, token: &str, path: &str) -> (StatusCode, 
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_pipelines_empty(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = create_project(&app, &token, "pl-empty", "private").await;
 
@@ -178,9 +177,9 @@ async fn list_pipelines_empty(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_pipelines_with_data(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-list", "private").await;
@@ -213,9 +212,9 @@ async fn list_pipelines_with_data(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_pipelines_filter_status(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-filt-status", "private").await;
@@ -240,9 +239,9 @@ async fn list_pipelines_filter_status(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_pipelines_filter_git_ref(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-filt-ref", "private").await;
@@ -271,9 +270,9 @@ async fn list_pipelines_filter_git_ref(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_pipelines_filter_trigger(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-filt-trig", "private").await;
@@ -303,9 +302,9 @@ async fn list_pipelines_filter_trigger(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_pipelines_pagination(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-page", "private").await;
@@ -359,9 +358,9 @@ async fn list_pipelines_pagination(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_pipeline_detail(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-detail", "private").await;
@@ -393,9 +392,9 @@ async fn get_pipeline_detail(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_pipeline_not_found(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = create_project(&app, &token, "pl-nf", "private").await;
     let fake_id = Uuid::new_v4();
@@ -411,9 +410,9 @@ async fn get_pipeline_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_pipeline_wrong_project(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_a = create_project(&app, &token, "pl-wrong-a", "private").await;
@@ -437,9 +436,9 @@ async fn get_pipeline_wrong_project(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn cancel_pipeline_pending(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-cancel-p", "private").await;
@@ -477,9 +476,9 @@ async fn cancel_pipeline_pending(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn cancel_pipeline_running(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-cancel-r", "private").await;
@@ -506,9 +505,9 @@ async fn cancel_pipeline_running(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn cancel_pipeline_already_finished(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-cancel-done", "private").await;
@@ -537,9 +536,9 @@ async fn cancel_pipeline_already_finished(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn cancel_pipeline_not_found(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = create_project(&app, &token, "pl-cancel-nf", "private").await;
     let fake_id = Uuid::new_v4();
@@ -560,9 +559,9 @@ async fn cancel_pipeline_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_step_logs_stored(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state.clone());
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-logs", "private").await;
@@ -594,9 +593,9 @@ async fn get_step_logs_stored(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_step_logs_no_log_ref(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-logs-none", "private").await;
@@ -619,9 +618,9 @@ async fn get_step_logs_no_log_ref(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_step_logs_step_not_found(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-logs-snf", "private").await;
@@ -644,9 +643,9 @@ async fn get_step_logs_step_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_artifacts_empty(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-art-empty", "private").await;
@@ -665,9 +664,9 @@ async fn list_artifacts_empty(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_artifacts_with_data(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-art-data", "private").await;
@@ -713,9 +712,9 @@ async fn list_artifacts_with_data(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_artifacts_wrong_project(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_a = create_project(&app, &token, "pl-art-wa", "private").await;
@@ -735,9 +734,9 @@ async fn list_artifacts_wrong_project(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn download_artifact(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state.clone());
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-art-dl", "private").await;
@@ -776,9 +775,9 @@ async fn download_artifact(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn download_artifact_not_found(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &token, "pl-art-dl-nf", "private").await;
@@ -803,9 +802,8 @@ async fn download_artifact_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn private_project_returns_404_for_non_member(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &admin_token, "pl-priv", "private").await;
@@ -830,9 +828,8 @@ async fn private_project_returns_404_for_non_member(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn viewer_can_read_but_not_cancel(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &admin_token, "pl-viewer", "private").await;
@@ -878,9 +875,9 @@ async fn viewer_can_read_but_not_cancel(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn trigger_pipeline_project_not_found(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     let fake_id = Uuid::new_v4();
 
@@ -896,9 +893,9 @@ async fn trigger_pipeline_project_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn trigger_pipeline_no_repo_path(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let token = admin_login(&app).await;
+    let token = admin_token.clone();
 
     // Create a project — by default repo_path is NULL when created via the API
     // without actually initializing a git repo.
@@ -927,9 +924,8 @@ async fn trigger_pipeline_no_repo_path(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn public_project_allows_any_user_to_list(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let uid = admin_user_id(&pool).await;
 
     let project_id = create_project(&app, &admin_token, "pl-public", "public").await;

@@ -111,12 +111,11 @@ The binary spawns several background tokio tasks:
 
 | Layer | Count | Location | Run with |
 |-------|-------|----------|----------|
-| Unit | ~200+ | `src/**/*.rs` inline `#[cfg(test)]` | `just test-unit` |
-| Integration | 95+ | `tests/*_integration.rs` | `just test-integration` |
-| E2E | 40 | `tests/e2e_*.rs` (ignored) | `just test-e2e` |
+| Unit | 716 | `src/**/*.rs` inline `#[cfg(test)]` | `just test-unit` |
+| Integration | 574 | `tests/*_integration.rs` (25 files) | `just test-integration` |
+| E2E | 49 | `tests/e2e_*.rs` (5 files, ignored) | `just test-e2e` |
 
-Integration tests use real Valkey (flushed per test), in-memory MinIO, `#[sqlx::test]` with fresh DB.
-E2E tests require Kind cluster (`just cluster-up`).
+Both integration and E2E tests use `hack/test-in-cluster.sh` to deploy ephemeral Postgres, Valkey, and MinIO pods in isolated Kind namespaces per run. `#[sqlx::test]` provides per-test DB isolation. Requires Kind cluster (`just cluster-up`).
 
 ## Ops Repo Pattern
 

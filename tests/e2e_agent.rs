@@ -55,9 +55,9 @@ async fn setup_agent_project(
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn agent_session_creation(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_agent_project(&state, &app, &token, "agent-create").await;
 
@@ -101,9 +101,9 @@ async fn agent_session_creation(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn agent_identity_created(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_agent_project(&state, &app, &token, "agent-identity").await;
 
@@ -160,9 +160,9 @@ async fn agent_identity_created(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn agent_pod_spec_correct(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_agent_project(&state, &app, &token, "agent-podspec").await;
 
@@ -219,9 +219,9 @@ async fn agent_pod_spec_correct(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn agent_session_stop(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_agent_project(&state, &app, &token, "agent-stop").await;
 
@@ -276,9 +276,9 @@ async fn agent_session_stop(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn agent_reaper_captures_logs(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_agent_project(&state, &app, &token, "agent-reaper").await;
 
@@ -330,9 +330,9 @@ async fn agent_reaper_captures_logs(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn agent_session_with_custom_image(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_agent_project(&state, &app, &token, "agent-custom-img").await;
 
@@ -390,9 +390,9 @@ async fn agent_session_with_custom_image(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn agent_role_determines_mcp_config(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_agent_project(&state, &app, &token, "agent-mcp-role").await;
 
@@ -461,9 +461,9 @@ async fn agent_role_determines_mcp_config(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn agent_identity_cleanup(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_agent_project(&state, &app, &token, "agent-cleanup").await;
 

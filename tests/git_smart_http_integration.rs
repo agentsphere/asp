@@ -11,7 +11,7 @@ use axum::Router;
 use axum::http::StatusCode;
 use sqlx::PgPool;
 
-use helpers::{admin_login, create_project, create_user, test_state};
+use helpers::{create_project, create_user, test_state};
 use platform::auth::token;
 use platform::store::AppState;
 
@@ -85,9 +85,8 @@ async fn create_api_token(app: &Router, session_token: &str) -> String {
 /// Git Basic Auth with invalid credentials returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn authenticate_basic_invalid_creds(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "auth-inv-proj", "internal").await;
 
@@ -105,9 +104,8 @@ async fn authenticate_basic_invalid_creds(pool: PgPool) {
 /// Git Basic Auth with no auth header on private repo returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn authenticate_basic_no_auth_private(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "auth-noauth", "private").await;
 
@@ -124,9 +122,8 @@ async fn authenticate_basic_no_auth_private(pool: PgPool) {
 /// Git Basic Auth with inactive user returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn authenticate_basic_inactive_user(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (user_id, token) = create_user(&app, &admin_token, "inact-git", "inactgit@test.com").await;
     let api_token = create_api_token(&app, &token).await;
@@ -154,9 +151,8 @@ async fn authenticate_basic_inactive_user(pool: PgPool) {
 /// Git Basic Auth with nonexistent user returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn authenticate_basic_nonexistent_user(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "auth-nouser", "internal").await;
 
@@ -178,9 +174,8 @@ async fn authenticate_basic_nonexistent_user(pool: PgPool) {
 /// resolve_project returns 404 for non-existent project.
 #[sqlx::test(migrations = "./migrations")]
 async fn resolve_project_not_found(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, _admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let _admin_token = admin_login(&app).await;
 
     let auth = basic_auth("admin", "testpassword");
     let (status, _, _) = git_get(
@@ -196,9 +191,8 @@ async fn resolve_project_not_found(pool: PgPool) {
 /// resolve_project returns 404 for wrong owner.
 #[sqlx::test(migrations = "./migrations")]
 async fn resolve_project_wrong_owner(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "proj-owner", "public").await;
 
@@ -220,9 +214,8 @@ async fn resolve_project_wrong_owner(pool: PgPool) {
 /// Private repos require explicit project read permission — returns 404 to avoid leaking.
 #[sqlx::test(migrations = "./migrations")]
 async fn check_access_private_read_requires_perm(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "priv-read-proj", "private").await;
 
@@ -245,9 +238,8 @@ async fn check_access_private_read_requires_perm(pool: PgPool) {
 /// No auth on internal repo returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn check_access_internal_no_auth(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "int-noauth-proj", "internal").await;
 
@@ -268,9 +260,8 @@ async fn check_access_internal_no_auth(pool: PgPool) {
 /// info/refs without service param returns 400.
 #[sqlx::test(migrations = "./migrations")]
 async fn info_refs_no_service_param_400(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "no-svc-proj", "public").await;
 
@@ -282,9 +273,8 @@ async fn info_refs_no_service_param_400(pool: PgPool) {
 /// info/refs with invalid service param returns 400.
 #[sqlx::test(migrations = "./migrations")]
 async fn info_refs_invalid_service_400(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "bad-svc-proj", "public").await;
 
@@ -301,9 +291,8 @@ async fn info_refs_invalid_service_400(pool: PgPool) {
 /// Soft-deleted project returns 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn info_refs_deleted_project_404(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "del-proj", "public").await;
 
@@ -331,9 +320,8 @@ async fn info_refs_deleted_project_404(pool: PgPool) {
 /// Public repo info/refs can be accessed without any authentication.
 #[sqlx::test(migrations = "./migrations")]
 async fn public_repo_info_refs_no_auth(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "pub-proj", "public").await;
 
@@ -368,9 +356,8 @@ async fn public_repo_info_refs_no_auth(pool: PgPool) {
 /// Public repo info/refs with git-receive-pack service requires authentication.
 #[sqlx::test(migrations = "./migrations")]
 async fn public_repo_receive_pack_refs_requires_auth(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "pub-rp-proj", "public").await;
 
@@ -392,9 +379,8 @@ async fn public_repo_receive_pack_refs_requires_auth(pool: PgPool) {
 /// Any authenticated user can read an internal repo (no specific role needed).
 #[sqlx::test(migrations = "./migrations")]
 async fn internal_repo_any_authed_user_can_read(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "int-read-proj", "internal").await;
 
@@ -420,9 +406,8 @@ async fn internal_repo_any_authed_user_can_read(pool: PgPool) {
 /// Internal repo write (receive-pack) requires ProjectWrite permission.
 #[sqlx::test(migrations = "./migrations")]
 async fn internal_repo_write_requires_perm(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "int-wr-proj", "internal").await;
 
@@ -449,9 +434,8 @@ async fn internal_repo_write_requires_perm(pool: PgPool) {
 /// resolve_project strips .git suffix from repo name.
 #[sqlx::test(migrations = "./migrations")]
 async fn resolve_project_strips_git_suffix(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "suffix-proj", "public").await;
 
@@ -474,9 +458,8 @@ async fn resolve_project_strips_git_suffix(pool: PgPool) {
 /// Git Basic Auth with a valid API token authenticates successfully.
 #[sqlx::test(migrations = "./migrations")]
 async fn authenticate_basic_with_api_token(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "token-proj", "internal").await;
 
@@ -499,9 +482,8 @@ async fn authenticate_basic_with_api_token(pool: PgPool) {
 /// Git Basic Auth with a valid password (not API token) authenticates.
 #[sqlx::test(migrations = "./migrations")]
 async fn authenticate_basic_with_password(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "pass-proj", "internal").await;
 
@@ -523,9 +505,8 @@ async fn authenticate_basic_with_password(pool: PgPool) {
 /// Git Basic Auth with expired API token falls back to password check.
 #[sqlx::test(migrations = "./migrations")]
 async fn authenticate_basic_expired_token_falls_back(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "exp-tok-proj", "internal").await;
 
@@ -559,9 +540,8 @@ async fn authenticate_basic_expired_token_falls_back(pool: PgPool) {
 /// Empty username in Basic Auth returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn authenticate_basic_empty_username(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "empty-user-proj", "internal").await;
 
@@ -580,9 +560,8 @@ async fn authenticate_basic_empty_username(pool: PgPool) {
 /// Malformed base64 in Authorization header returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn authenticate_basic_malformed_base64(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "bad-b64-proj", "internal").await;
 
@@ -600,9 +579,8 @@ async fn authenticate_basic_malformed_base64(pool: PgPool) {
 /// Bearer token (not Basic) in Authorization header returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn authenticate_basic_bearer_token_rejected(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "bearer-proj", "internal").await;
 
@@ -621,9 +599,8 @@ async fn authenticate_basic_bearer_token_rejected(pool: PgPool) {
 /// No colon in decoded credentials returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn authenticate_basic_no_colon_in_creds(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "nocolon-proj", "internal").await;
 
@@ -674,9 +651,8 @@ async fn git_post(
 /// POST upload-pack on non-existent project returns 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn upload_pack_nonexistent_project_404(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, _admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let _admin_token = admin_login(&app).await;
 
     let auth = basic_auth("admin", "testpassword");
     let (status, _, _) = git_post(
@@ -694,9 +670,8 @@ async fn upload_pack_nonexistent_project_404(pool: PgPool) {
 /// POST upload-pack on private repo without auth returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn upload_pack_private_no_auth_401(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "up-priv-proj", "private").await;
 
@@ -715,9 +690,8 @@ async fn upload_pack_private_no_auth_401(pool: PgPool) {
 /// POST upload-pack on public repo without auth should pass access control.
 #[sqlx::test(migrations = "./migrations")]
 async fn upload_pack_public_no_auth_passes_access(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "up-pub-proj", "public").await;
 
@@ -748,9 +722,8 @@ async fn upload_pack_public_no_auth_passes_access(pool: PgPool) {
 /// POST upload-pack with .git suffix in repo name resolves correctly.
 #[sqlx::test(migrations = "./migrations")]
 async fn upload_pack_git_suffix_resolves(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "up-suffix-proj", "public").await;
 
@@ -774,9 +747,8 @@ async fn upload_pack_git_suffix_resolves(pool: PgPool) {
 /// POST receive-pack without auth returns 401 (write always requires auth).
 #[sqlx::test(migrations = "./migrations")]
 async fn receive_pack_no_auth_401(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "rp-noauth-proj", "public").await;
 
@@ -795,9 +767,8 @@ async fn receive_pack_no_auth_401(pool: PgPool) {
 /// POST receive-pack on non-existent project returns 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn receive_pack_nonexistent_project_404(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, _admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let _admin_token = admin_login(&app).await;
 
     let auth = basic_auth("admin", "testpassword");
     let (status, _, _) = git_post(
@@ -815,9 +786,8 @@ async fn receive_pack_nonexistent_project_404(pool: PgPool) {
 /// POST receive-pack without ProjectWrite permission returns 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn receive_pack_no_write_perm_404(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "rp-noperm-proj", "internal").await;
 
@@ -847,9 +817,8 @@ async fn receive_pack_no_write_perm_404(pool: PgPool) {
 /// immediately as 401/403/404).
 #[sqlx::test(migrations = "./migrations")]
 async fn receive_pack_admin_passes_access(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "rp-admin-proj", "private").await;
 
@@ -887,9 +856,8 @@ async fn receive_pack_admin_passes_access(pool: PgPool) {
 /// auth passes via timeout instead.
 #[sqlx::test(migrations = "./migrations")]
 async fn receive_pack_writes_audit_log(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let _project_id = create_project(&app, &admin_token, "rp-audit-proj", "private").await;
 
@@ -924,9 +892,8 @@ async fn receive_pack_writes_audit_log(pool: PgPool) {
 /// we got past auth (auth failures return immediately).
 #[sqlx::test(migrations = "./migrations")]
 async fn receive_pack_developer_with_write_perm(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "rp-dev-proj", "internal").await;
 
@@ -968,9 +935,8 @@ async fn receive_pack_developer_with_write_perm(pool: PgPool) {
 /// info/refs with git-receive-pack service returns correct Content-Type on success.
 #[sqlx::test(migrations = "./migrations")]
 async fn info_refs_receive_pack_content_type(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "refs-rp-proj", "private").await;
 
@@ -1013,9 +979,8 @@ async fn info_refs_receive_pack_content_type(pool: PgPool) {
 /// LFS batch endpoint requires authentication.
 #[sqlx::test(migrations = "./migrations")]
 async fn lfs_batch_no_auth_401(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "lfs-noauth-proj", "public").await;
 
@@ -1038,9 +1003,8 @@ async fn lfs_batch_no_auth_401(pool: PgPool) {
 /// LFS batch with invalid operation returns 400.
 #[sqlx::test(migrations = "./migrations")]
 async fn lfs_batch_invalid_operation_400(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "lfs-badop-proj", "private").await;
 
@@ -1064,9 +1028,8 @@ async fn lfs_batch_invalid_operation_400(pool: PgPool) {
 /// LFS batch with invalid OID returns 400.
 #[sqlx::test(migrations = "./migrations")]
 async fn lfs_batch_invalid_oid_400(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "lfs-badoid-proj", "private").await;
 
@@ -1090,9 +1053,8 @@ async fn lfs_batch_invalid_oid_400(pool: PgPool) {
 /// LFS batch on non-existent project returns 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn lfs_batch_nonexistent_project_404(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, _admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let _admin_token = admin_login(&app).await;
 
     let auth = basic_auth("admin", "testpassword");
     let oid = "a".repeat(64);
@@ -1115,9 +1077,8 @@ async fn lfs_batch_nonexistent_project_404(pool: PgPool) {
 /// LFS batch download with correct permissions returns presigned URLs.
 #[sqlx::test(migrations = "./migrations")]
 async fn lfs_batch_download_returns_presigned_urls(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "lfs-dl-proj", "private").await;
 
@@ -1160,9 +1121,8 @@ async fn lfs_batch_download_returns_presigned_urls(pool: PgPool) {
 /// LFS batch upload with correct permissions returns presigned URLs.
 #[sqlx::test(migrations = "./migrations")]
 async fn lfs_batch_upload_returns_presigned_urls(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "lfs-up-proj", "private").await;
 
@@ -1197,9 +1157,8 @@ async fn lfs_batch_upload_returns_presigned_urls(pool: PgPool) {
 /// LFS batch upload without ProjectWrite returns 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn lfs_batch_upload_no_write_perm_404(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "lfs-nwr-proj", "private").await;
 
@@ -1230,9 +1189,8 @@ async fn lfs_batch_upload_no_write_perm_404(pool: PgPool) {
 /// LFS batch with multiple objects returns presigned URLs for all.
 #[sqlx::test(migrations = "./migrations")]
 async fn lfs_batch_multiple_objects(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "lfs-multi-proj", "private").await;
 
@@ -1271,9 +1229,8 @@ async fn lfs_batch_multiple_objects(pool: PgPool) {
 /// User with viewer role on a private repo can read (ProjectRead granted).
 #[sqlx::test(migrations = "./migrations")]
 async fn private_repo_viewer_with_project_read(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = create_project(&app, &admin_token, "priv-vw-proj", "private").await;
 
@@ -1303,9 +1260,8 @@ async fn private_repo_viewer_with_project_read(pool: PgPool) {
 /// Inactive user with valid password returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn authenticate_basic_inactive_user_password(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (user_id, _token) = create_user(&app, &admin_token, "inact-pw", "inactpw@test.com").await;
 
@@ -1337,9 +1293,8 @@ async fn authenticate_basic_inactive_user_password(pool: PgPool) {
 /// info/refs response includes Cache-Control: no-cache header.
 #[sqlx::test(migrations = "./migrations")]
 async fn info_refs_cache_control_header(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "cc-proj", "public").await;
 
@@ -1362,9 +1317,8 @@ async fn info_refs_cache_control_header(pool: PgPool) {
 /// info/refs pkt-line header is correctly formatted for upload-pack.
 #[sqlx::test(migrations = "./migrations")]
 async fn info_refs_pkt_line_header_upload_pack(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = git_test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "pkt-proj", "public").await;
 

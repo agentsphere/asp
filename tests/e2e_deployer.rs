@@ -53,9 +53,9 @@ async fn setup_deploy_project(
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn deployment_get_returns_correct_fields(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id =
         setup_deploy_project(&state, &app, &token, "deploy-get", "staging", "nginx:1.25").await;
@@ -82,9 +82,9 @@ async fn deployment_get_returns_correct_fields(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn deployment_status_transitions(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_deploy_project(
         &state,
@@ -112,9 +112,9 @@ async fn deployment_status_transitions(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn deployment_rollback(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_deploy_project(
         &state,
@@ -156,9 +156,9 @@ async fn deployment_rollback(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn deployment_stop(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id =
         setup_deploy_project(&state, &app, &token, "deploy-stop", "staging", "nginx:1.25").await;
@@ -189,9 +189,9 @@ async fn deployment_stop(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn deployment_update_image(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_deploy_project(
         &state,
@@ -224,9 +224,9 @@ async fn deployment_update_image(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn deployment_history_recorded(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_deploy_project(
         &state,
@@ -274,9 +274,9 @@ async fn deployment_history_recorded(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn preview_deployment_lifecycle(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = e2e_helpers::create_project(&app, &token, "deploy-preview", "private").await;
 
@@ -337,9 +337,9 @@ async fn preview_deployment_lifecycle(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn preview_cleanup_on_mr_merge(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id =
         e2e_helpers::create_project(&app, &token, "preview-mr-cleanup", "private").await;
@@ -461,9 +461,9 @@ impl ReconcilerGuard {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn reconciler_deploys_basic_manifest(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_deploy_project(
         &state,
@@ -517,9 +517,9 @@ async fn reconciler_deploys_basic_manifest(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn deployment_failed_state_visible(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = e2e_helpers::create_project(&app, &token, "deploy-fail", "private").await;
 
@@ -581,9 +581,9 @@ async fn deployment_failed_state_visible(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn reconciler_rollback_restores_previous(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_deploy_project(
         &state,
@@ -651,9 +651,9 @@ async fn reconciler_rollback_restores_previous(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn reconciler_stop_scales_to_zero(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_deploy_project(
         &state,
@@ -705,9 +705,9 @@ async fn reconciler_stop_scales_to_zero(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn reconciler_optimistic_lock(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_deploy_project(
         &state,
@@ -756,9 +756,9 @@ async fn reconciler_optimistic_lock(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn preview_expired_cleanup(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = e2e_helpers::create_project(&app, &token, "preview-expire", "private").await;
 
@@ -810,9 +810,9 @@ async fn preview_expired_cleanup(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn ops_repo_sync_caches_in_valkey(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     // Create an ops repo via API (local bare repo)
     let (status, body) = e2e_helpers::post_json(
@@ -846,9 +846,9 @@ async fn ops_repo_sync_caches_in_valkey(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn reconciler_multi_env(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = e2e_helpers::create_project(&app, &token, "recon-multi", "private").await;
 
@@ -907,9 +907,9 @@ async fn reconciler_multi_env(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn reconciler_history_actions(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool.clone()).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool.clone()).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let project_id = setup_deploy_project(
         &state,

@@ -9,9 +9,8 @@ use sqlx::PgPool;
 
 #[sqlx::test(migrations = "./migrations")]
 async fn admin_has_all_permissions(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Admin can access admin-only endpoints
     let (status, _) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;
@@ -23,9 +22,8 @@ async fn admin_has_all_permissions(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn developer_role_permissions(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, user_token) =
         helpers::create_user(&app, &admin_token, "dev", "dev@test.com").await;
@@ -44,9 +42,8 @@ async fn developer_role_permissions(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn viewer_role_read_only(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, user_token) =
         helpers::create_user(&app, &admin_token, "viewonly", "viewonly@test.com").await;
@@ -71,9 +68,8 @@ async fn viewer_role_read_only(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn no_role_gets_forbidden(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, user_token) =
         helpers::create_user(&app, &admin_token, "norole", "norole@test.com").await;
@@ -91,9 +87,8 @@ async fn no_role_gets_forbidden(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn project_scoped_role(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_a = helpers::create_project(&app, &admin_token, "proj-a", "private").await;
     let project_b = helpers::create_project(&app, &admin_token, "proj-b", "private").await;
@@ -125,9 +120,8 @@ async fn project_scoped_role(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn global_role_applies_to_all_projects(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_a = helpers::create_project(&app, &admin_token, "glob-a", "private").await;
     let project_b = helpers::create_project(&app, &admin_token, "glob-b", "private").await;
@@ -150,9 +144,8 @@ async fn global_role_applies_to_all_projects(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn role_assignment_creates_audit(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, _) =
         helpers::create_user(&app, &admin_token, "auditee", "auditee@test.com").await;
@@ -168,9 +161,8 @@ async fn role_assignment_creates_audit(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delegation_grants_temporary_access(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "deleg-proj", "private").await;
 
@@ -206,9 +198,8 @@ async fn delegation_grants_temporary_access(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn expired_delegation_denied(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "expired-deleg", "private").await;
 
@@ -239,9 +230,8 @@ async fn expired_delegation_denied(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn revoked_delegation_denied(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "revoke-deleg", "private").await;
 
@@ -287,9 +277,8 @@ async fn revoked_delegation_denied(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delegation_requires_delegator_holds_permission(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, _) =
         helpers::create_user(&app, &admin_token, "delholder", "delholder@test.com").await;
@@ -323,9 +312,8 @@ async fn delegation_requires_delegator_holds_permission(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn system_role_cannot_be_modified(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Get admin role ID
     let row: (uuid::Uuid,) = sqlx::query_as("SELECT id FROM roles WHERE name = 'admin'")
@@ -348,9 +336,8 @@ async fn system_role_cannot_be_modified(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn custom_role_crud(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Create custom role
     let (status, role_body) = helpers::post_json(
@@ -413,9 +400,8 @@ async fn custom_role_crud(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn permission_cache_invalidation(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (user_id, user_token) =
         helpers::create_user(&app, &admin_token, "cacheuser", "cache@test.com").await;
@@ -460,9 +446,8 @@ async fn permission_cache_invalidation(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_permissions_and_roles(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // List roles
     let (status, roles) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;

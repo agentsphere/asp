@@ -48,9 +48,8 @@ async fn seed_bare_repo(repo_path: &str) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_issue(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "issue-proj", "public").await;
 
@@ -73,9 +72,8 @@ async fn create_issue(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_issue_empty_title(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "empty-title", "public").await;
 
@@ -92,9 +90,8 @@ async fn create_issue_empty_title(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_issue_title_too_long(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "long-title", "public").await;
 
@@ -112,9 +109,8 @@ async fn create_issue_title_too_long(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_issues(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "list-issues", "public").await;
 
@@ -142,9 +138,8 @@ async fn list_issues(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_issue_by_number(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "get-issue", "public").await;
 
@@ -170,9 +165,8 @@ async fn get_issue_by_number(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_issue(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "upd-issue", "public").await;
 
@@ -204,9 +198,8 @@ async fn update_issue(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn close_and_reopen_issue(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "close-reopen", "public").await;
 
@@ -243,9 +236,8 @@ async fn close_and_reopen_issue(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn issue_auto_increment_numbers(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_a = helpers::create_project(&app, &admin_token, "auto-a", "public").await;
     let project_b = helpers::create_project(&app, &admin_token, "auto-b", "public").await;
@@ -277,9 +269,8 @@ async fn issue_auto_increment_numbers(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn add_issue_comment(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "comment-proj", "public").await;
 
@@ -305,9 +296,8 @@ async fn add_issue_comment(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_merge_request(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-proj", "public").await;
 
@@ -350,9 +340,8 @@ async fn create_merge_request(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_merge_requests(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "list-mr", "public").await;
 
@@ -402,9 +391,8 @@ async fn list_merge_requests(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_merge_request(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "upd-mr", "public").await;
 
@@ -450,9 +438,8 @@ async fn update_merge_request(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn add_mr_comment(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-comment", "public").await;
 
@@ -498,9 +485,8 @@ async fn add_mr_comment(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn issue_requires_project_read(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "private-issues", "private").await;
 
@@ -529,9 +515,8 @@ async fn issue_requires_project_read(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn issue_write_requires_project_write(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "write-issues", "public").await;
 
@@ -597,9 +582,8 @@ async fn insert_mr(pool: &PgPool, project_id: Uuid, author_id: Uuid, number: i32
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_list_reviews_empty(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "review-proj", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -619,9 +603,8 @@ async fn mr_list_reviews_empty(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_create_review_approve(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "approve-proj", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -643,9 +626,8 @@ async fn mr_create_review_approve(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_create_review_request_changes(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "changes-proj", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -665,9 +647,8 @@ async fn mr_create_review_request_changes(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_create_review_invalid_verdict(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "bad-verdict", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -690,9 +671,8 @@ async fn mr_create_review_invalid_verdict(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_list_comments_empty(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "cmt-list", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -711,9 +691,8 @@ async fn mr_list_comments_empty(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_create_and_list_comments(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "cmt-create", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -742,9 +721,8 @@ async fn mr_create_and_list_comments(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_update_comment_by_author(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "cmt-update", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -773,9 +751,8 @@ async fn mr_update_comment_by_author(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_update_comment_non_author_forbidden(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "cmt-forbid", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -808,9 +785,8 @@ async fn mr_update_comment_non_author_forbidden(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_update_comment_by_admin(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "cmt-admin", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -848,9 +824,8 @@ async fn mr_update_comment_by_admin(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_close_and_reopen(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-close-reopen", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -881,9 +856,8 @@ async fn mr_close_and_reopen(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_update_description(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-upd-desc", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -907,9 +881,8 @@ async fn mr_update_description(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_update_invalid_status(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-bad-status", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -928,9 +901,8 @@ async fn mr_update_invalid_status(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_list_private_project_non_member(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id =
         helpers::create_project(&app, &admin_token, "mr-private-list", "private").await;
@@ -955,9 +927,8 @@ async fn mr_list_private_project_non_member(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_get_private_project_non_member(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-priv-get", "private").await;
 
@@ -978,9 +949,8 @@ async fn mr_get_private_project_non_member(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_create_review_comment_verdict(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "review-comment", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -1001,9 +971,8 @@ async fn mr_create_review_comment_verdict(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_list_reviews_with_multiple(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "multi-reviews", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -1039,9 +1008,8 @@ async fn mr_list_reviews_with_multiple(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_update_non_author_without_project_write(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-upd-noauth", "public").await;
 
@@ -1067,9 +1035,8 @@ async fn mr_update_non_author_without_project_write(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_comment_empty_body_rejected(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-empty-cmt", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -1088,9 +1055,8 @@ async fn mr_comment_empty_body_rejected(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_update_comment_not_found(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-cmt-404", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -1114,9 +1080,8 @@ async fn mr_update_comment_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_list_filter_by_status(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-filt-st", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -1158,9 +1123,8 @@ async fn mr_list_filter_by_status(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_list_filter_by_author(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-filt-auth", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -1196,9 +1160,8 @@ async fn mr_list_filter_by_author(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_list_with_pagination(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-filt-page", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -1234,9 +1197,8 @@ async fn mr_list_with_pagination(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_create_same_branch_rejected(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-same-br", "public").await;
 
@@ -1264,9 +1226,8 @@ async fn mr_create_same_branch_rejected(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_create_nonexistent_source_branch(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-no-src", "public").await;
 
@@ -1294,9 +1255,8 @@ async fn mr_create_nonexistent_source_branch(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn mr_get_not_found(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-get-404", "public").await;
 
@@ -1315,9 +1275,8 @@ async fn mr_get_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn merge_already_closed_mr(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-merge-closed", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -1343,9 +1302,8 @@ async fn merge_already_closed_mr(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn merge_nonexistent_mr(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-merge-404", "public").await;
 
@@ -1361,9 +1319,8 @@ async fn merge_nonexistent_mr(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn merge_forbidden_for_viewer(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "mr-merge-viewer", "public").await;
     let admin_id = get_user_id(&app, &admin_token).await;
@@ -1394,9 +1351,8 @@ async fn merge_forbidden_for_viewer(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn review_on_nonexistent_mr(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "review-no-mr", "public").await;
 
@@ -1412,9 +1368,8 @@ async fn review_on_nonexistent_mr(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn comment_on_nonexistent_mr(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "cmt-no-mr", "public").await;
 
@@ -1430,9 +1385,8 @@ async fn comment_on_nonexistent_mr(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn review_list_on_nonexistent_mr(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "rev-list-404", "public").await;
 
@@ -1447,9 +1401,8 @@ async fn review_list_on_nonexistent_mr(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn comment_list_on_nonexistent_mr(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "cmt-list-404", "public").await;
 

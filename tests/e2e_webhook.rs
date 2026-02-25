@@ -49,9 +49,9 @@ async fn insert_webhook(
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn webhook_fires_on_issue_create(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     // Start mock server
     let mock_server = MockServer::start().await;
@@ -102,9 +102,9 @@ async fn webhook_fires_on_issue_create(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn webhook_hmac_signature(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let mock_server = MockServer::start().await;
 
@@ -178,9 +178,9 @@ async fn webhook_hmac_signature(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn webhook_no_signature_without_secret(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let mock_server = MockServer::start().await;
 
@@ -231,9 +231,9 @@ async fn webhook_no_signature_without_secret(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn webhook_fires_on_pipeline_complete(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     // Spawn pipeline executor so pipelines actually get picked up
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
@@ -317,9 +317,9 @@ async fn webhook_fires_on_pipeline_complete(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn webhook_timeout_doesnt_block(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let mock_server = MockServer::start().await;
 
@@ -365,9 +365,9 @@ async fn webhook_timeout_doesnt_block(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn webhook_concurrent_limit(pool: PgPool) {
-    let state = e2e_helpers::e2e_state(pool).await;
+    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
-    let token = e2e_helpers::admin_login(&app).await;
+    let token = admin_token.clone();
 
     let mock_server = MockServer::start().await;
 

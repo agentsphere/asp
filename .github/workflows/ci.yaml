@@ -65,9 +65,22 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      minio:
+        image: bitnami/minio:latest
+        ports:
+          - 9000:9000
+        env:
+          MINIO_ROOT_USER: platform
+          MINIO_ROOT_PASSWORD: devdevdev
+          MINIO_DEFAULT_BUCKETS: platform-e2e
     env:
       DATABASE_URL: postgres://platform:dev@localhost:5432/platform_test
       VALKEY_URL: redis://localhost:6379
+      MINIO_ENDPOINT: http://localhost:9000
+      MINIO_ACCESS_KEY: platform
+      MINIO_SECRET_KEY: devdevdev
+      PLATFORM_MASTER_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      PLATFORM_DEV: "true"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -75,6 +88,30 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - run: mkdir -p ui/dist && touch ui/dist/index.html
       - run: cargo nextest run --test '*_integration' --profile ci --no-tests=pass
+
+  test-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: platform
+          config: hack/kind-config.yaml
+
+      - name: Prepare shared mount
+        run: |
+          mkdir -p /tmp/platform-e2e
+          docker exec platform-control-plane mkdir -p /tmp/platform-e2e
+
+      - run: mkdir -p ui/dist && touch ui/dist/index.html
+
+      - name: Run E2E tests
+        run: bash hack/test-in-cluster.sh --type e2e
 
   deny:
     runs-on: ubuntu-latest
@@ -109,6 +146,14 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      minio:
+        image: bitnami/minio:latest
+        ports:
+          - 9000:9000
+        env:
+          MINIO_ROOT_USER: platform
+          MINIO_ROOT_PASSWORD: devdevdev
+          MINIO_DEFAULT_BUCKETS: platform-e2e
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -127,6 +172,11 @@ jobs:
         env:
           DATABASE_URL: postgres://platform:dev@localhost:5432/platform_test
           VALKEY_URL: redis://localhost:6379
+          MINIO_ENDPOINT: http://localhost:9000
+          MINIO_ACCESS_KEY: platform
+          MINIO_SECRET_KEY: devdevdev
+          PLATFORM_MASTER_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          PLATFORM_DEV: "true"
 
       - name: Upload unit coverage
         uses: codecov/codecov-action@v5
@@ -143,7 +193,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   build:
-    needs: [fmt, lint, test-unit, test-integration, deny]
+    needs: [fmt, lint, test-unit, test-integration, test-e2e, deny]
     strategy:
       matrix:
         include:

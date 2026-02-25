@@ -9,14 +9,14 @@ use uuid::Uuid;
 
 #[sqlx::test(migrations = "./migrations")]
 async fn handle_event_invalid_json(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let result = platform::store::eventbus::handle_event(&state, "not valid json").await;
     assert!(result.is_err());
 }
 
 #[sqlx::test(migrations = "./migrations")]
 async fn handle_event_unknown_type(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, _admin_token) = helpers::test_state(pool).await;
     let json = r#"{"type":"UnknownEvent","project_id":"00000000-0000-0000-0000-000000000000"}"#;
     let result = platform::store::eventbus::handle_event(&state, json).await;
     assert!(result.is_err());
@@ -25,9 +25,8 @@ async fn handle_event_unknown_type(pool: PgPool) {
 /// ImageBuilt with no existing deployment → creates default deployment.
 #[sqlx::test(migrations = "./migrations")]
 async fn image_built_no_deployment_creates_default(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
     let project_id = helpers::create_project(&app, &admin_token, "eb-img-new", "public").await;
 
     let event = serde_json::json!({
@@ -59,9 +58,8 @@ async fn image_built_no_deployment_creates_default(pool: PgPool) {
 /// ImageBuilt with existing deployment but no ops repo → updates image_ref directly.
 #[sqlx::test(migrations = "./migrations")]
 async fn image_built_deployment_no_ops_repo(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
     let project_id = helpers::create_project(&app, &admin_token, "eb-img-noop", "public").await;
 
     // Insert deployment without ops_repo_id
@@ -101,9 +99,8 @@ async fn image_built_deployment_no_ops_repo(pool: PgPool) {
 /// OpsRepoUpdated → updates deployment row and marks pending.
 #[sqlx::test(migrations = "./migrations")]
 async fn ops_repo_updated_marks_pending(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
     let project_id = helpers::create_project(&app, &admin_token, "eb-ops-upd", "public").await;
 
     // Insert deployment
@@ -144,9 +141,8 @@ async fn ops_repo_updated_marks_pending(pool: PgPool) {
 /// DeployRequested delegates to ImageBuilt logic → creates deployment.
 #[sqlx::test(migrations = "./migrations")]
 async fn deploy_requested_creates_deployment(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
     let project_id = helpers::create_project(&app, &admin_token, "eb-deploy", "public").await;
 
     let event = serde_json::json!({
@@ -174,9 +170,8 @@ async fn deploy_requested_creates_deployment(pool: PgPool) {
 /// RollbackRequested with no deployment → graceful skip (no error).
 #[sqlx::test(migrations = "./migrations")]
 async fn rollback_no_deployment_graceful(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
     let project_id = helpers::create_project(&app, &admin_token, "eb-rb-none", "public").await;
 
     let event = serde_json::json!({
@@ -196,9 +191,8 @@ async fn rollback_no_deployment_graceful(pool: PgPool) {
 /// RollbackRequested with deployment but no ops repo → sets desired_status = 'rollback'.
 #[sqlx::test(migrations = "./migrations")]
 async fn rollback_no_ops_repo_legacy_path(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
     let project_id = helpers::create_project(&app, &admin_token, "eb-rb-leg", "public").await;
 
     // Insert deployment without ops_repo_id
@@ -236,9 +230,8 @@ async fn rollback_no_ops_repo_legacy_path(pool: PgPool) {
 /// ImageBuilt on conflict upserts existing deployment.
 #[sqlx::test(migrations = "./migrations")]
 async fn image_built_upserts_on_conflict(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state.clone());
-    let admin_token = helpers::admin_login(&app).await;
     let project_id = helpers::create_project(&app, &admin_token, "eb-upsert", "public").await;
 
     // First ImageBuilt → creates deployment

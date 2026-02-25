@@ -6,8 +6,8 @@ use axum::http::StatusCode;
 use sqlx::PgPool;
 
 use helpers::{
-    admin_login, assign_role, create_project, create_user, patch_json, post_json, set_user_api_key,
-    test_router, test_state,
+    assign_role, create_project, create_user, patch_json, post_json, set_user_api_key, test_router,
+    test_state,
 };
 
 // ---------------------------------------------------------------------------
@@ -17,10 +17,9 @@ use helpers::{
 /// Create a project-less session via /api/create-app.
 #[sqlx::test(migrations = "./migrations")]
 async fn create_app_session(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (_user_id, token) = create_user(&app, &admin_token, "dev1", "dev1@test.com").await;
     assign_role(&app, &admin_token, _user_id, "developer", None, &pool).await;
     set_user_api_key(&pool, _user_id).await;
@@ -48,10 +47,9 @@ async fn create_app_session(pool: PgPool) {
 /// Create app with empty description is rejected.
 #[sqlx::test(migrations = "./migrations")]
 async fn create_app_empty_description_rejected(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev2", "dev2@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
 
@@ -69,10 +67,9 @@ async fn create_app_empty_description_rejected(pool: PgPool) {
 /// Viewer (without project:write + agent:run) cannot create app.
 #[sqlx::test(migrations = "./migrations")]
 async fn create_app_requires_permissions(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "viewer1", "viewer1@test.com").await;
     assign_role(&app, &admin_token, user_id, "viewer", None, &pool).await;
 
@@ -94,10 +91,9 @@ async fn create_app_requires_permissions(pool: PgPool) {
 /// Link a project-less session to a project via PATCH.
 #[sqlx::test(migrations = "./migrations")]
 async fn update_session_link_project(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev3", "dev3@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
     set_user_api_key(&pool, user_id).await;
@@ -136,10 +132,9 @@ async fn update_session_link_project(pool: PgPool) {
 /// Non-owner cannot update session.
 #[sqlx::test(migrations = "./migrations")]
 async fn update_session_non_owner_forbidden(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev4", "dev4@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
     set_user_api_key(&pool, user_id).await;
@@ -174,10 +169,9 @@ async fn update_session_non_owner_forbidden(pool: PgPool) {
 /// Rate limiting on create-app.
 #[sqlx::test(migrations = "./migrations")]
 async fn create_app_rate_limited(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev6", "dev6@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
     set_user_api_key(&pool, user_id).await;
@@ -213,10 +207,9 @@ async fn create_app_rate_limited(pool: PgPool) {
 /// Create-app without API key → error mentioning API key.
 #[sqlx::test(migrations = "./migrations")]
 async fn create_app_without_api_key_fails(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "nokey", "nokey@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
     // Note: NOT calling set_user_api_key
@@ -240,10 +233,9 @@ async fn create_app_without_api_key_fails(pool: PgPool) {
 /// After create-app, session has pod_name=null (in-process, not K8s).
 #[sqlx::test(migrations = "./migrations")]
 async fn create_app_session_is_inprocess(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev7", "dev7@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
     set_user_api_key(&pool, user_id).await;

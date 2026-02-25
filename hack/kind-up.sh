@@ -241,9 +241,7 @@ kubectl wait --for=condition=Ready cluster/platform-db -n platform --timeout=120
 # Grant CREATEDB to the platform user (required by sqlx::test macro)
 kubectl exec -n platform platform-db-1 -c postgres -- psql -U postgres -c "ALTER USER platform CREATEDB;"
 
-# Create e2e test namespaces
-kubectl create namespace e2e-pipelines --dry-run=client -o yaml | kubectl apply -f -
-kubectl create namespace e2e-agents --dry-run=client -o yaml | kubectl apply -f -
+# E2E/integration test namespaces are created dynamically per run by hack/test-in-cluster.sh
 
 # Create shared temp directory for e2e test repos (mounted via extraMounts)
 mkdir -p /tmp/platform-e2e

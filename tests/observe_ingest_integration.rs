@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use prost::Message;
 use sqlx::PgPool;
 
-use helpers::{admin_login, test_state};
+use helpers::test_state;
 
 // ---------------------------------------------------------------------------
 // Custom test router that includes ingest endpoints + channels
@@ -173,11 +173,10 @@ async fn post_protobuf(
 /// Ingest a trace via OTLP protobuf, flush, query via API.
 #[sqlx::test(migrations = "./migrations")]
 async fn ingest_traces_protobuf(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
 
     let (channels, spans_rx, _logs_rx, _metrics_rx) = platform::observe::ingest::create_channels();
     let app = ingest_test_router(state.clone(), channels);
-    let admin_token = admin_login(&app).await;
 
     let trace_id: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
     let span_id: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -214,11 +213,10 @@ async fn ingest_traces_protobuf(pool: PgPool) {
 /// Ingest logs via OTLP protobuf, flush, query.
 #[sqlx::test(migrations = "./migrations")]
 async fn ingest_logs_protobuf(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
 
     let (channels, _spans_rx, logs_rx, _metrics_rx) = platform::observe::ingest::create_channels();
     let app = ingest_test_router(state.clone(), channels);
-    let admin_token = admin_login(&app).await;
 
     let body = build_logs_request();
     let (status, _) = post_protobuf(&app, &admin_token, "/v1/logs", body).await;
@@ -250,11 +248,10 @@ async fn ingest_logs_protobuf(pool: PgPool) {
 /// Ingest metrics via OTLP protobuf, flush, query.
 #[sqlx::test(migrations = "./migrations")]
 async fn ingest_metrics_protobuf(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
 
     let (channels, _spans_rx, _logs_rx, metrics_rx) = platform::observe::ingest::create_channels();
     let app = ingest_test_router(state.clone(), channels);
-    let admin_token = admin_login(&app).await;
 
     let metric_name = format!("ingest_test_{}", uuid::Uuid::new_v4().simple());
     let body = build_metrics_request(&metric_name);
@@ -287,11 +284,10 @@ async fn ingest_metrics_protobuf(pool: PgPool) {
 /// Invalid protobuf returns 400.
 #[sqlx::test(migrations = "./migrations")]
 async fn ingest_invalid_protobuf_returns_400(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
 
     let (channels, _spans_rx, _logs_rx, _metrics_rx) = platform::observe::ingest::create_channels();
     let app = ingest_test_router(state, channels);
-    let admin_token = admin_login(&app).await;
 
     let garbage = vec![0xFF, 0xFE, 0xFD, 0xFC, 0x00];
     let (status, _) = post_protobuf(&app, &admin_token, "/v1/traces", garbage.clone()).await;

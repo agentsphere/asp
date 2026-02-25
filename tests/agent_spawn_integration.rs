@@ -7,8 +7,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use helpers::{
-    admin_login, assign_role, create_project, create_user, get_json, post_json, test_router,
-    test_state,
+    assign_role, create_project, create_user, get_json, post_json, test_router, test_state,
 };
 
 // ---------------------------------------------------------------------------
@@ -53,10 +52,9 @@ async fn insert_session(
 /// Spawn a child session from a parent session.
 #[sqlx::test(migrations = "./migrations")]
 async fn spawn_child_session(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev1", "dev1@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
     let project_id = create_project(&app, &token, "spawn-test", "private").await;
@@ -83,10 +81,9 @@ async fn spawn_child_session(pool: PgPool) {
 /// Spawn depth limit is enforced.
 #[sqlx::test(migrations = "./migrations")]
 async fn spawn_depth_limit(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev2", "dev2@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
     let project_id = create_project(&app, &token, "depth-test", "private").await;
@@ -115,10 +112,9 @@ async fn spawn_depth_limit(pool: PgPool) {
 /// List children of a session.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_children(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev3", "dev3@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
     let project_id = create_project(&app, &token, "children-test", "private").await;
@@ -170,10 +166,9 @@ async fn list_children(pool: PgPool) {
 /// Spawn requires agent:spawn permission.
 #[sqlx::test(migrations = "./migrations")]
 async fn spawn_requires_permission(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     // Create user with only viewer role (no agent:spawn)
     let (user_id, token) = create_user(&app, &admin_token, "viewer1", "viewer1@test.com").await;
     assign_role(&app, &admin_token, user_id, "viewer", None, &pool).await;
@@ -201,10 +196,9 @@ async fn spawn_requires_permission(pool: PgPool) {
 /// Parent-child chain: human → parent → child tracks lineage.
 #[sqlx::test(migrations = "./migrations")]
 async fn spawn_chain_tracks_lineage(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev4", "dev4@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
     let project_id = create_project(&app, &token, "chain-test", "private").await;
@@ -238,10 +232,9 @@ async fn spawn_chain_tracks_lineage(pool: PgPool) {
 /// Spawn preserves parent's user_id (original human).
 #[sqlx::test(migrations = "./migrations")]
 async fn spawn_preserves_original_user(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev5", "dev5@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
     let project_id = create_project(&app, &token, "user-test", "private").await;
@@ -265,10 +258,9 @@ async fn spawn_preserves_original_user(pool: PgPool) {
 /// Empty children list returns empty array.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_children_empty(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev6", "dev6@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
     let project_id = create_project(&app, &token, "empty-test", "private").await;
@@ -290,10 +282,9 @@ async fn list_children_empty(pool: PgPool) {
 /// Wrong project ID for session returns 404 on spawn.
 #[sqlx::test(migrations = "./migrations")]
 async fn spawn_wrong_project_returns_404(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev7", "dev7@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
     let project_a = create_project(&app, &token, "project-a", "private").await;
@@ -317,10 +308,9 @@ async fn spawn_wrong_project_returns_404(pool: PgPool) {
 /// Prompt validation: empty prompt rejected.
 #[sqlx::test(migrations = "./migrations")]
 async fn spawn_empty_prompt_rejected(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let admin_token = admin_login(&app).await;
     let (user_id, token) = create_user(&app, &admin_token, "dev8", "dev8@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
     let project_id = create_project(&app, &token, "validation-test", "private").await;

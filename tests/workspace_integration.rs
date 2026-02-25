@@ -9,9 +9,8 @@ use sqlx::PgPool;
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_workspace(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, body) = helpers::post_json(
         &app,
@@ -34,9 +33,8 @@ async fn create_workspace(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_workspace_duplicate_name(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, _) = helpers::post_json(
         &app,
@@ -59,9 +57,8 @@ async fn create_workspace_duplicate_name(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_workspace_invalid_name(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (status, _) = helpers::post_json(
         &app,
@@ -75,9 +72,8 @@ async fn create_workspace_invalid_name(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_workspace(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, create_body) = helpers::post_json(
         &app,
@@ -97,9 +93,8 @@ async fn get_workspace(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_workspaces(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     for i in 0..3 {
         helpers::post_json(
@@ -121,9 +116,8 @@ async fn list_workspaces(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_workspace(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, create_body) = helpers::post_json(
         &app,
@@ -152,9 +146,8 @@ async fn update_workspace(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_workspace(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, create_body) = helpers::post_json(
         &app,
@@ -180,9 +173,8 @@ async fn delete_workspace(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn add_and_list_members(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, create_body) = helpers::post_json(
         &app,
@@ -230,9 +222,8 @@ async fn add_and_list_members(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn remove_member(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, create_body) = helpers::post_json(
         &app,
@@ -273,9 +264,8 @@ async fn remove_member(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn non_member_cannot_view_workspace(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, create_body) = helpers::post_json(
         &app,
@@ -298,9 +288,8 @@ async fn non_member_cannot_view_workspace(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn member_can_view_workspace(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, create_body) = helpers::post_json(
         &app,
@@ -337,9 +326,8 @@ async fn member_can_view_workspace(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn workspace_member_gets_project_read(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Create workspace
     let (_, ws_body) = helpers::post_json(
@@ -392,9 +380,8 @@ async fn workspace_member_gets_project_read(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn workspace_admin_gets_project_write(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Create workspace
     let (_, ws_body) = helpers::post_json(
@@ -446,9 +433,8 @@ async fn workspace_admin_gets_project_write(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn workspace_projects_listed(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     // Create workspace
     let (_, ws_body) = helpers::post_json(
@@ -486,9 +472,8 @@ async fn workspace_projects_listed(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn non_admin_cannot_modify_workspace(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let (_, ws_body) = helpers::post_json(
         &app,

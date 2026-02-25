@@ -77,27 +77,28 @@ Write the implementation to make tests pass:
 
 Run `just test-unit` — all unit tests should pass (green phase).
 
-## Step 5: Integration tests
+## Step 5: Integration & E2E tests
 
 If the change involves database queries or HTTP endpoints:
 
 1. Write or update integration tests in `tests/`
 2. For DB tests: use `#[sqlx::test(migrations = "migrations")]` with the `pool: PgPool` fixture
-3. Test the full flow: setup data, call function, assert result
-4. For endpoint tests: construct a test `Router`, send requests with `tower::ServiceExt::oneshot`
-5. Use test helpers from `tests/helpers/mod.rs` for common setup
-6. Use `insta::assert_json_snapshot!` for API response format stability
-7. Run `just test` (requires `DATABASE_URL` pointing to a running Postgres)
+3. Use `let (state, admin_token) = helpers::test_state(pool).await;` for state + auth
+4. Use `let app = helpers::test_router(state.clone());` for the test router
+5. Use the pre-created `admin_token` for API calls — never call `admin_login()` unless testing login behavior
+6. Use dynamic queries (`sqlx::query()`) in test files, not compile-time macros (`sqlx::query!()`)
+7. Run `just test-integration` (requires Kind cluster)
 
 If the change is pure logic with no I/O, skip to step 6.
 
 ### E2E tests
 
-If the change involves K8s pod execution, deployment reconciliation, or git operations:
+If the change involves K8s pod execution, deployment reconciliation, git operations, webhook delivery, or agent sessions:
 
 1. Write or update E2E tests in `tests/e2e_*.rs` (marked `#[ignore]`)
-2. Use helpers from `tests/e2e_helpers/mod.rs` — `e2e_state(pool)`, auth/git/K8s/HTTP helpers
-3. Run with `just test-e2e` (requires Kind cluster via `just cluster-up`)
+2. Use `let (state, admin_token) = e2e_helpers::e2e_state(pool).await;` for state + auth
+3. Use helpers from `tests/e2e_helpers/mod.rs` — git/K8s/HTTP helpers
+4. Run with `just test-e2e` (requires Kind cluster via `just cluster-up`)
 
 ### UI changes
 
@@ -118,11 +119,21 @@ If the change adds or modifies API endpoints used by agents:
 
 ## Step 6: Quality gate
 
-Run the full local CI. Do not skip any checks:
+Run the full local CI including E2E tests. **Do not skip any checks:**
 
 ```bash
-just ci           # fmt + lint + deny + test-unit + build
+just ci-full      # fmt + lint + deny + test-unit + test-integration + test-e2e + build
 ```
+
+If `ci-full` is too slow for iteration, run the tiers relevant to your change:
+
+```bash
+just test-unit          # always — fast (~1s)
+just test-integration   # after API/DB/auth changes (~2.5 min, requires Kind cluster)
+just test-e2e           # after K8s/pipeline/deployer/agent/git/webhook changes (~2.5 min)
+```
+
+**Before declaring work complete, all three tiers MUST pass.** E2E tests catch real issues that unit and integration tests miss (K8s pod behavior, git operations, webhook delivery, cross-service interactions). Never skip them.
 
 If database queries changed, also run:
 
@@ -166,6 +177,7 @@ Verify every item before considering the work done:
 - [ ] K8s pod specs use correct namespace (`PLATFORM_PIPELINE_NAMESPACE` or `PLATFORM_AGENT_NAMESPACE`)
 - [ ] UI types updated in `ui/src/lib/types.ts` if API response shapes changed
 - [ ] MCP servers updated in `mcp/servers/` if agent-facing APIs changed
+- [ ] All three test tiers pass: `just ci-full` (unit + integration + E2E + build)
 
 ## Step 8: Update plan & summarize changes
 

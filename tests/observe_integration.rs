@@ -7,7 +7,7 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use helpers::{admin_login, create_user, test_router, test_state};
+use helpers::{create_user, test_router, test_state};
 
 // ---------------------------------------------------------------------------
 // Store-level helpers
@@ -78,9 +78,8 @@ async fn insert_test_metric(pool: &PgPool, name: &str, value: f64) {
 /// Write spans via store, query via /api/observe/traces → span appears.
 #[sqlx::test(migrations = "./migrations")]
 async fn write_and_query_spans(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let trace_id = format!("trace-{}", Uuid::new_v4());
     let span_id = format!("span-{}", Uuid::new_v4());
@@ -101,9 +100,8 @@ async fn write_and_query_spans(pool: PgPool) {
 /// Write logs via store, query via /api/observe/logs → log appears.
 #[sqlx::test(migrations = "./migrations")]
 async fn write_and_query_logs(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let unique_msg = format!("test-log-{}", Uuid::new_v4());
     insert_test_log(&pool, "log-test-svc", "info", &unique_msg).await;
@@ -126,9 +124,8 @@ async fn write_and_query_logs(pool: PgPool) {
 /// Write metrics via store, query via /api/observe/metrics → metric series appears.
 #[sqlx::test(migrations = "./migrations")]
 async fn write_and_query_metrics(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let metric_name = format!("test_metric_{}", Uuid::new_v4().simple());
     insert_test_metric(&pool, &metric_name, 42.0).await;
@@ -149,9 +146,8 @@ async fn write_and_query_metrics(pool: PgPool) {
 /// List distinct metric names.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_metric_names(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let name1 = format!("mn_alpha_{}", Uuid::new_v4().simple());
     let name2 = format!("mn_beta_{}", Uuid::new_v4().simple());
@@ -170,9 +166,8 @@ async fn list_metric_names(pool: PgPool) {
 /// Alert CRUD cycle: create, get, list, patch, delete.
 #[sqlx::test(migrations = "./migrations")]
 async fn alert_crud(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Need alert:manage permission — admin has it
     // Create
@@ -240,9 +235,8 @@ async fn alert_crud(pool: PgPool) {
 /// User without observe:read gets 403 on query endpoints.
 #[sqlx::test(migrations = "./migrations")]
 async fn observe_requires_permission(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Create user with NO role at all — no observe:read
     let (_user_id, token) = create_user(&app, &admin_token, "no-observe", "noobs@test.com").await;
@@ -261,9 +255,8 @@ async fn observe_requires_permission(pool: PgPool) {
 /// Filter logs by level — only error logs returned when ?level=error.
 #[sqlx::test(migrations = "./migrations")]
 async fn search_logs_by_level(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let tag = Uuid::new_v4().simple().to_string();
     insert_test_log(&pool, &format!("svc-{tag}"), "info", "info msg").await;
@@ -284,9 +277,8 @@ async fn search_logs_by_level(pool: PgPool) {
 /// Filter logs by service.
 #[sqlx::test(migrations = "./migrations")]
 async fn search_logs_by_service(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let svc_a = format!("svc-a-{}", Uuid::new_v4().simple());
     let svc_b = format!("svc-b-{}", Uuid::new_v4().simple());
@@ -307,9 +299,8 @@ async fn search_logs_by_service(pool: PgPool) {
 /// Filter logs by text query.
 #[sqlx::test(migrations = "./migrations")]
 async fn search_logs_by_text_query(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let unique = Uuid::new_v4().simple().to_string();
     insert_test_log(&pool, "search-svc", "info", &format!("findme-{unique}")).await;
@@ -328,9 +319,8 @@ async fn search_logs_by_text_query(pool: PgPool) {
 /// Log pagination works.
 #[sqlx::test(migrations = "./migrations")]
 async fn search_logs_pagination(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let svc = format!("page-svc-{}", Uuid::new_v4().simple());
     for i in 0..5 {
@@ -355,9 +345,8 @@ async fn search_logs_pagination(pool: PgPool) {
 /// Get trace detail returns spans.
 #[sqlx::test(migrations = "./migrations")]
 async fn get_trace_detail(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let trace_id = format!("trace-detail-{}", Uuid::new_v4().simple());
     insert_test_span(&pool, &trace_id, "span-root", "detail-svc").await;
@@ -378,9 +367,8 @@ async fn get_trace_detail(pool: PgPool) {
 /// Get trace detail for nonexistent trace returns 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn get_trace_not_found(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, _) = helpers::get_json(
         &app,
@@ -398,9 +386,8 @@ async fn get_trace_not_found(pool: PgPool) {
 /// Query metrics by name.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_metrics_by_name(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let name = format!("qm_{}", Uuid::new_v4().simple());
     insert_test_metric(&pool, &name, 99.0).await;
@@ -420,9 +407,8 @@ async fn query_metrics_by_name(pool: PgPool) {
 /// Query metrics with time range filter.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_metrics_time_range(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let name = format!("tr_{}", Uuid::new_v4().simple());
     insert_test_metric(&pool, &name, 50.0).await;
@@ -441,9 +427,8 @@ async fn query_metrics_time_range(pool: PgPool) {
 /// List metric names returns distinct entries.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_metric_names_returns_distinct(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let name = format!("dup_{}", Uuid::new_v4().simple());
     // Insert same metric name twice
@@ -467,9 +452,8 @@ async fn list_metric_names_returns_distinct(pool: PgPool) {
 /// Create alert with missing fields returns 400.
 #[sqlx::test(migrations = "./migrations")]
 async fn create_alert_validation(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Missing required "query" field
     let (status, _) = helpers::post_json(
@@ -488,9 +472,8 @@ async fn create_alert_validation(pool: PgPool) {
 /// Partial update preserves other fields.
 #[sqlx::test(migrations = "./migrations")]
 async fn update_alert_partial(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, body) = helpers::post_json(
         &app,
@@ -525,9 +508,8 @@ async fn update_alert_partial(pool: PgPool) {
 /// List alert events for a new alert returns empty.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_alert_events_empty(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, body) = helpers::post_json(
         &app,
@@ -558,9 +540,8 @@ async fn list_alert_events_empty(pool: PgPool) {
 /// List all alert events endpoint returns empty when no events.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_all_alert_events(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/observe/alerts/events").await;
     assert_eq!(status, StatusCode::OK);
@@ -574,9 +555,8 @@ async fn list_all_alert_events(pool: PgPool) {
 /// Non-admin user cannot create alerts.
 #[sqlx::test(migrations = "./migrations")]
 async fn alert_manage_requires_permission(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_uid, token) = create_user(&app, &admin_token, "no-alert", "noalert@test.com").await;
 
@@ -599,9 +579,8 @@ async fn alert_manage_requires_permission(pool: PgPool) {
 /// Non-admin user gets 403 on log endpoint.
 #[sqlx::test(migrations = "./migrations")]
 async fn observe_logs_requires_permission(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_uid, token) = create_user(&app, &admin_token, "no-observe2", "noobs2@test.com").await;
 
@@ -616,7 +595,7 @@ async fn observe_logs_requires_permission(pool: PgPool) {
 /// Rotate old logs to parquet — rows deleted from DB, bytes in MinIO.
 #[sqlx::test(migrations = "./migrations")]
 async fn rotate_logs_archives_old_data(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
 
     // Insert log with timestamp 72h ago (> 48h cutoff)
     let old_ts = Utc::now() - chrono::Duration::hours(72);
@@ -661,7 +640,7 @@ async fn rotate_logs_archives_old_data(pool: PgPool) {
 /// Rotate old spans to parquet.
 #[sqlx::test(migrations = "./migrations")]
 async fn rotate_spans_archives_old_data(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
 
     let old_ts = Utc::now() - chrono::Duration::hours(72);
     let span = platform::observe::store::SpanRecord {
@@ -701,7 +680,7 @@ async fn rotate_spans_archives_old_data(pool: PgPool) {
 /// Rotate old metrics to parquet.
 #[sqlx::test(migrations = "./migrations")]
 async fn rotate_metrics_archives_old_data(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
 
     // Metric samples > 1h old
     let old_ts = Utc::now() - chrono::Duration::hours(2);
@@ -759,9 +738,8 @@ async fn write_metrics_empty_is_noop(pool: PgPool) {
 /// resolve_session fills project_id and user_id from agent_sessions table.
 #[sqlx::test(migrations = "./migrations")]
 async fn resolve_session_fills_project_and_user(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -905,9 +883,8 @@ async fn insert_session_span(pool: &PgPool, session_id: Uuid, span_name: &str) {
 /// Session timeline returns logs and spans for a session.
 #[sqlx::test(migrations = "./migrations")]
 async fn session_timeline_logs_and_spans(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let admin_id = get_admin_user_id(&app, &admin_token).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "timeline-proj", "private").await;
@@ -938,9 +915,8 @@ async fn session_timeline_logs_and_spans(pool: PgPool) {
 /// Session timeline returns empty array for session with no data.
 #[sqlx::test(migrations = "./migrations")]
 async fn session_timeline_empty(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let admin_id = get_admin_user_id(&app, &admin_token).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "timeline-empty", "private").await;
@@ -960,9 +936,8 @@ async fn session_timeline_empty(pool: PgPool) {
 /// Session timeline returns 404 for non-existent session.
 #[sqlx::test(migrations = "./migrations")]
 async fn session_timeline_not_found(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, admin_token) = test_state(pool).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let fake_id = Uuid::new_v4();
     let (status, _) = helpers::get_json(
@@ -982,9 +957,8 @@ async fn session_timeline_not_found(pool: PgPool) {
 /// Filter logs by time range: only logs within [from, to] are returned.
 #[sqlx::test(migrations = "./migrations")]
 async fn search_logs_time_range(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let svc = format!("time-svc-{}", Uuid::new_v4().simple());
 
@@ -1044,9 +1018,8 @@ async fn search_logs_time_range(pool: PgPool) {
 /// Filter logs by `trace_id`.
 #[sqlx::test(migrations = "./migrations")]
 async fn search_logs_by_trace_id(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let trace_id = format!("tr-{}", Uuid::new_v4().simple());
     let log = platform::observe::store::LogEntryRecord {
@@ -1083,9 +1056,8 @@ async fn search_logs_by_trace_id(pool: PgPool) {
 /// Empty result set returns total=0 and empty items.
 #[sqlx::test(migrations = "./migrations")]
 async fn search_logs_empty_result(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, body) = helpers::get_json(
         &app,
@@ -1101,9 +1073,8 @@ async fn search_logs_empty_result(pool: PgPool) {
 /// Search query validation rejects empty q parameter.
 #[sqlx::test(migrations = "./migrations")]
 async fn search_logs_empty_q_rejected(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Empty q= should fail validation (check_length requires min 1)
     let (status, _) = helpers::get_json(&app, &admin_token, "/api/observe/logs?q=").await;
@@ -1117,9 +1088,8 @@ async fn search_logs_empty_q_rejected(pool: PgPool) {
 /// Logs with `project_id` can be filtered by `project_id`.
 #[sqlx::test(migrations = "./migrations")]
 async fn search_logs_by_project_id(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "log-proj", "public").await;
 
@@ -1162,9 +1132,8 @@ async fn search_logs_by_project_id(pool: PgPool) {
 /// Limit is capped at 100 even if a larger value is requested.
 #[sqlx::test(migrations = "./migrations")]
 async fn search_logs_limit_capped(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let svc = format!("cap-svc-{}", Uuid::new_v4().simple());
     for i in 0..3 {
@@ -1190,9 +1159,8 @@ async fn search_logs_limit_capped(pool: PgPool) {
 /// Filter traces by service name.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_traces_by_service(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let svc_a = format!("tsvc-a-{}", Uuid::new_v4().simple());
     let svc_b = format!("tsvc-b-{}", Uuid::new_v4().simple());
@@ -1214,9 +1182,8 @@ async fn list_traces_by_service(pool: PgPool) {
 /// Filter traces by status.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_traces_by_status(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let svc = format!("status-svc-{}", Uuid::new_v4().simple());
 
@@ -1263,9 +1230,8 @@ async fn list_traces_by_status(pool: PgPool) {
 /// Filter traces by time range.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_traces_time_range(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let svc = format!("trange-svc-{}", Uuid::new_v4().simple());
     insert_test_span(&pool, &format!("trange-{}", Uuid::new_v4()), "s-tr1", &svc).await;
@@ -1302,9 +1268,8 @@ async fn list_traces_time_range(pool: PgPool) {
 /// Trace list pagination.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_traces_pagination(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let svc = format!("tpage-svc-{}", Uuid::new_v4().simple());
     for i in 0..5 {
@@ -1342,9 +1307,8 @@ async fn list_traces_pagination(pool: PgPool) {
 /// Empty trace list.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_traces_empty(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, body) = helpers::get_json(
         &app,
@@ -1364,9 +1328,8 @@ async fn list_traces_empty(pool: PgPool) {
 /// Trace detail includes span attributes and events.
 #[sqlx::test(migrations = "./migrations")]
 async fn get_trace_detail_with_attributes(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let trace_id = format!("tattr-{}", Uuid::new_v4().simple());
     let now = Utc::now();
@@ -1410,9 +1373,8 @@ async fn get_trace_detail_with_attributes(pool: PgPool) {
 /// Trace detail with parent-child spans preserves hierarchy fields.
 #[sqlx::test(migrations = "./migrations")]
 async fn get_trace_detail_parent_child(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let trace_id = format!("tpc-{}", Uuid::new_v4().simple());
     let parent_span_id = format!("sp-parent-{}", Uuid::new_v4());
@@ -1484,9 +1446,8 @@ async fn get_trace_detail_parent_child(pool: PgPool) {
 /// Query metrics without name parameter returns 400.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_metrics_missing_name(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, _) = helpers::get_json(&app, &admin_token, "/api/observe/metrics").await;
     assert_eq!(
@@ -1499,9 +1460,8 @@ async fn query_metrics_missing_name(pool: PgPool) {
 /// Query metrics with invalid labels JSON returns 400.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_metrics_invalid_labels(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, _) = helpers::get_json(
         &app,
@@ -1519,9 +1479,8 @@ async fn query_metrics_invalid_labels(pool: PgPool) {
 /// Query metrics with labels filter.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_metrics_with_labels_filter(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let name = format!("lbl_{}", Uuid::new_v4().simple());
 
@@ -1571,9 +1530,8 @@ async fn query_metrics_with_labels_filter(pool: PgPool) {
 /// Query metrics with various relative range values.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_metrics_relative_ranges(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let name = format!("rng_{}", Uuid::new_v4().simple());
     insert_test_metric(&pool, &name, 42.0).await;
@@ -1594,9 +1552,8 @@ async fn query_metrics_relative_ranges(pool: PgPool) {
 /// Query metrics with an unknown range value falls back to no from filter.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_metrics_unknown_range(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let name = format!("unk_{}", Uuid::new_v4().simple());
     insert_test_metric(&pool, &name, 5.0).await;
@@ -1617,9 +1574,8 @@ async fn query_metrics_unknown_range(pool: PgPool) {
 /// Query metrics for a name that doesn't exist returns empty array.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_metrics_empty_result(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, body) = helpers::get_json(
         &app,
@@ -1635,9 +1591,8 @@ async fn query_metrics_empty_result(pool: PgPool) {
 /// Query metrics with explicit from/to timestamps.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_metrics_explicit_time_range(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let name = format!("etime_{}", Uuid::new_v4().simple());
     insert_test_metric(&pool, &name, 77.0).await;
@@ -1676,9 +1631,8 @@ async fn query_metrics_explicit_time_range(pool: PgPool) {
 /// Multiple data points for the same metric series are grouped correctly.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_metrics_multiple_points(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let name = format!("mpts_{}", Uuid::new_v4().simple());
     let now = Utc::now();
@@ -1719,9 +1673,8 @@ async fn query_metrics_multiple_points(pool: PgPool) {
 /// Metrics limit parameter constrains the number of rows returned.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_metrics_with_limit(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let name = format!("mlim_{}", Uuid::new_v4().simple());
     let now = Utc::now();
@@ -1767,9 +1720,8 @@ async fn query_metrics_with_limit(pool: PgPool) {
 /// Metric names endpoint with limit parameter.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_metric_names_with_limit(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let prefix = Uuid::new_v4().simple().to_string();
     for i in 0..5 {
@@ -1786,9 +1738,8 @@ async fn list_metric_names_with_limit(pool: PgPool) {
 /// Metric names with no data for a project returns empty list.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_metric_names_empty(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Use a project_id that has no metrics
     let project_id = helpers::create_project(&app, &admin_token, "empty-mn-proj", "public").await;
@@ -1807,9 +1758,8 @@ async fn list_metric_names_empty(pool: PgPool) {
 /// Metric names includes type and unit fields.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_metric_names_fields(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let name = format!("mf_{}", Uuid::new_v4().simple());
     // insert_test_metric inserts with metric_type=gauge, unit=bytes
@@ -1832,9 +1782,8 @@ async fn list_metric_names_fields(pool: PgPool) {
 /// Observe reads on a private project return 404 for unauthorized users.
 #[sqlx::test(migrations = "./migrations")]
 async fn observe_project_scoped_permission(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Create a private project
     let project_id = helpers::create_project(&app, &admin_token, "priv-obs-proj", "private").await;
@@ -1883,9 +1832,8 @@ async fn observe_project_scoped_permission(pool: PgPool) {
 /// Observe reads on a public project are allowed without project-specific role.
 #[sqlx::test(migrations = "./migrations")]
 async fn observe_public_project_allowed(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "pub-obs-proj", "public").await;
 
@@ -1909,9 +1857,8 @@ async fn observe_public_project_allowed(pool: PgPool) {
 /// Non-existent `project_id` in log query returns 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn observe_nonexistent_project(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let fake_project = Uuid::new_v4();
     let (status, _) = helpers::get_json(
@@ -1934,9 +1881,8 @@ async fn observe_nonexistent_project(pool: PgPool) {
 /// Unprivileged user gets 403 on metrics query.
 #[sqlx::test(migrations = "./migrations")]
 async fn observe_metrics_requires_permission(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_uid, token) = create_user(&app, &admin_token, "no-obs-met", "nomet@test.com").await;
 
@@ -1951,9 +1897,8 @@ async fn observe_metrics_requires_permission(pool: PgPool) {
 /// Unprivileged user gets 403 on trace detail.
 #[sqlx::test(migrations = "./migrations")]
 async fn observe_trace_detail_requires_permission(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Insert a trace first
     let trace_id = format!("perm-trace-{}", Uuid::new_v4().simple());
@@ -1969,9 +1914,8 @@ async fn observe_trace_detail_requires_permission(pool: PgPool) {
 /// Unprivileged user gets 403 on session timeline.
 #[sqlx::test(migrations = "./migrations")]
 async fn observe_session_timeline_requires_permission(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let admin_id = get_admin_user_id(&app, &admin_token).await;
     let project_id = helpers::create_project(&app, &admin_token, "perm-tl-proj", "private").await;
@@ -1995,9 +1939,8 @@ async fn observe_session_timeline_requires_permission(pool: PgPool) {
 /// The /api/observe/metrics/query endpoint works the same as /api/observe/metrics.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_metrics_alias_endpoint(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let name = format!("alias_{}", Uuid::new_v4().simple());
     insert_test_metric(&pool, &name, 33.0).await;
@@ -2021,9 +1964,8 @@ async fn query_metrics_alias_endpoint(pool: PgPool) {
 /// Logs with attributes are returned correctly.
 #[sqlx::test(migrations = "./migrations")]
 async fn search_logs_with_attributes(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let svc = format!("attr-svc-{}", Uuid::new_v4().simple());
     let log = platform::observe::store::LogEntryRecord {
@@ -2058,9 +2000,8 @@ async fn search_logs_with_attributes(pool: PgPool) {
 /// Filter logs by `session_id`.
 #[sqlx::test(migrations = "./migrations")]
 async fn search_logs_by_session_id(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let admin_id = get_admin_user_id(&app, &admin_token).await;
     let project_id = helpers::create_project(&app, &admin_token, "sess-log-proj", "public").await;

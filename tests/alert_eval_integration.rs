@@ -8,7 +8,7 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use helpers::{admin_login, test_router, test_state};
+use helpers::{test_router, test_state};
 
 /// Insert metric data directly via store layer.
 async fn insert_metric(pool: &PgPool, name: &str, value: f64) {
@@ -236,7 +236,7 @@ async fn resolve_alert_without_firing_is_noop(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn evaluate_all_fires_when_threshold_exceeded(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
 
     // Create alert rule: avg(cpu_eval_test) > 80.0 for 0 seconds (immediate)
     let rule_id = insert_alert_rule(
@@ -278,7 +278,7 @@ async fn evaluate_all_fires_when_threshold_exceeded(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn evaluate_all_resolves_when_below_threshold(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
 
     let rule_id = insert_alert_rule(
         &pool,
@@ -323,7 +323,7 @@ async fn evaluate_all_resolves_when_below_threshold(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn evaluate_all_skips_disabled_rules(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
 
     // Create a disabled alert rule
     sqlx::query(
@@ -353,7 +353,7 @@ async fn evaluate_all_skips_disabled_rules(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn evaluate_all_absent_condition(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
 
     let rule_id = insert_alert_rule(
         &pool,
@@ -394,9 +394,8 @@ async fn evaluate_all_absent_condition(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_alerts_filter_by_enabled(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Create two alerts
     helpers::post_json(
@@ -452,9 +451,8 @@ async fn list_alerts_filter_by_enabled(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_alert_not_found(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let fake_id = Uuid::new_v4();
     let (status, _) = helpers::get_json(
@@ -468,9 +466,8 @@ async fn get_alert_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_alert_not_found(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let fake_id = Uuid::new_v4();
     let (status, _) = helpers::delete_json(
@@ -484,9 +481,8 @@ async fn delete_alert_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_alert_invalid_severity(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, _) = helpers::post_json(
         &app,
@@ -506,9 +502,8 @@ async fn create_alert_invalid_severity(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_alert_invalid_condition(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, _) = helpers::post_json(
         &app,
@@ -527,9 +522,8 @@ async fn create_alert_invalid_condition(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_alert_for_seconds_out_of_range(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, _) = helpers::post_json(
         &app,
@@ -549,9 +543,8 @@ async fn create_alert_for_seconds_out_of_range(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_alert_not_found(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let fake_id = Uuid::new_v4();
     let (status, _) = helpers::patch_json(
@@ -566,9 +559,8 @@ async fn update_alert_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn alert_events_with_data(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let rule_id = insert_alert_rule(
         &pool,

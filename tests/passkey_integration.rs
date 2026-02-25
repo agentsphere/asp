@@ -9,7 +9,7 @@ use axum::http::StatusCode;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use helpers::{admin_login, create_user, test_router, test_state};
+use helpers::{create_user, test_router, test_state};
 
 // ---------------------------------------------------------------------------
 // List passkeys
@@ -17,9 +17,8 @@ use helpers::{admin_login, create_user, test_router, test_state};
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_passkeys_empty(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/auth/passkeys").await;
     assert_eq!(status, StatusCode::OK);
@@ -28,9 +27,8 @@ async fn list_passkeys_empty(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_passkeys_with_data(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -61,9 +59,8 @@ async fn list_passkeys_with_data(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_passkey_success(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -93,9 +90,8 @@ async fn delete_passkey_success(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_passkey_not_found(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let fake_id = Uuid::new_v4();
     let (status, _) =
@@ -105,9 +101,8 @@ async fn delete_passkey_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_passkey_other_users_key_returns_not_found(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (other_user_id, _other_token) =
         create_user(&app, &admin_token, "pk-other", "pkother@test.com").await;
@@ -138,9 +133,8 @@ async fn delete_passkey_other_users_key_returns_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn rename_passkey_success(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -174,9 +168,8 @@ async fn rename_passkey_success(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn rename_passkey_not_found(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let fake_id = Uuid::new_v4();
     let (status, _) = helpers::patch_json(
@@ -195,9 +188,8 @@ async fn rename_passkey_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn begin_register_returns_challenge(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, body) = helpers::post_json(
         &app,
@@ -221,7 +213,7 @@ async fn begin_register_returns_challenge(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn begin_login_returns_challenge(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
     // begin_login is unauthenticated
@@ -249,12 +241,11 @@ async fn begin_login_returns_challenge(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn complete_login_invalid_challenge_id(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
     // Insert a passkey credential so the discoverable keys list isn't empty.
     // First we need a user.
-    let admin_token = admin_login(&app).await;
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
 
@@ -296,9 +287,8 @@ async fn complete_login_invalid_challenge_id(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn rename_passkey_empty_name_rejected(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -329,9 +319,8 @@ async fn rename_passkey_empty_name_rejected(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn rename_passkey_name_too_long(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -362,9 +351,8 @@ async fn rename_passkey_name_too_long(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn rename_other_users_passkey_not_found(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (other_user_id, _other_token) =
         create_user(&app, &admin_token, "pk-rename-other", "pkrename@test.com").await;
@@ -396,9 +384,8 @@ async fn rename_other_users_passkey_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn begin_register_service_account_rejected(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let _admin_token = admin_login(&app).await;
 
     // Create a service account user directly in DB
     let svc_id = Uuid::new_v4();
@@ -450,9 +437,8 @@ async fn begin_register_service_account_rejected(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn begin_register_name_too_long(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let long_name = "k".repeat(256);
     let (status, _) = helpers::post_json(
@@ -467,7 +453,7 @@ async fn begin_register_name_too_long(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_passkeys_unauthenticated(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
     // Listing passkeys without authentication should fail
@@ -484,9 +470,8 @@ async fn list_passkeys_unauthenticated(pool: PgPool) {
 /// struct cannot be parsed from arbitrary JSON.
 #[sqlx::test(migrations = "./migrations")]
 async fn complete_register_invalid_credential_json(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Send garbage that doesn't match RegisterPublicKeyCredential
     let (status, _) = helpers::post_json(
@@ -507,7 +492,7 @@ async fn complete_register_invalid_credential_json(pool: PgPool) {
 /// complete_register without authentication should fail.
 #[sqlx::test(migrations = "./migrations")]
 async fn complete_register_unauthenticated(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
     let (status, _) = helpers::post_json(
@@ -536,7 +521,7 @@ async fn complete_register_unauthenticated(pool: PgPool) {
 /// (discoverable_keys is empty).
 #[sqlx::test(migrations = "./migrations")]
 async fn complete_login_no_credentials_in_db(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
     // No passkey credentials exist in DB at all
@@ -565,7 +550,7 @@ async fn complete_login_no_credentials_in_db(pool: PgPool) {
 /// complete_login with invalid credential JSON returns 422 (deserialization).
 #[sqlx::test(migrations = "./migrations")]
 async fn complete_login_invalid_credential_json(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
     let (status, _) = helpers::post_json(
@@ -587,9 +572,8 @@ async fn complete_login_invalid_credential_json(pool: PgPool) {
 /// users' credentials are excluded.
 #[sqlx::test(migrations = "./migrations")]
 async fn complete_login_deactivated_user_credential(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     // Create a user, add a passkey credential, then deactivate them
     let (user_id, _user_token) =
@@ -641,9 +625,8 @@ async fn complete_login_deactivated_user_credential(pool: PgPool) {
 /// begin_register with empty name should be rejected (min length 1).
 #[sqlx::test(migrations = "./migrations")]
 async fn begin_register_empty_name_rejected(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (status, _) = helpers::post_json(
         &app,
@@ -658,9 +641,8 @@ async fn begin_register_empty_name_rejected(pool: PgPool) {
 /// begin_register with max-length name (255) should succeed.
 #[sqlx::test(migrations = "./migrations")]
 async fn begin_register_max_length_name_ok(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let name = "a".repeat(255);
     let (status, body) = helpers::post_json(
@@ -682,9 +664,8 @@ async fn begin_register_max_length_name_ok(pool: PgPool) {
 /// succeeds when credentials already exist.
 #[sqlx::test(migrations = "./migrations")]
 async fn begin_register_with_existing_credentials(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -726,9 +707,8 @@ async fn begin_register_with_existing_credentials(pool: PgPool) {
 /// Verify list_passkeys response includes backup and last_used_at fields.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_passkeys_response_fields(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -766,9 +746,8 @@ async fn list_passkeys_response_fields(pool: PgPool) {
 /// Verify list_passkeys only returns the current user's passkeys, not all.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_passkeys_only_own_credentials(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -822,9 +801,8 @@ async fn list_passkeys_only_own_credentials(pool: PgPool) {
 /// Verify that deleting a passkey creates an audit log entry.
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_passkey_creates_audit_log(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
@@ -866,7 +844,7 @@ async fn delete_passkey_creates_audit_log(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn begin_login_produces_unique_challenge_ids(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
     let (status1, body1) = helpers::post_json(
@@ -901,7 +879,7 @@ async fn begin_login_produces_unique_challenge_ids(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn begin_register_unauthenticated(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
     let (status, _) = helpers::post_json(
@@ -920,7 +898,7 @@ async fn begin_register_unauthenticated(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_passkey_unauthenticated(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
     let fake_id = Uuid::new_v4();
@@ -931,7 +909,7 @@ async fn delete_passkey_unauthenticated(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn rename_passkey_unauthenticated(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, _admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
     let fake_id = Uuid::new_v4();
@@ -951,9 +929,8 @@ async fn rename_passkey_unauthenticated(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_passkeys_ordered_by_created_at_desc(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
     let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();

@@ -5,7 +5,7 @@ mod helpers;
 use axum::http::StatusCode;
 use sqlx::PgPool;
 
-use helpers::{admin_login, assign_role, create_project, create_user, test_router, test_state};
+use helpers::{assign_role, create_project, create_user, test_router, test_state};
 
 // ---------------------------------------------------------------------------
 // Helpers for registry API calls
@@ -157,9 +157,8 @@ async fn create_user_with_api_token(
 /// GET /v2/ returns 200 with docker-distribution-api-version header.
 #[sqlx::test(migrations = "./migrations")]
 async fn version_check_returns_200(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let (_, api_token) =
         create_user_with_api_token(&app, &admin_token, "reguser1", "reg1@test.com", &pool).await;
 
@@ -177,9 +176,8 @@ async fn version_check_returns_200(pool: PgPool) {
 /// Monolithic blob upload: POST with ?digest → 201, then HEAD verifies.
 #[sqlx::test(migrations = "./migrations")]
 async fn monolithic_blob_upload(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let (_uid, _api_token) =
         create_user_with_api_token(&app, &admin_token, "reguser2", "reg2@test.com", &pool).await;
 
@@ -231,9 +229,8 @@ async fn monolithic_blob_upload(pool: PgPool) {
 /// HEAD/GET for nonexistent digest returns 404 OCI error.
 #[sqlx::test(migrations = "./migrations")]
 async fn blob_not_found_returns_404(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let admin_api_token = {
         let (status, body) = helpers::post_json(
@@ -272,9 +269,8 @@ async fn blob_not_found_returns_404(pool: PgPool) {
 /// GET blob returns the actual data.
 #[sqlx::test(migrations = "./migrations")]
 async fn blob_get_returns_data(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let admin_api_token = {
         let (_, body) = helpers::post_json(
@@ -307,9 +303,8 @@ async fn blob_get_returns_data(pool: PgPool) {
 /// Push a manifest referencing an existing blob, then pull it back.
 #[sqlx::test(migrations = "./migrations")]
 async fn manifest_push_and_pull(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let admin_api_token = {
         let (_, body) = helpers::post_json(
@@ -366,9 +361,8 @@ async fn manifest_push_and_pull(pool: PgPool) {
 /// PUT manifest referencing non-existent blob is rejected.
 #[sqlx::test(migrations = "./migrations")]
 async fn manifest_push_missing_blob_rejected(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let admin_api_token = {
         let (_, body) = helpers::post_json(
@@ -420,9 +414,8 @@ async fn manifest_push_missing_blob_rejected(pool: PgPool) {
 /// DELETE manifest → 202, then GET returns 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn manifest_delete(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let admin_api_token = {
         let (_, body) = helpers::post_json(
@@ -474,9 +467,8 @@ async fn manifest_delete(pool: PgPool) {
 /// Tag list returns pushed tags with pagination.
 #[sqlx::test(migrations = "./migrations")]
 async fn tag_list(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let admin_api_token = {
         let (_, body) = helpers::post_json(
@@ -520,7 +512,7 @@ async fn tag_list(pool: PgPool) {
 /// Unauthenticated request to /v2/ returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn registry_requires_auth(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, _admin_token) = test_state(pool).await;
     let app = test_router(state);
 
     let req = axum::http::Request::builder()
@@ -536,9 +528,8 @@ async fn registry_requires_auth(pool: PgPool) {
 /// Chunked blob upload: POST (start) → PATCH (chunk) → PUT (complete).
 #[sqlx::test(migrations = "./migrations")]
 async fn chunked_blob_upload(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     let admin_api_token = {
         let (_, body) = helpers::post_json(
@@ -618,9 +609,8 @@ async fn chunked_blob_upload(pool: PgPool) {
 /// GC removes orphaned blobs (no links, older than 24h).
 #[sqlx::test(migrations = "./migrations")]
 async fn gc_removes_orphaned_blobs(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state.clone());
-    let admin_token = admin_login(&app).await;
 
     // Create project + API token
     create_project(&app, &admin_token, "gc-proj1", "private").await;
@@ -664,9 +654,8 @@ async fn gc_removes_orphaned_blobs(pool: PgPool) {
 /// GC skips blobs that still have links.
 #[sqlx::test(migrations = "./migrations")]
 async fn gc_skips_linked_blobs(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state.clone());
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "gc-proj2", "private").await;
     let (_, api_token) =
@@ -701,9 +690,8 @@ async fn gc_skips_linked_blobs(pool: PgPool) {
 /// GC skips recent orphans (within 24h grace period).
 #[sqlx::test(migrations = "./migrations")]
 async fn gc_skips_recent_orphans(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state.clone());
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "gc-proj3", "private").await;
     let (_, api_token) =
@@ -743,9 +731,8 @@ async fn gc_skips_recent_orphans(pool: PgPool) {
 /// Monolithic upload with mismatched digest → error.
 #[sqlx::test(migrations = "./migrations")]
 async fn blob_digest_mismatch_rejected(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "mismatch-proj", "private").await;
     let (_, api_token) =
@@ -776,9 +763,8 @@ async fn blob_digest_mismatch_rejected(pool: PgPool) {
 /// HEAD /v2/{name}/manifests/{tag} returns correct headers.
 #[sqlx::test(migrations = "./migrations")]
 async fn head_manifest_returns_digest(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "head-proj", "private").await;
     let (_, api_token) =
@@ -817,9 +803,8 @@ async fn head_manifest_returns_digest(pool: PgPool) {
 /// PUT manifest with invalid JSON → error.
 #[sqlx::test(migrations = "./migrations")]
 async fn manifest_invalid_json_rejected(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
 
     create_project(&app, &admin_token, "badjson-proj", "private").await;
     let (_, api_token) =
@@ -848,9 +833,8 @@ async fn manifest_invalid_json_rejected(pool: PgPool) {
 /// Bearer token auth works for the registry (verifies lookup_api_token path).
 #[sqlx::test(migrations = "./migrations")]
 async fn registry_auth_bearer_token(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let (_, api_token) =
         create_user_with_api_token(&app, &admin_token, "bearer-user", "bearer@test.com", &pool)
             .await;
@@ -862,9 +846,8 @@ async fn registry_auth_bearer_token(pool: PgPool) {
 /// Basic auth works for the registry (docker login sends user:password as base64).
 #[sqlx::test(migrations = "./migrations")]
 async fn registry_auth_basic_auth(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let (_, api_token) =
         create_user_with_api_token(&app, &admin_token, "basic-user", "basic@test.com", &pool).await;
 
@@ -886,7 +869,7 @@ async fn registry_auth_basic_auth(pool: PgPool) {
 /// Invalid Bearer token returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn registry_auth_invalid_token_401(pool: PgPool) {
-    let state = test_state(pool).await;
+    let (state, _admin_token) = test_state(pool).await;
     let app = test_router(state);
 
     let (status, headers, _) =
@@ -898,9 +881,8 @@ async fn registry_auth_invalid_token_401(pool: PgPool) {
 /// Inactive user's token returns 401.
 #[sqlx::test(migrations = "./migrations")]
 async fn registry_auth_inactive_user_401(pool: PgPool) {
-    let state = test_state(pool.clone()).await;
+    let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
-    let admin_token = admin_login(&app).await;
     let (user_id, api_token) = create_user_with_api_token(
         &app,
         &admin_token,

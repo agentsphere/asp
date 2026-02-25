@@ -10,9 +10,8 @@ use uuid::Uuid;
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_webhook(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-proj", "public").await;
 
@@ -37,9 +36,8 @@ async fn create_webhook(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_webhook_invalid_url(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-invalid", "public").await;
 
@@ -59,9 +57,8 @@ async fn create_webhook_invalid_url(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_webhook_ssrf_localhost(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-ssrf-lo", "public").await;
 
@@ -81,9 +78,8 @@ async fn create_webhook_ssrf_localhost(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_webhook_ssrf_private_10(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-ssrf-10", "public").await;
 
@@ -103,9 +99,8 @@ async fn create_webhook_ssrf_private_10(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_webhook_ssrf_private_172(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-ssrf-172", "public").await;
 
@@ -125,9 +120,8 @@ async fn create_webhook_ssrf_private_172(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_webhook_ssrf_private_192(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-ssrf-192", "public").await;
 
@@ -147,9 +141,8 @@ async fn create_webhook_ssrf_private_192(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_webhook_ssrf_metadata(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-ssrf-meta", "public").await;
 
@@ -169,9 +162,8 @@ async fn create_webhook_ssrf_metadata(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_webhook_ssrf_ipv6_loopback(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-ssrf-ipv6", "public").await;
 
@@ -191,9 +183,8 @@ async fn create_webhook_ssrf_ipv6_loopback(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn list_webhooks(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-list", "public").await;
 
@@ -224,9 +215,8 @@ async fn list_webhooks(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_and_delete_webhook(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-upd-del", "public").await;
 
@@ -274,9 +264,8 @@ async fn update_and_delete_webhook(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn webhook_requires_project_write(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-no-write", "public").await;
 
@@ -301,9 +290,8 @@ async fn webhook_requires_project_write(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn webhook_secret_not_exposed(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-secret", "public").await;
 
@@ -354,9 +342,8 @@ async fn insert_webhook(pool: &PgPool, project_id: Uuid, url: &str, events: &[&s
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_webhook_invalid_event(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-bad-event", "public").await;
 
@@ -381,9 +368,8 @@ async fn create_webhook_invalid_event(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn create_webhook_empty_events(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-empty-ev", "public").await;
 
@@ -403,9 +389,8 @@ async fn create_webhook_empty_events(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_single_webhook(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-get-one", "public").await;
 
@@ -436,9 +421,8 @@ async fn get_single_webhook(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn get_webhook_not_found(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-get-404", "public").await;
     let fake_id = Uuid::new_v4();
@@ -455,9 +439,8 @@ async fn get_webhook_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn delete_webhook_not_found(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-del-404", "public").await;
     let fake_id = Uuid::new_v4();
@@ -474,9 +457,8 @@ async fn delete_webhook_not_found(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_webhook_events(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-upd-events", "public").await;
 
@@ -510,9 +492,8 @@ async fn update_webhook_events(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_webhook_invalid_event(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-upd-bad", "public").await;
 
@@ -540,9 +521,8 @@ async fn update_webhook_invalid_event(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn update_webhook_deactivate(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-deactivate", "public").await;
 
@@ -573,9 +553,8 @@ async fn update_webhook_deactivate(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn test_webhook_endpoint(pool: PgPool) {
-    let state = helpers::test_state(pool.clone()).await;
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-test-ep", "public").await;
 
@@ -603,9 +582,8 @@ async fn test_webhook_endpoint(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn test_webhook_not_found(pool: PgPool) {
-    let state = helpers::test_state(pool).await;
+    let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
-    let admin_token = helpers::admin_login(&app).await;
 
     let project_id = helpers::create_project(&app, &admin_token, "wh-test-404", "public").await;
     let fake_id = Uuid::new_v4();

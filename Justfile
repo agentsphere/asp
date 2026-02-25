@@ -72,27 +72,18 @@ cov-unit:
     cargo llvm-cov nextest --lib --lcov --output-path coverage-unit.lcov \
         --ignore-filename-regex '(proto\.rs|ui\.rs)'
 
+# Ephemeral Kind services (requires: just cluster-up)
 cov-integration:
-    cargo llvm-cov nextest --test '*_integration' --lcov --output-path coverage-integration.lcov \
-        --ignore-filename-regex '(proto\.rs|ui\.rs)'
+    bash hack/test-in-cluster.sh --filter '*_integration' --coverage --lcov coverage-integration.lcov
 
 cov-e2e:
     @echo "Requires Kind cluster: just cluster-up"
-    cargo llvm-cov nextest --test 'e2e_*' --run-ignored ignored-only --test-threads 2 \
-        --lcov --output-path coverage-e2e.lcov \
-        --ignore-filename-regex '(proto\.rs|ui\.rs)'
+    bash hack/test-in-cluster.sh --type e2e --coverage --lcov coverage-e2e.lcov
 
-cov-all:
-    cargo llvm-cov nextest --lcov --output-path coverage-all.lcov \
-        --ignore-filename-regex '(proto\.rs|ui\.rs)'
-
+# Combined: unit + integration + E2E (requires Kind cluster)
 cov-total:
     @echo "=== Combined coverage: unit + integration + E2E ==="
-    cargo llvm-cov clean --workspace
-    cargo llvm-cov nextest --no-report \
-        --lib --test '*_integration' --test 'e2e_*' \
-        --run-ignored all --test-threads 2 --no-fail-fast
-    cargo llvm-cov report --ignore-filename-regex '(proto\.rs|ui\.rs|main\.rs)'
+    bash hack/test-in-cluster.sh --type total
 
 cov-html:
     cargo llvm-cov nextest --lib --html --output-dir coverage-html \
@@ -102,9 +93,6 @@ cov-html:
 cov-summary:
     @echo "=== Unit ==="
     @cargo llvm-cov nextest --lib --ignore-filename-regex '(proto\.rs|ui\.rs)' 2>&1 | tail -3
-    @echo ""
-    @echo "=== Integration ==="
-    @cargo llvm-cov nextest --test '*_integration' --ignore-filename-regex '(proto\.rs|ui\.rs)' 2>&1 | tail -3
 
 # -- Database -------------------------------------------------------
 db-add name:
