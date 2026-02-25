@@ -1,0 +1,27 @@
+# RBAC for E2E test runner pod.
+# Grants permissions to create/manage pods in pipeline and agent namespaces.
+# The ClusterRole is static; ClusterRoleBindings are created per-run
+# by the orchestration script (binding to the run's ServiceAccount).
+
+# ClusterRole: broad permissions for E2E test operations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: test-runner
+rules:
+  # Pipeline and agent pod management
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "services", "configmaps", "secrets", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Job management (for pipeline steps)
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Namespace management (for dynamic pipeline/agent namespaces)
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create", "delete"]
+  # Events (for debugging)
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]

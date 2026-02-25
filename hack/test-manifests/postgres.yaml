@@ -1,0 +1,44 @@
+# Lightweight Postgres for per-run test namespaces.
+# Boots in ~3-5s (vs 30-60s for CNPG operator).
+# The platform user gets CREATEDB via post-deploy script.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  containers:
+    - name: postgres
+      image: postgres:16-alpine
+      env:
+        - name: POSTGRES_USER
+          value: platform
+        - name: POSTGRES_PASSWORD
+          value: dev
+        - name: POSTGRES_DB
+          value: platform_dev
+      ports:
+        - containerPort: 5432
+      readinessProbe:
+        exec:
+          command: ["pg_isready", "-U", "platform"]
+        initialDelaySeconds: 2
+        periodSeconds: 1
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

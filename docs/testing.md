@@ -7,9 +7,9 @@ This document covers all testing tiers for the platform: unit, integration, and 
 | Tier | Count | Runtime | Infra required | Command |
 |---|---|---|---|---|
 | Unit | 442 | ~1s | None | `just test-unit` |
-| Integration | varies | ~30s | Postgres (Kind or local) | `just test-integration` |
-| E2E | 40 | ~90s | Kind cluster (Postgres, Valkey, MinIO, K8s) | `just test-e2e` |
-| FE-BE | 33+ | ~30s | Postgres | `just test-integration` / `just types` / `just test-ui` |
+| Integration | 574 | ~4 min | Kind cluster | `just test-integration` |
+| E2E | 40 | ~90s | Kind cluster | `just test-e2e` |
+| FE-BE | 33+ | ~30s | Kind cluster | `just test-integration` / `just types` / `just test-ui` |
 
 All tests use [cargo-nextest](https://nexte.st/) as the test runner.
 
@@ -45,21 +45,60 @@ just test-doc           # cargo test --doc (doc examples)
 
 ## Integration Tests
 
-**Location**: `tests/*_integration.rs` (10 files).
+**Location**: `tests/*_integration.rs` (25 files, 574 tests).
 
-**What they cover**: API endpoint flows end-to-end against a real Postgres database. Auth flows, RBAC, project CRUD, issues, MRs, webhooks, notifications.
+**What they cover**: API endpoint flows end-to-end against a real Postgres database. Auth flows, RBAC, project CRUD, issues, MRs, webhooks, notifications, pipelines, deployments, sessions, secrets, registry, observability, workspaces.
 
 **Run**:
 ```bash
-just test-integration   # cargo nextest run --test '*_integration'
+just test-integration   # ephemeral services in Kind, auto port-forward
 ```
 
-**Prerequisites**:
-- Postgres accessible at `DATABASE_URL` (the `#[sqlx::test]` macro creates an ephemeral database per test).
-- The `platform` DB user needs `CREATEDB` permission (`ALTER USER platform CREATEDB;`).
-- If using the Kind cluster: Postgres is at `localhost:5432` (user: `platform`, password: `dev`).
+### How it works
 
-**Key pattern — `#[sqlx::test]`**:
+Integration tests run via `hack/test-in-cluster.sh`, which automates the entire lifecycle:
+
+1. **Creates a fresh K8s namespace** (`test-{timestamp}-{random}`) in the Kind cluster
+2. **Deploys lightweight service pods** — Postgres, Valkey, MinIO (~5s to ready)
+3. **Finds free local ports** dynamically (no port conflicts)
+4. **Port-forwards** from cluster services to localhost
+5. **Runs `cargo nextest run`** natively with env vars pointing to the forwarded ports
+6. **Cleans up** the namespace on exit (via `trap` on EXIT/INT/TERM)
+
+This means each test run gets fully isolated services with zero chance of cross-run pollution, and no fixed port requirements.
+
+### Prerequisites
+
+A Kind cluster must be running:
+
+```bash
+just cluster-up    # one-time setup
+```
+
+No manual port-forwarding, database creation, or migration is needed — the script handles everything. The `platform` Postgres user is a superuser in the test namespace, so `#[sqlx::test]` can create ephemeral databases automatically.
+
+### Running specific tests
+
+```bash
+# All integration tests (default)
+just test-integration
+
+# Custom parallelism
+bash hack/test-in-cluster.sh --filter '*_integration' --threads 8
+
+# Single test file
+bash hack/test-in-cluster.sh --filter 'auth_integration'
+
+# Direct cargo nextest (if you have services running on known ports)
+DATABASE_URL="postgres://platform:dev@127.0.0.1:5432/platform_dev" \
+  VALKEY_URL="redis://127.0.0.1:6379" \
+  MINIO_ENDPOINT="http://127.0.0.1:9000" \
+  SQLX_OFFLINE=true \
+  cargo nextest run --test auth_integration
+```
+
+### Key pattern — `#[sqlx::test]`
+
 ```rust
 #[sqlx::test(migrations = "./migrations")]
 async fn create_and_fetch_user(pool: PgPool) {
@@ -68,17 +107,49 @@ async fn create_and_fetch_user(pool: PgPool) {
 }
 ```
 
-**Integration test files**:
+### Integration test files
+
 - `admin_integration.rs` — admin user/role management
-- `auth_integration.rs` — login, tokens, sessions, password hashing
-- `rbac_integration.rs` — role assignment, permission resolution, delegation
-- `project_integration.rs` — project CRUD, soft-delete
-- `issue_mr_integration.rs` — issues, comments, merge requests, reviews
-- `webhook_integration.rs` — webhook CRUD, dispatch, HMAC signing
-- `notification_integration.rs` — notification creation, queries
 - `agent_spawn_integration.rs` — agent session DB operations
+- `alert_eval_integration.rs` — alert evaluation logic
+- `auth_integration.rs` — login, tokens, sessions, password hashing
+- `contract_integration.rs` — FE-BE API contract tests
 - `create_app_integration.rs` — app/bot session creation
+- `dashboard_integration.rs` — dashboard/onboarding status
+- `deployment_integration.rs` — deployment CRUD, status, rollback
+- `eventbus_integration.rs` — event bus handlers
+- `git_smart_http_integration.rs` — git smart HTTP protocol, LFS
+- `issue_mr_integration.rs` — issues, comments, merge requests, reviews
+- `notification_integration.rs` — notification creation, queries
+- `observe_ingest_integration.rs` — OTLP ingest endpoints
+- `observe_integration.rs` — observability query, alerts, metrics
+- `passkey_integration.rs` — WebAuthn/passkey flows
+- `pipeline_integration.rs` — pipeline CRUD, cancel, artifacts
+- `pipeline_trigger_integration.rs` — pipeline trigger logic (push, MR, API)
+- `project_integration.rs` — project CRUD, soft-delete, visibility
+- `rbac_integration.rs` — role assignment, permission resolution, delegation
+- `registry_integration.rs` — container registry push/pull, GC
+- `secrets_integration.rs` — secrets CRUD, user keys
+- `session_integration.rs` — agent session management
+- `user_keys_integration.rs` — user API key management
+- `webhook_integration.rs` — webhook CRUD, dispatch, HMAC signing
 - `workspace_integration.rs` — workspace CRUD, membership
+
+### Test helpers
+
+All shared helpers are in `tests/helpers/mod.rs`:
+
+**State & Router**:
+- `test_state(pool: PgPool) -> AppState` — builds full state with real Valkey, MinIO, dummy K8s client. Reads service URLs from env vars with localhost defaults.
+- `test_router(state: AppState) -> Router` — merges API + observe + registry routers with state.
+
+**Auth**:
+- `admin_login(&app) -> String` — login as bootstrap admin, returns bearer token.
+- `create_user(&app, admin_token, name, email) -> (Uuid, String)` — create user + login.
+- `assign_role(&app, admin_token, user_id, role_name, project_id, &pool)` — assign role.
+
+**HTTP**:
+- `get_json`, `post_json`, `patch_json`, `put_json`, `delete_json` — HTTP helpers with bearer auth.
 
 ## E2E Tests
 
@@ -94,47 +165,22 @@ A Kind cluster with all services running. One-time setup:
 just cluster-up
 ```
 
-This creates:
-- Kind cluster named `platform` with port mappings and `/tmp/platform-e2e` shared mount
-- CNPG-managed Postgres at `localhost:5432` (user: `platform`, password: `dev`, db: `platform_dev`)
-- Valkey at `localhost:6379`
-- MinIO at `localhost:9000` (S3 API) / `localhost:9001` (console), credentials: `platform`/`devdevdev`
-- MinIO buckets: `platform` and `platform-e2e`
-- K8s namespaces: `e2e-pipelines` and `e2e-agents`
-- OTel Collector (for observe module)
-
-After cluster creation, apply migrations:
-```bash
-export KUBECONFIG=$HOME/.kube/kind-platform
-export DATABASE_URL="postgres://platform:dev@127.0.0.1:5432/platform_dev"
-just db-migrate
-```
+This creates the Kind cluster with shared mount, Postgres, Valkey, MinIO, namespaces, and buckets. See [Cluster Management](#cluster-management) for details.
 
 ### Running E2E Tests
 
 ```bash
-# All 40 E2E tests
+# All 40 E2E tests (ephemeral namespace, auto port-forward)
 just test-e2e
 
 # Specific test file
-KUBECONFIG=$HOME/.kube/kind-platform \
-  DATABASE_URL="postgres://platform:dev@127.0.0.1:5432/platform_dev" \
-  SQLX_OFFLINE=true \
-  cargo nextest run --run-ignored=only --test e2e_pipeline --test-threads 2
+bash hack/test-in-cluster.sh --type e2e --filter 'e2e_pipeline'
 
-# Single test
-KUBECONFIG=$HOME/.kube/kind-platform \
-  DATABASE_URL="postgres://platform:dev@127.0.0.1:5432/platform_dev" \
-  SQLX_OFFLINE=true \
-  cargo nextest run --run-ignored=only --test e2e_pipeline -E 'test(step_logs_captured)'
-
-# With debug logging
-KUBECONFIG=$HOME/.kube/kind-platform \
-  DATABASE_URL="postgres://platform:dev@127.0.0.1:5432/platform_dev" \
-  SQLX_OFFLINE=true \
-  RUST_LOG=platform::pipeline=debug \
-  cargo nextest run --run-ignored=only --test e2e_pipeline --no-capture
+# Custom parallelism
+bash hack/test-in-cluster.sh --type e2e --threads 1
 ```
+
+For E2E tests, the script additionally creates `{namespace}-pipelines` and `{namespace}-agents` namespaces plus RBAC bindings so pipeline/agent pods can be created.
 
 ### E2E Test Architecture
 
@@ -153,7 +199,7 @@ The test router is an in-memory axum `Router` — no TCP listener. Requests go t
 All helpers are in `tests/e2e_helpers/mod.rs`:
 
 **State & Router**:
-- `e2e_state(pool: PgPool) -> AppState` — builds full state with real services. MinIO bucket: `platform-e2e`. Config: pipeline namespace `e2e-pipelines`, agent namespace `e2e-agents`.
+- `e2e_state(pool: PgPool) -> AppState` — builds full state with real services. MinIO bucket: `platform-e2e`. Reads pipeline/agent namespace from env vars (set by orchestration script).
 - `test_router(state: AppState) -> Router` — merges `platform::api::router()` with state.
 
 **Auth**:
@@ -206,7 +252,7 @@ Tests pipeline triggering, execution via real K8s pods, multi-step pipelines, ca
 
 3. **Git repo setup** — `setup_pipeline_project` creates a project, bare repo, working copy, commits `.platform.yaml`, and updates the project's `repo_path` in DB.
 
-4. **Pod execution** — pipeline pods run in namespace `e2e-pipelines`. The executor creates pods with an init container (`alpine/git`) that clones the repo, then runs step commands. Repos must be under `/tmp/platform-e2e/` (shared mount).
+4. **Pod execution** — pipeline pods run in the ephemeral pipelines namespace. The executor creates pods with an init container (`alpine/git`) that clones the repo, then runs step commands. Repos must be under `/tmp/platform-e2e/` (shared mount).
 
 Tests: `pipeline_trigger_and_execute`, `pipeline_with_multiple_steps`, `pipeline_step_failure`, `pipeline_cancel`, `step_logs_captured`, `step_logs_in_minio`, `artifact_upload_and_download`, `pipeline_branch_trigger_filter`, `pipeline_definition_parsing`, `concurrent_pipeline_limit`.
 
@@ -246,43 +292,114 @@ Tests deployment API layer: CRUD, status transitions, history recording, rollbac
 
 Tests: `deployment_status_transitions`, `deployment_get_returns_correct_fields`, `deployment_history_recorded`, `deployment_rollback`, `deployment_update_image`, `deployment_stop`, `preview_deployment_lifecycle`, `preview_cleanup_on_mr_merge`.
 
-### Common Pitfalls
+## Ephemeral Test Infrastructure
 
-1. **Missing MinIO buckets** — `just cluster-up` creates `platform` and `platform-e2e` buckets. If you recreate MinIO without running the full script, buckets won't exist and log/artifact writes will fail silently (causing 500s on read).
+Both integration and E2E tests use the same orchestration script (`hack/test-in-cluster.sh`) to provision isolated services per test run.
+
+### How it works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Kind cluster (platform)                                    │
+│                                                             │
+│  ┌─ test-{timestamp}-{random} namespace ──────────────────┐ │
+│  │                                                         │ │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐             │ │
+│  │  │ Postgres │  │  Valkey  │  │  MinIO   │  pods       │ │
+│  │  │ :5432    │  │  :6379   │  │  :9000   │             │ │
+│  │  └────┬─────┘  └────┬─────┘  └────┬─────┘             │ │
+│  └───────┼──────────────┼──────────────┼──────────────────┘ │
+│          │              │              │                     │
+│     port-forward   port-forward   port-forward              │
+└──────────┼──────────────┼──────────────┼────────────────────┘
+           │              │              │
+     localhost:{free} localhost:{free} localhost:{free}
+           │              │              │
+     ┌─────┴──────────────┴──────────────┴─────┐
+     │  cargo nextest run (native on host)      │
+     │  DATABASE_URL, VALKEY_URL, MINIO_ENDPOINT│
+     └──────────────────────────────────────────┘
+```
+
+**Key properties**:
+- **No fixed ports** — dynamically finds free ports, so no conflicts with other services
+- **Full isolation** — each run gets its own Postgres/Valkey/MinIO instances in a unique namespace
+- **Auto cleanup** — namespace is deleted on exit, even on Ctrl+C or test failure
+- **Native execution** — tests run as a normal `cargo nextest` process, so incremental compilation, IDE debugging, and coverage tools all work
+- **Fast startup** — lightweight pods (alpine-based) are ready in ~5s
+
+### Service pods
+
+The K8s manifests live in `hack/test-manifests/`:
+
+| Service | Image | Credentials | Readiness probe |
+|---|---|---|---|
+| Postgres | `postgres:16-alpine` | user: `platform`, pass: `dev`, db: `platform_dev` | `pg_isready -U platform` |
+| Valkey | `valkey/valkey:8-alpine` | none | TCP :6379 |
+| MinIO | `minio/minio:latest` | user: `platform`, pass: `devdevdev` | `/minio/health/live` |
+
+The `platform` Postgres user is a superuser, so `#[sqlx::test]` can create/drop ephemeral test databases without additional grants.
+
+### Environment variables
+
+The script sets these before running `cargo nextest`:
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | `postgres://platform:dev@127.0.0.1:{port}/platform_dev` |
+| `VALKEY_URL` | `redis://127.0.0.1:{port}` |
+| `MINIO_ENDPOINT` | `http://127.0.0.1:{port}` |
+| `MINIO_ACCESS_KEY` | `platform` |
+| `MINIO_SECRET_KEY` | `devdevdev` |
+| `SQLX_OFFLINE` | `true` |
+| `PLATFORM_MASTER_KEY` | test key (64 hex chars) |
+| `PLATFORM_DEV` | `true` |
+| `RUST_LOG` | `warn` |
+
+For E2E tests, additionally:
+
+| Variable | Value |
+|---|---|
+| `PLATFORM_PIPELINE_NAMESPACE` | `{namespace}-pipelines` |
+| `PLATFORM_AGENT_NAMESPACE` | `{namespace}-agents` |
+
+### Cleaning up stale namespaces
+
+If a test run is killed without cleanup (e.g., `kill -9`), stale namespaces may remain:
+
+```bash
+just test-cleanup   # deletes all test-* namespaces
+```
+
+## Common Pitfalls
+
+1. **Kind cluster not running** — `just test-integration` and `just test-e2e` require a Kind cluster. Run `just cluster-up` first.
 
 2. **Stale `.sqlx/` cache** — never use `sqlx::query!` macros in `tests/` files. Use dynamic `sqlx::query()` / `sqlx::query_as()` instead. The compile-time macros require the offline cache to be regenerated every time queries change.
 
 3. **`/tmp/platform-e2e` mount** — pipeline pods use HostPath volumes to mount git repos. If repos are created in macOS temp dirs (`/var/folders/...`), they're invisible inside the Kind Docker container. Always use `/tmp/platform-e2e/` as the base path (the helpers do this automatically).
 
-4. **Port conflicts** — Kind maps `5432` (Postgres), `6379` (Valkey), `9000`/`9001` (MinIO), `8080` (app). Stop any conflicting services first (Docker Desktop, OrbStack, local Postgres).
+4. **KUBECONFIG path** — in sandboxed environments `$HOME` may resolve to `/`. The script uses `$HOME/.kube/kind-platform`. If running manually, use the full path: `KUBECONFIG=/Users/<you>/.kube/kind-platform`.
 
-5. **KUBECONFIG path** — in sandboxed environments `$HOME` may resolve to `/`. Use the full path: `KUBECONFIG=/Users/<you>/.kube/kind-platform`.
+5. **Pipeline executor not running** — the test router does NOT spawn background tasks. Pipeline E2E tests must create an `ExecutorGuard` and call `state.pipeline_notify.notify_one()` after triggering.
 
-6. **Pipeline executor not running** — the test router does NOT spawn background tasks. Pipeline tests must create an `ExecutorGuard` and call `state.pipeline_notify.notify_one()` after triggering.
+6. **SSRF blocking localhost** — webhook tests can't register `http://127.0.0.1:*` URLs via the API. Insert directly into DB.
 
-7. **SSRF blocking localhost** — webhook tests can't register `http://127.0.0.1:*` URLs via the API. Insert directly into DB.
+7. **Race conditions** — after triggering a pipeline, the executor may pick it up before your next assertion. Don't assert `status == "pending"` immediately after trigger — use `poll_pipeline_status()` to wait for completion.
 
-8. **Race conditions** — after triggering a pipeline, the executor may pick it up before your next assertion. Don't assert `status == "pending"` immediately after trigger — use `poll_pipeline_status()` to wait for completion.
-
-9. **Stale kubeconfig** — after Kind cluster restart or Docker Desktop restart, the kubeconfig may become stale (API server port changes). Refresh it:
+8. **Stale kubeconfig** — after Kind cluster restart or Docker Desktop restart, the kubeconfig may become stale (API server port changes). Refresh it:
    ```bash
    kind get kubeconfig --name platform > $HOME/.kube/kind-platform
    ```
 
-10. **`.sqlx/` stale after Rust code changes** — `cargo sqlx prepare` must be re-run whenever `sqlx::query!` macros change in Rust code, not just when migration SQL changes. The `SQLX_OFFLINE=true` build will fail if the cache is stale. The `cargo llvm-cov` target dir is separate from the normal target dir, so even a working regular build may fail under coverage:
+9. **`.sqlx/` stale after Rust code changes** — `cargo sqlx prepare` must be re-run whenever `sqlx::query!` macros change in Rust code, not just when migration SQL changes. The `SQLX_OFFLINE=true` build will fail if the cache is stale:
     ```bash
     just db-prepare   # regenerate .sqlx/ cache
     ```
 
-11. **Stale E2E pods** — previous test runs leave pods in `e2e-agents` and `e2e-pipelines`. While tests usually tolerate this, cleaning up avoids noise:
-    ```bash
-    kubectl --kubeconfig=$HOME/.kube/kind-platform delete pods --all -n e2e-agents
-    kubectl --kubeconfig=$HOME/.kube/kind-platform delete pods --all -n e2e-pipelines
-    ```
+10. **AppState changes require test helper updates** — when fields are added to `AppState`, both `tests/helpers/mod.rs` and `tests/e2e_helpers/mod.rs` must be updated. Missing fields cause all integration and E2E tests to fail to compile.
 
-12. **AppState changes require test helper updates** — when fields are added to `AppState`, both `tests/helpers/mod.rs` and `tests/e2e_helpers/mod.rs` must be updated. Missing fields cause all integration and E2E tests to fail to compile.
-
-### Cluster Management
+## Cluster Management
 
 ```bash
 just cluster-up      # create Kind cluster + all services + buckets + namespaces
@@ -295,22 +412,25 @@ just cluster-up
 
 **What `just cluster-up` provisions** (via `hack/kind-up.sh`):
 - Kind cluster with `hack/kind-config.yaml` (port mappings + `/tmp/platform-e2e` mount)
-- CNPG operator + single-instance Postgres cluster
-- Valkey deployment + NodePort service
-- MinIO deployment + NodePort service + buckets (`platform`, `platform-e2e`)
-- OTel Collector (forwards OTLP to platform ingest)
-- `CREATEDB` grant for `platform` DB user (required by `#[sqlx::test]`)
-- Namespaces: `e2e-pipelines`, `e2e-agents`
+- CNPG-managed Postgres at `localhost:5432` (user: `platform`, password: `dev`, db: `platform_dev`)
+- Valkey at `localhost:6379`
+- MinIO at `localhost:9000` (S3 API) / `localhost:9001` (console), credentials: `platform`/`devdevdev`
+- MinIO buckets: `platform` and `platform-e2e`
+- K8s namespaces: `e2e-pipelines`, `e2e-agents`
 - Shared directory: `/tmp/platform-e2e`
+- OTel Collector (for observe module)
+- `CREATEDB` grant for `platform` DB user (required by `#[sqlx::test]`)
 
-### CI Integration
+Note: the always-running cluster services (via `just cluster-up`) are used for ad-hoc development and manual testing. The `just test-integration` and `just test-e2e` commands deploy their own ephemeral services in isolated namespaces — they don't use the shared cluster services.
+
+## CI Integration
 
 ```bash
-just ci              # fmt + lint + deny + test-unit + build (no external services)
-just ci-full         # ci + test-integration + test-e2e (requires Kind cluster)
+just ci              # fmt + lint + deny + test-unit + test-integration + build
+just ci-full         # ci + test-e2e
 ```
 
-`just ci` runs without any external infrastructure. `just ci-full` requires a running Kind cluster.
+Both `just ci` and `just ci-full` require a running Kind cluster since integration tests deploy ephemeral services inside it. `just test-unit` can run standalone without any infrastructure.
 
 ## Coverage
 

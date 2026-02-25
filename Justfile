@@ -51,16 +51,21 @@ test-unit:
 test-doc:
     cargo test --doc
 
+# Ephemeral services in Kind cluster (requires: just cluster-up)
 test-integration:
-    cargo nextest run --test '*_integration'
+    bash hack/test-in-cluster.sh --filter '*_integration'
 
 test-e2e:
-    @echo "Requires Kind cluster: just cluster-up"
-    cargo nextest run --test 'e2e_*' --run-ignored ignored-only --test-threads 2
+    bash hack/test-in-cluster.sh --type e2e
 
 test-ui:
     @echo "Requires running server: just run"
     cd ui && npx playwright test
+
+# Cleanup stale test namespaces
+test-cleanup:
+    @echo "Deleting stale test-* namespaces..."
+    @kubectl get namespaces -o name | grep '^namespace/test-' | xargs -r kubectl delete --wait=false
 
 # -- Coverage -------------------------------------------------------
 cov-unit:

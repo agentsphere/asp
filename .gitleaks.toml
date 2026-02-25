@@ -1,0 +1,4 @@
+[allowlist]
+paths = [
+  "hack/test-in-cluster.sh",
+]

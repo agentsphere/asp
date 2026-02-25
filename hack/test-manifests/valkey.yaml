@@ -1,0 +1,35 @@
+# Lightweight Valkey (Redis-compatible) for per-run test namespaces.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: valkey
+  labels:
+    app: valkey
+spec:
+  containers:
+    - name: valkey
+      image: valkey/valkey:8-alpine
+      ports:
+        - containerPort: 6379
+      readinessProbe:
+        tcpSocket:
+          port: 6379
+        initialDelaySeconds: 1
+        periodSeconds: 1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey
+spec:
+  selector:
+    app: valkey
+  ports:
+    - port: 6379
+      targetPort: 6379

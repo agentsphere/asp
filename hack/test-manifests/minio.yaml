@@ -1,0 +1,43 @@
+# Lightweight MinIO for per-run test namespaces.
+# Bucket creation handled by post-deploy script (mkdir in container).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: minio
+  labels:
+    app: minio
+spec:
+  containers:
+    - name: minio
+      image: minio/minio:latest
+      args: ["server", "/data"]
+      env:
+        - name: MINIO_ROOT_USER
+          value: platform
+        - name: MINIO_ROOT_PASSWORD
+          value: devdevdev
+      ports:
+        - containerPort: 9000
+      readinessProbe:
+        httpGet:
+          path: /minio/health/live
+          port: 9000
+        initialDelaySeconds: 2
+        periodSeconds: 1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+spec:
+  selector:
+    app: minio
+  ports:
+    - port: 9000
+      targetPort: 9000

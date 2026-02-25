@@ -143,7 +143,9 @@ pub async fn e2e_state(pool: PgPool) -> AppState {
         minio_endpoint,
         minio_access_key: minio_access,
         minio_secret_key: minio_secret,
-        master_key: None,
+        master_key: std::env::var("PLATFORM_MASTER_KEY").ok().or(Some(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+        )),
         git_repos_path,
         ops_repos_path,
         smtp_host: None,
@@ -152,8 +154,10 @@ pub async fn e2e_state(pool: PgPool) -> AppState {
         smtp_username: None,
         smtp_password: None,
         admin_password: None,
-        pipeline_namespace: "e2e-pipelines".into(),
-        agent_namespace: "e2e-agents".into(),
+        pipeline_namespace: std::env::var("PLATFORM_PIPELINE_NAMESPACE")
+            .unwrap_or_else(|_| "e2e-pipelines".into()),
+        agent_namespace: std::env::var("PLATFORM_AGENT_NAMESPACE")
+            .unwrap_or_else(|_| "e2e-agents".into()),
         registry_url: None,
         secure_cookies: false,
         cors_origins: vec![],
