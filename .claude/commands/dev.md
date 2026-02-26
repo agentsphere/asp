@@ -412,6 +412,7 @@ After the review report is ready, **use the `finalize` skill** to:
 2. Implement accepted fixes
 3. Verify 100% coverage on touched lines
 4. Re-run full test suite
+5. Commit to a feature branch, push, and create a PR
 
 **For trivial changes** (typo fixes, one-liner bug fixes), you may skip the formal review/finalize cycle and commit directly after the quality gate passes. Use judgment — if the change touches auth, permissions, or money, always review.
 
