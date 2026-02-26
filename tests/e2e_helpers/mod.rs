@@ -59,6 +59,17 @@ fn resolve_kubeconfig_candidates() -> Vec<std::path::PathBuf> {
 /// Returns `(state, admin_token)`. The admin token bypasses the login
 /// endpoint's rate limiter.
 pub async fn e2e_state(pool: PgPool) -> (AppState, String) {
+    e2e_state_with_api_url(pool, None).await
+}
+
+/// Build a full E2E `AppState` with a custom `platform_api_url`.
+///
+/// When `platform_api_url` is `None`, falls back to `PLATFORM_API_URL` env var
+/// or the default in-cluster URL.
+pub async fn e2e_state_with_api_url(
+    pool: PgPool,
+    platform_api_url: Option<String>,
+) -> (AppState, String) {
     // Ensure a rustls CryptoProvider is installed (needed by reqwest/fred)
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -160,6 +171,10 @@ pub async fn e2e_state(pool: PgPool) -> (AppState, String) {
         webauthn_rp_origin: "http://localhost:8080".into(),
         permission_cache_ttl_secs: 300,
         webauthn_rp_name: "Test Platform".into(),
+        platform_api_url: platform_api_url.unwrap_or_else(|| {
+            std::env::var("PLATFORM_API_URL")
+                .unwrap_or_else(|_| "http://platform.platform.svc.cluster.local:8080".into())
+        }),
     };
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");
@@ -577,6 +592,65 @@ pub async fn delete_json(app: &Router, token: &str, path: &str) -> (StatusCode, 
     let status = resp.status();
     let body = body_json(resp).await;
     (status, body)
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline E2E helpers — real HTTP server for git clone
+// ---------------------------------------------------------------------------
+
+/// Determine the hostname through which Kind pods can reach the test host.
+///
+/// On macOS (Docker Desktop), `host.docker.internal` resolves to the host.
+/// On Linux, we use the Docker bridge gateway (typically `172.18.0.1`).
+fn host_addr_for_kind() -> String {
+    if cfg!(target_os = "macos") {
+        "host.docker.internal".into()
+    } else {
+        std::env::var("E2E_HOST_ADDR").unwrap_or_else(|_| "172.18.0.1".into())
+    }
+}
+
+/// Build a full API + git-protocol router for pipeline E2E tests.
+///
+/// Unlike `test_router`, this includes the git smart HTTP routes so that
+/// pipeline pods can clone repos via HTTP.
+pub fn pipeline_test_router(state: AppState) -> Router {
+    Router::new()
+        .route("/healthz", axum::routing::get(|| async { "ok" }))
+        .merge(platform::api::router())
+        .merge(platform::git::git_protocol_router())
+        .with_state(state)
+}
+
+/// Start a real TCP server for pipeline E2E tests.
+///
+/// Binds to `0.0.0.0:0`, starts serving the pipeline test router (with git
+/// routes), and returns the `platform_api_url` reachable from Kind pods along
+/// with the server handle and the port-bound state.
+///
+/// Usage:
+/// ```ignore
+/// let (state, token, _server) = e2e_helpers::start_pipeline_server(pool).await;
+/// let app = e2e_helpers::pipeline_test_router(state.clone());
+/// ```
+pub async fn start_pipeline_server(
+    pool: PgPool,
+) -> (AppState, String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:0")
+        .await
+        .expect("bind listener");
+    let port = listener.local_addr().unwrap().port();
+    let host = host_addr_for_kind();
+    let platform_api_url = format!("http://{host}:{port}");
+
+    let (state, token) = e2e_state_with_api_url(pool, Some(platform_api_url)).await;
+    let app = pipeline_test_router(state.clone());
+
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    (state, token, handle)
 }
 
 /// Extract JSON body from a response.

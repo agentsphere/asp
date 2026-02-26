@@ -96,8 +96,8 @@ async fn setup_pipeline_project(
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn pipeline_trigger_and_execute(pool: PgPool) {
-    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
-    let app = e2e_helpers::test_router(state.clone());
+    let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
+    let app = e2e_helpers::pipeline_test_router(state.clone());
     let token = admin_token.clone();
     let _executor = ExecutorGuard::spawn(&state);
 
@@ -148,8 +148,8 @@ async fn pipeline_trigger_and_execute(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn pipeline_with_multiple_steps(pool: PgPool) {
-    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
-    let app = e2e_helpers::test_router(state.clone());
+    let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
+    let app = e2e_helpers::pipeline_test_router(state.clone());
     let token = admin_token.clone();
     let _executor = ExecutorGuard::spawn(&state);
 
@@ -219,8 +219,8 @@ pipeline:
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn pipeline_step_failure(pool: PgPool) {
-    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
-    let app = e2e_helpers::test_router(state.clone());
+    let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
+    let app = e2e_helpers::pipeline_test_router(state.clone());
     let token = admin_token.clone();
     let _executor = ExecutorGuard::spawn(&state);
 
@@ -269,8 +269,8 @@ pipeline:
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn pipeline_cancel(pool: PgPool) {
-    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
-    let app = e2e_helpers::test_router(state.clone());
+    let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
+    let app = e2e_helpers::pipeline_test_router(state.clone());
     let token = admin_token.clone();
     let _executor = ExecutorGuard::spawn(&state);
 
@@ -332,8 +332,8 @@ pipeline:
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn step_logs_captured(pool: PgPool) {
-    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
-    let app = e2e_helpers::test_router(state.clone());
+    let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
+    let app = e2e_helpers::pipeline_test_router(state.clone());
     let token = admin_token.clone();
     let _executor = ExecutorGuard::spawn(&state);
 
@@ -389,8 +389,8 @@ async fn step_logs_captured(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn step_logs_in_minio(pool: PgPool) {
-    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
-    let app = e2e_helpers::test_router(state.clone());
+    let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
+    let app = e2e_helpers::pipeline_test_router(state.clone());
     let token = admin_token.clone();
     let _executor = ExecutorGuard::spawn(&state);
 
@@ -442,8 +442,8 @@ async fn step_logs_in_minio(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn artifact_upload_and_download(pool: PgPool) {
-    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
-    let app = e2e_helpers::test_router(state.clone());
+    let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
+    let app = e2e_helpers::pipeline_test_router(state.clone());
     let token = admin_token.clone();
     let _executor = ExecutorGuard::spawn(&state);
 
@@ -503,8 +503,8 @@ async fn artifact_upload_and_download(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn pipeline_definition_parsing(pool: PgPool) {
-    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
-    let app = e2e_helpers::test_router(state.clone());
+    let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
+    let app = e2e_helpers::pipeline_test_router(state.clone());
     let token = admin_token.clone();
     let _executor = ExecutorGuard::spawn(&state);
 
@@ -563,8 +563,8 @@ pipeline:
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn pipeline_branch_trigger_filter(pool: PgPool) {
-    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
-    let app = e2e_helpers::test_router(state.clone());
+    let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
+    let app = e2e_helpers::pipeline_test_router(state.clone());
     let token = admin_token.clone();
 
     let (project_id, _bare_path, work_path, _bd, _wd) =
@@ -604,8 +604,8 @@ async fn pipeline_branch_trigger_filter(pool: PgPool) {
 #[ignore]
 #[sqlx::test(migrations = "./migrations")]
 async fn concurrent_pipeline_limit(pool: PgPool) {
-    let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
-    let app = e2e_helpers::test_router(state.clone());
+    let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
+    let app = e2e_helpers::pipeline_test_router(state.clone());
     let token = admin_token.clone();
     let _executor = ExecutorGuard::spawn(&state);
 

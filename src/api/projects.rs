@@ -231,7 +231,18 @@ async fn create_project(
         workspace_id,
     )
     .fetch_one(&state.pool)
-    .await?;
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db_err)
+            if db_err.code().as_deref() == Some("23505")
+                && db_err
+                    .constraint()
+                    .is_some_and(|c| c.contains("owner_id") || c.contains("name")) =>
+        {
+            ApiError::Conflict(format!("a project named '{}' already exists", body.name))
+        }
+        _ => ApiError::from(e),
+    })?;
 
     write_audit(
         &state.pool,

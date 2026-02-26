@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use base64::Engine;
 use k8s_openapi::api::core::v1::{
-    Container, EmptyDirVolumeSource, EnvVar, Pod, PodSpec, Secret, SecretVolumeSource, Volume,
-    VolumeMount,
+    Capabilities, Container, EmptyDirVolumeSource, EnvVar, Pod, PodSecurityContext, PodSpec,
+    Secret, SecretVolumeSource, SecurityContext, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use kube::Api;
@@ -107,9 +107,10 @@ async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), Pip
                pl.commit_sha,
                pl.triggered_by,
                p.name as "project_name!: String",
-               p.repo_path as "repo_path!: String"
+               u.name as "owner_name!: String"
         FROM pipelines pl
         JOIN projects p ON p.id = pl.project_id
+        JOIN users u ON u.id = p.owner_id
         WHERE pl.id = $1
         "#,
         pipeline_id,
@@ -117,11 +118,22 @@ async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), Pip
     .fetch_one(&state.pool)
     .await?;
 
+    let platform_api_url = state.config.platform_api_url.trim_end_matches('/');
+    let repo_clone_url = format!(
+        "{}/{}/{}.git",
+        platform_api_url, pipeline.owner_name, pipeline.project_name,
+    );
+
+    // Create a short-lived git auth token for HTTP clone (scoped to this project)
+    let git_token =
+        create_git_auth_token(state, pipeline_id, project_id, pipeline.triggered_by).await?;
+
     let meta = PipelineMeta {
         git_ref: pipeline.git_ref,
         commit_sha: pipeline.commit_sha,
         project_name: pipeline.project_name,
-        repo_path: pipeline.repo_path,
+        repo_clone_url,
+        git_auth_token: git_token.0,
     };
 
     // Create registry auth Secret if registry is configured and we know who triggered it
@@ -150,6 +162,9 @@ async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), Pip
         cleanup_registry_secret(state, pipeline_id, token_hash).await;
     }
 
+    // Clean up git auth token
+    cleanup_git_auth_token(state, &git_token.1).await;
+
     // Finalize pipeline
     let final_status = if all_succeeded { "success" } else { "failure" };
     sqlx::query!(
@@ -174,7 +189,9 @@ struct PipelineMeta {
     git_ref: String,
     commit_sha: Option<String>,
     project_name: String,
-    repo_path: String,
+    repo_clone_url: String,
+    /// Short-lived API token for authenticating git clone via `GIT_ASKPASS`.
+    git_auth_token: String,
 }
 
 /// A pipeline step row loaded from the database.
@@ -265,9 +282,10 @@ async fn execute_single_step(
         image: &step.image,
         commands: &step.commands,
         env_vars: &env_vars,
-        repo_path: &pipeline.repo_path,
+        repo_clone_url: &pipeline.repo_clone_url,
         git_ref: &pipeline.git_ref,
         registry_secret,
+        git_auth_token: &pipeline.git_auth_token,
     });
 
     sqlx::query!(
@@ -390,6 +408,24 @@ async fn capture_logs(
     pipeline_id: Uuid,
     step_name: &str,
 ) {
+    // Capture init container (clone) logs for debugging
+    let init_log_params = LogParams {
+        container: Some("clone".into()),
+        ..Default::default()
+    };
+    match pods.logs(pod_name, &init_log_params).await {
+        Ok(logs) => {
+            let path = format!("logs/pipelines/{pipeline_id}/{step_name}-clone.log");
+            if let Err(e) = state.minio.write(&path, logs.into_bytes()).await {
+                tracing::error!(error = %e, %path, "failed to write clone logs to MinIO");
+            }
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, pod = pod_name, "no clone init container logs");
+        }
+    }
+
+    // Capture main step container logs
     let log_params = LogParams {
         container: Some("step".into()),
         ..Default::default()
@@ -405,6 +441,56 @@ async fn capture_logs(
         Err(e) => {
             tracing::warn!(error = %e, pod = pod_name, "failed to read pod logs");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Git auth token for HTTP clone
+// ---------------------------------------------------------------------------
+
+/// Create a short-lived API token so pipeline pods can clone via HTTP.
+/// The token is scoped to the given `project_id` to limit blast radius.
+/// Returns `(raw_token, token_hash)`.
+async fn create_git_auth_token(
+    state: &AppState,
+    pipeline_id: Uuid,
+    project_id: Uuid,
+    triggered_by: Option<Uuid>,
+) -> Result<(String, String), PipelineError> {
+    // Use the triggering user, or fall back to looking up the project owner
+    let user_id = if let Some(uid) = triggered_by {
+        uid
+    } else {
+        sqlx::query_scalar!("SELECT owner_id FROM projects WHERE id = $1", project_id)
+            .fetch_one(&state.pool)
+            .await?
+    };
+
+    let (raw_token, token_hash) = token::generate_api_token();
+
+    sqlx::query!(
+        r#"INSERT INTO api_tokens (id, user_id, name, token_hash, project_id, expires_at)
+           VALUES ($1, $2, $3, $4, $5, now() + interval '1 hour')"#,
+        Uuid::new_v4(),
+        user_id,
+        format!("pipeline-git-{pipeline_id}"),
+        token_hash,
+        project_id,
+    )
+    .execute(&state.pool)
+    .await?;
+
+    tracing::debug!(%pipeline_id, %project_id, "created project-scoped git auth token for pipeline clone");
+    Ok((raw_token, token_hash))
+}
+
+/// Clean up the short-lived git auth token after the pipeline finishes.
+async fn cleanup_git_auth_token(state: &AppState, token_hash: &str) {
+    if let Err(e) = sqlx::query!("DELETE FROM api_tokens WHERE token_hash = $1", token_hash)
+        .execute(&state.pool)
+        .await
+    {
+        tracing::warn!(error = %e, "failed to delete pipeline git auth token");
     }
 }
 
@@ -517,38 +603,28 @@ struct PodSpecParams<'a> {
     image: &'a str,
     commands: &'a [String],
     env_vars: &'a [EnvVar],
-    repo_path: &'a str,
+    /// HTTP clone URL (e.g. `http://platform:8080/owner/repo.git`).
+    repo_clone_url: &'a str,
     git_ref: &'a str,
     /// K8s Secret name containing Docker config JSON for registry auth.
     registry_secret: Option<&'a str>,
+    /// Short-lived API token for authenticating git clone via `GIT_ASKPASS`.
+    git_auth_token: &'a str,
 }
 
 /// Build the volumes and step container mounts for a pipeline pod.
-fn build_volumes_and_mounts(
-    repo_path: &str,
-    registry_secret: Option<&str>,
-) -> (Vec<Volume>, Vec<VolumeMount>) {
+fn build_volumes_and_mounts(registry_secret: Option<&str>) -> (Vec<Volume>, Vec<VolumeMount>) {
     let mut step_mounts = vec![VolumeMount {
         name: "workspace".into(),
         mount_path: "/workspace".into(),
         ..Default::default()
     }];
 
-    let mut volumes = vec![
-        Volume {
-            name: "workspace".into(),
-            empty_dir: Some(EmptyDirVolumeSource::default()),
-            ..Default::default()
-        },
-        Volume {
-            name: "repos".into(),
-            host_path: Some(k8s_openapi::api::core::v1::HostPathVolumeSource {
-                path: repo_path.into(),
-                type_: Some("Directory".into()),
-            }),
-            ..Default::default()
-        },
-    ];
+    let mut volumes = vec![Volume {
+        name: "workspace".into(),
+        empty_dir: Some(EmptyDirVolumeSource::default()),
+        ..Default::default()
+    }];
 
     // If a registry auth Secret is provided, mount it as Docker config
     if let Some(secret_name) = registry_secret {
@@ -587,7 +663,7 @@ fn build_pod_spec(p: &PodSpecParams<'_>) -> Pod {
         .or_else(|| p.git_ref.strip_prefix("refs/tags/"))
         .unwrap_or(p.git_ref);
 
-    let (volumes, step_mounts) = build_volumes_and_mounts(p.repo_path, p.registry_secret);
+    let (volumes, step_mounts) = build_volumes_and_mounts(p.registry_secret);
 
     Pod {
         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
@@ -597,27 +673,33 @@ fn build_pod_spec(p: &PodSpecParams<'_>) -> Pod {
         },
         spec: Some(PodSpec {
             restart_policy: Some("Never".into()),
+            security_context: Some(PodSecurityContext {
+                run_as_non_root: Some(true),
+                run_as_user: Some(1000),
+                fs_group: Some(1000),
+                ..Default::default()
+            }),
             init_containers: Some(vec![Container {
                 name: "clone".into(),
                 image: Some("alpine/git:latest".into()),
                 command: Some(vec!["sh".into(), "-c".into()]),
                 args: Some(vec![format!(
-                    "git clone --depth 1 --branch {branch} file://{} /workspace",
-                    p.repo_path
+                    "printf '#!/bin/sh\\necho \"$GIT_AUTH_TOKEN\"\\n' > /tmp/git-askpass.sh && \
+                     chmod +x /tmp/git-askpass.sh && \
+                     GIT_ASKPASS=/tmp/git-askpass.sh \
+                     git clone --depth 1 --branch \"$GIT_BRANCH\" {} /workspace 2>&1",
+                    p.repo_clone_url,
                 )]),
-                volume_mounts: Some(vec![
-                    VolumeMount {
-                        name: "workspace".into(),
-                        mount_path: "/workspace".into(),
-                        ..Default::default()
-                    },
-                    VolumeMount {
-                        name: "repos".into(),
-                        mount_path: p.repo_path.into(),
-                        read_only: Some(true),
-                        ..Default::default()
-                    },
+                env: Some(vec![
+                    env_var("GIT_AUTH_TOKEN", p.git_auth_token),
+                    env_var("GIT_BRANCH", branch),
                 ]),
+                volume_mounts: Some(vec![VolumeMount {
+                    name: "workspace".into(),
+                    mount_path: "/workspace".into(),
+                    ..Default::default()
+                }]),
+                security_context: Some(container_security()),
                 ..Default::default()
             }]),
             containers: vec![Container {
@@ -628,6 +710,7 @@ fn build_pod_spec(p: &PodSpecParams<'_>) -> Pod {
                 working_dir: Some("/workspace".into()),
                 env: Some(p.env_vars.to_vec()),
                 volume_mounts: Some(step_mounts),
+                security_context: Some(container_security()),
                 resources: Some(k8s_openapi::api::core::v1::ResourceRequirements {
                     limits: Some(BTreeMap::from([
                         ("cpu".into(), Quantity("1".into())),
@@ -707,6 +790,18 @@ fn env_var(name: &str, value: &str) -> EnvVar {
     EnvVar {
         name: name.into(),
         value: Some(value.into()),
+        ..Default::default()
+    }
+}
+
+/// Hardened security context for all containers: drop all capabilities, no privilege escalation.
+fn container_security() -> SecurityContext {
+    SecurityContext {
+        allow_privilege_escalation: Some(false),
+        capabilities: Some(Capabilities {
+            drop: Some(vec!["ALL".into()]),
+            ..Default::default()
+        }),
         ..Default::default()
     }
 }
@@ -1121,9 +1216,10 @@ mod tests {
             image: "rust:latest",
             commands: &["cargo build".into(), "cargo test".into()],
             env_vars: &[env_var("FOO", "bar")],
-            repo_path: "/data/repos/owner/repo.git",
+            repo_clone_url: "http://platform:8080/owner/repo.git",
             git_ref: "refs/heads/main",
             registry_secret: None,
+            git_auth_token: "test-token",
         });
 
         assert_eq!(pod.metadata.name.as_deref(), Some("pl-test-build"));
@@ -1155,9 +1251,8 @@ mod tests {
         assert_eq!(limits["memory"], Quantity("1Gi".into()));
 
         let volumes = spec.volumes.as_ref().unwrap();
-        assert_eq!(volumes.len(), 2);
+        assert_eq!(volumes.len(), 1);
         assert_eq!(volumes[0].name, "workspace");
-        assert_eq!(volumes[1].name, "repos");
     }
 
     #[test]
@@ -1170,16 +1265,27 @@ mod tests {
             image: "alpine:3.19",
             commands: &["echo hello".into()],
             env_vars: &[],
-            repo_path: "/repos/test.git",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "refs/heads/feature-branch",
             registry_secret: None,
+            git_auth_token: "test-token",
         });
 
-        let init = &pod.spec.unwrap().init_containers.unwrap()[0];
+        let spec = pod.spec.unwrap();
+        let init = &spec.init_containers.unwrap()[0];
+        // Command references $GIT_BRANCH env var (not literal branch)
         let clone_cmd = &init.args.as_ref().unwrap()[0];
         assert!(
-            clone_cmd.contains("--branch feature-branch"),
-            "should strip refs/heads/ prefix, got: {clone_cmd}"
+            clone_cmd.contains("$GIT_BRANCH"),
+            "should reference $GIT_BRANCH env var, got: {clone_cmd}"
+        );
+        // GIT_BRANCH env var has the stripped value
+        let env = init.env.as_ref().unwrap();
+        let branch_env = env.iter().find(|e| e.name == "GIT_BRANCH").unwrap();
+        assert_eq!(
+            branch_env.value.as_deref(),
+            Some("feature-branch"),
+            "should strip refs/heads/ prefix"
         );
     }
 
@@ -1193,16 +1299,20 @@ mod tests {
             image: "alpine:3.19",
             commands: &["echo hello".into()],
             env_vars: &[],
-            repo_path: "/repos/test.git",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "refs/tags/v1.0",
             registry_secret: None,
+            git_auth_token: "test-token",
         });
 
-        let init = &pod.spec.unwrap().init_containers.unwrap()[0];
-        let clone_cmd = &init.args.as_ref().unwrap()[0];
-        assert!(
-            clone_cmd.contains("--branch v1.0"),
-            "should strip refs/tags/ prefix, got: {clone_cmd}"
+        let spec = pod.spec.unwrap();
+        let init = &spec.init_containers.unwrap()[0];
+        let env = init.env.as_ref().unwrap();
+        let branch_env = env.iter().find(|e| e.name == "GIT_BRANCH").unwrap();
+        assert_eq!(
+            branch_env.value.as_deref(),
+            Some("v1.0"),
+            "should strip refs/tags/ prefix"
         );
     }
 
@@ -1216,16 +1326,20 @@ mod tests {
             image: "alpine:3.19",
             commands: &["echo hello".into()],
             env_vars: &[],
-            repo_path: "/repos/test.git",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
+            git_auth_token: "test-token",
         });
 
-        let init = &pod.spec.unwrap().init_containers.unwrap()[0];
-        let clone_cmd = &init.args.as_ref().unwrap()[0];
-        assert!(
-            clone_cmd.contains("--branch main"),
-            "bare ref should be used directly, got: {clone_cmd}"
+        let spec = pod.spec.unwrap();
+        let init = &spec.init_containers.unwrap()[0];
+        let env = init.env.as_ref().unwrap();
+        let branch_env = env.iter().find(|e| e.name == "GIT_BRANCH").unwrap();
+        assert_eq!(
+            branch_env.value.as_deref(),
+            Some("main"),
+            "bare ref should be used directly"
         );
     }
 
@@ -1239,9 +1353,10 @@ mod tests {
             image: "alpine:3.19",
             commands: &[],
             env_vars: &[],
-            repo_path: "/repos/test.git",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
+            git_auth_token: "test-token",
         });
 
         let container = &pod.spec.unwrap().containers[0];
@@ -1262,9 +1377,10 @@ mod tests {
             image: "alpine:3.19",
             commands: &["true".into()],
             env_vars: &[],
-            repo_path: "/repos/test.git",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
+            git_auth_token: "test-token",
         });
 
         let container = &pod.spec.unwrap().containers[0];
@@ -1289,9 +1405,10 @@ mod tests {
             image: "alpine:3.19",
             commands: &["true".into()],
             env_vars: &[],
-            repo_path: "/repos/test.git",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
+            git_auth_token: "test-token",
         });
 
         let container = &pod.spec.unwrap().containers[0];
@@ -1310,9 +1427,10 @@ mod tests {
             image: "alpine:3.19",
             commands: &["true".into()],
             env_vars: &[],
-            repo_path: "/repos/test.git",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
+            git_auth_token: "test-token",
         });
 
         let labels = pod.metadata.labels.as_ref().unwrap();
@@ -1495,7 +1613,7 @@ mod tests {
     // -- registry secret mount --
 
     #[test]
-    fn pod_spec_without_registry_secret_has_two_volumes() {
+    fn pod_spec_without_registry_secret_has_one_volume() {
         let pod = build_pod_spec(&PodSpecParams {
             pod_name: "pl-test",
             pipeline_id: Uuid::nil(),
@@ -1504,13 +1622,14 @@ mod tests {
             image: "alpine:3.19",
             commands: &["true".into()],
             env_vars: &[],
-            repo_path: "/repos/test.git",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
+            git_auth_token: "test-token",
         });
 
         let spec = pod.spec.unwrap();
-        assert_eq!(spec.volumes.as_ref().unwrap().len(), 2);
+        assert_eq!(spec.volumes.as_ref().unwrap().len(), 1);
         let mounts = spec.containers[0].volume_mounts.as_ref().unwrap();
         assert_eq!(mounts.len(), 1);
         assert_eq!(mounts[0].name, "workspace");
@@ -1526,18 +1645,19 @@ mod tests {
             image: "gcr.io/kaniko-project/executor:latest",
             commands: &["true".into()],
             env_vars: &[],
-            repo_path: "/repos/test.git",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: Some("pl-registry-00000000"),
+            git_auth_token: "test-token",
         });
 
         let spec = pod.spec.unwrap();
 
-        // Should have 3 volumes: workspace, repos, docker-config
+        // Should have 2 volumes: workspace + docker-config
         let volumes = spec.volumes.as_ref().unwrap();
-        assert_eq!(volumes.len(), 3);
-        assert_eq!(volumes[2].name, "docker-config");
-        let secret_vol = volumes[2].secret.as_ref().unwrap();
+        assert_eq!(volumes.len(), 2);
+        assert_eq!(volumes[1].name, "docker-config");
+        let secret_vol = volumes[1].secret.as_ref().unwrap();
         assert_eq!(
             secret_vol.secret_name.as_deref(),
             Some("pl-registry-00000000")
@@ -1578,36 +1698,26 @@ mod tests {
     // -- build_volumes_and_mounts --
 
     #[test]
-    fn volumes_without_secret_has_two() {
-        let (volumes, mounts) = build_volumes_and_mounts("/data/repos/test.git", None);
-        assert_eq!(volumes.len(), 2);
+    fn volumes_without_secret_has_one() {
+        let (volumes, mounts) = build_volumes_and_mounts(None);
+        assert_eq!(volumes.len(), 1);
         assert_eq!(volumes[0].name, "workspace");
-        assert_eq!(volumes[1].name, "repos");
         assert_eq!(mounts.len(), 1);
         assert_eq!(mounts[0].name, "workspace");
         assert_eq!(mounts[0].mount_path, "/workspace");
     }
 
     #[test]
-    fn volumes_with_secret_has_three() {
-        let (volumes, mounts) = build_volumes_and_mounts("/data/repos/test.git", Some("my-secret"));
-        assert_eq!(volumes.len(), 3);
-        assert_eq!(volumes[2].name, "docker-config");
-        let secret_vol = volumes[2].secret.as_ref().unwrap();
+    fn volumes_with_secret_has_two() {
+        let (volumes, mounts) = build_volumes_and_mounts(Some("my-secret"));
+        assert_eq!(volumes.len(), 2);
+        assert_eq!(volumes[1].name, "docker-config");
+        let secret_vol = volumes[1].secret.as_ref().unwrap();
         assert_eq!(secret_vol.secret_name.as_deref(), Some("my-secret"));
         assert_eq!(mounts.len(), 2);
         assert_eq!(mounts[1].name, "docker-config");
         assert_eq!(mounts[1].mount_path, "/kaniko/.docker");
         assert_eq!(mounts[1].read_only, Some(true));
-    }
-
-    #[test]
-    fn volumes_repos_host_path() {
-        let repo_path = "/tmp/platform-e2e/repos/owner/repo.git";
-        let (volumes, _) = build_volumes_and_mounts(repo_path, None);
-        let host_path = volumes[1].host_path.as_ref().unwrap();
-        assert_eq!(host_path.path, repo_path);
-        assert_eq!(host_path.type_.as_deref(), Some("Directory"));
     }
 
     // -- env_var helper --
@@ -1748,9 +1858,10 @@ mod tests {
             image: "alpine:3.19",
             commands: &["echo a".into(), "echo b".into(), "echo c".into()],
             env_vars: &[],
-            repo_path: "/repos/test.git",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
+            git_auth_token: "test-token",
         });
 
         let container = &pod.spec.unwrap().containers[0];
@@ -1768,9 +1879,10 @@ mod tests {
             image: "alpine:3.19",
             commands: &["cargo test".into()],
             env_vars: &[],
-            repo_path: "/repos/test.git",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
+            git_auth_token: "test-token",
         });
 
         let container = &pod.spec.unwrap().containers[0];
@@ -1779,7 +1891,7 @@ mod tests {
     }
 
     #[test]
-    fn build_pod_spec_init_container_has_repos_mount() {
+    fn build_pod_spec_init_container_uses_http_clone() {
         let pod = build_pod_spec(&PodSpecParams {
             pod_name: "pl-test",
             pipeline_id: Uuid::nil(),
@@ -1788,18 +1900,51 @@ mod tests {
             image: "alpine:3.19",
             commands: &["true".into()],
             env_vars: &[],
-            repo_path: "/data/repos/owner/repo.git",
+            repo_clone_url: "http://platform:8080/owner/repo.git",
             git_ref: "main",
             registry_secret: None,
+            git_auth_token: "test-token",
         });
 
         let init = &pod.spec.unwrap().init_containers.unwrap()[0];
+        // Init container only needs workspace mount (no hostPath repos mount)
         let mounts = init.volume_mounts.as_ref().unwrap();
-        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts.len(), 1);
         assert_eq!(mounts[0].name, "workspace");
-        assert_eq!(mounts[1].name, "repos");
-        assert_eq!(mounts[1].mount_path, "/data/repos/owner/repo.git");
-        assert_eq!(mounts[1].read_only, Some(true));
+
+        // Clone command uses HTTP URL with GIT_ASKPASS
+        let clone_cmd = &init.args.as_ref().unwrap()[0];
+        assert!(
+            clone_cmd.contains("http://platform:8080/owner/repo.git"),
+            "should use HTTP clone URL, got: {clone_cmd}"
+        );
+        assert!(
+            clone_cmd.contains("GIT_ASKPASS"),
+            "should use GIT_ASKPASS for auth, got: {clone_cmd}"
+        );
+        assert!(
+            !clone_cmd.contains("file://"),
+            "should not use file:// protocol, got: {clone_cmd}"
+        );
+
+        // GIT_AUTH_TOKEN env var should be set
+        let env = init.env.as_ref().unwrap();
+        let token_env = env.iter().find(|e| e.name == "GIT_AUTH_TOKEN");
+        assert!(token_env.is_some(), "should have GIT_AUTH_TOKEN env var");
+        assert_eq!(
+            token_env.unwrap().value.as_deref(),
+            Some("test-token"),
+            "GIT_AUTH_TOKEN should match the provided token"
+        );
+
+        // GIT_BRANCH env var should be set
+        let branch_env = env.iter().find(|e| e.name == "GIT_BRANCH");
+        assert!(branch_env.is_some(), "should have GIT_BRANCH env var");
+        assert_eq!(
+            branch_env.unwrap().value.as_deref(),
+            Some("main"),
+            "GIT_BRANCH should match the git ref"
+        );
     }
 
     #[test]
@@ -1812,9 +1957,10 @@ mod tests {
             image: "alpine:3.19",
             commands: &["echo $FOO".into()],
             env_vars: &[env_var("FOO", "bar"), env_var("BAZ", "qux")],
-            repo_path: "/repos/test.git",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
+            git_auth_token: "test-token",
         });
 
         let container = &pod.spec.unwrap().containers[0];
@@ -1881,5 +2027,138 @@ mod tests {
             find_env(&vars, "STEP_NAME"),
             Some("deploy-production".into())
         );
+    }
+
+    // -- HTTP clone security --
+
+    #[test]
+    fn init_container_no_token_in_clone_url() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["true".into()],
+            env_vars: &[],
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            git_ref: "main",
+            registry_secret: None,
+            git_auth_token: "secret-token-value",
+        });
+
+        let init = &pod.spec.unwrap().init_containers.unwrap()[0];
+        let clone_cmd = &init.args.as_ref().unwrap()[0];
+        assert!(
+            !clone_cmd.contains("secret-token-value"),
+            "token must not appear in clone command args"
+        );
+    }
+
+    #[test]
+    fn branch_passed_as_env_var_not_in_shell_args() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["true".into()],
+            env_vars: &[],
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            git_ref: "feat/$(malicious-cmd)",
+            registry_secret: None,
+            git_auth_token: "test-token",
+        });
+
+        let init = &pod.spec.unwrap().init_containers.unwrap()[0];
+        let clone_cmd = &init.args.as_ref().unwrap()[0];
+        // Branch name must NOT appear in the shell command (prevents injection)
+        assert!(
+            !clone_cmd.contains("$(malicious-cmd)"),
+            "branch must not be interpolated into shell args, got: {clone_cmd}"
+        );
+        // Branch should be referenced via $GIT_BRANCH env var
+        assert!(
+            clone_cmd.contains("$GIT_BRANCH"),
+            "should reference $GIT_BRANCH env var, got: {clone_cmd}"
+        );
+        // GIT_BRANCH env var should be set with the actual branch value
+        let env = init.env.as_ref().unwrap();
+        let branch_env = env.iter().find(|e| e.name == "GIT_BRANCH").unwrap();
+        assert_eq!(branch_env.value.as_deref(), Some("feat/$(malicious-cmd)"));
+    }
+
+    // -- SecurityContext --
+
+    #[test]
+    fn pipeline_pod_security_context_runs_as_non_root() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["true".into()],
+            env_vars: &[],
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            git_ref: "main",
+            registry_secret: None,
+            git_auth_token: "test-token",
+        });
+
+        let spec = pod.spec.unwrap();
+        let psc = spec.security_context.unwrap();
+        assert_eq!(psc.run_as_non_root, Some(true));
+        assert_eq!(psc.run_as_user, Some(1000));
+        assert_eq!(psc.fs_group, Some(1000));
+    }
+
+    #[test]
+    fn pipeline_step_container_drops_all_capabilities() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["true".into()],
+            env_vars: &[],
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            git_ref: "main",
+            registry_secret: None,
+            git_auth_token: "test-token",
+        });
+
+        let spec = pod.spec.unwrap();
+        let container = &spec.containers[0];
+        let sc = container.security_context.as_ref().unwrap();
+        assert_eq!(sc.allow_privilege_escalation, Some(false));
+        let caps = sc.capabilities.as_ref().unwrap();
+        assert_eq!(caps.drop.as_ref().unwrap(), &vec!["ALL".to_string()]);
+    }
+
+    #[test]
+    fn pipeline_clone_container_drops_all_capabilities() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["true".into()],
+            env_vars: &[],
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            git_ref: "main",
+            registry_secret: None,
+            git_auth_token: "test-token",
+        });
+
+        let spec = pod.spec.unwrap();
+        let init = &spec.init_containers.unwrap()[0];
+        let sc = init.security_context.as_ref().unwrap();
+        assert_eq!(sc.allow_privilege_escalation, Some(false));
+        let caps = sc.capabilities.as_ref().unwrap();
+        assert_eq!(caps.drop.as_ref().unwrap(), &vec!["ALL".to_string()]);
     }
 }

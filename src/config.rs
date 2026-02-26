@@ -34,6 +34,8 @@ pub struct Config {
     pub webauthn_rp_origin: String,
     /// `WebAuthn` Relying Party display name.
     pub webauthn_rp_name: String,
+    /// Platform API URL for agent/pipeline pods to reach the platform.
+    pub platform_api_url: String,
 }
 
 fn parse_cors_origins(s: &str) -> Vec<String> {
@@ -95,6 +97,8 @@ impl Config {
             webauthn_rp_origin: env::var("WEBAUTHN_RP_ORIGIN")
                 .unwrap_or_else(|_| "http://localhost:8080".into()),
             webauthn_rp_name: env::var("WEBAUTHN_RP_NAME").unwrap_or_else(|_| "Platform".into()),
+            platform_api_url: env::var("PLATFORM_API_URL")
+                .unwrap_or_else(|_| "http://platform.platform.svc.cluster.local:8080".into()),
         }
     }
 }
@@ -131,6 +135,7 @@ impl Config {
             webauthn_rp_id: "localhost".into(),
             webauthn_rp_origin: "http://localhost:8080".into(),
             webauthn_rp_name: "Test Platform".into(),
+            platform_api_url: "http://platform.test-agents.svc.cluster.local:8080".into(),
         }
     }
 }
@@ -225,6 +230,19 @@ mod tests {
     fn parse_cors_origins_trailing_comma() {
         let result = parse_cors_origins("a.com,b.com,");
         assert_eq!(result, vec!["a.com", "b.com"]);
+    }
+
+    #[test]
+    fn test_default_platform_api_url() {
+        let config = Config::test_default();
+        assert!(config.platform_api_url.starts_with("http://"));
+    }
+
+    #[test]
+    fn platform_api_url_default_value() {
+        let config = Config::load();
+        // Unless PLATFORM_API_URL is set, defaults to cluster-internal URL
+        assert!(!config.platform_api_url.is_empty());
     }
 
     #[test]

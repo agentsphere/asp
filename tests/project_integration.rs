@@ -100,7 +100,7 @@ async fn create_project_duplicate_name(pool: PgPool) {
 
     helpers::create_project(&app, &admin_token, "dupe-proj", "private").await;
 
-    let (status, _) = helpers::post_json(
+    let (status, body) = helpers::post_json(
         &app,
         &admin_token,
         "/api/projects",
@@ -109,6 +109,11 @@ async fn create_project_duplicate_name(pool: PgPool) {
     .await;
 
     assert_eq!(status, StatusCode::CONFLICT);
+    let error_msg = body["error"].as_str().unwrap_or("");
+    assert!(
+        error_msg.contains("already exists"),
+        "error should mention 'already exists', got: {error_msg}"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]

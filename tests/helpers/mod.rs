@@ -101,6 +101,7 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         webauthn_rp_origin: "http://localhost:8080".into(),
         permission_cache_ttl_secs: 300,
         webauthn_rp_name: "Test Platform".into(),
+        platform_api_url: "http://platform.test-agents.svc.cluster.local:8080".into(),
     };
 
     // Build WebAuthn

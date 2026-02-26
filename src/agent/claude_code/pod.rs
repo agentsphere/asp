@@ -1,12 +1,24 @@
 use std::collections::BTreeMap;
 
 use k8s_openapi::api::core::v1::{
-    Container, EmptyDirVolumeSource, EnvVar, EnvVarSource, Pod, PodSpec, ResourceRequirements,
-    SecretKeySelector, Volume, VolumeMount,
+    Capabilities, Container, EmptyDirVolumeSource, EnvVar, EnvVarSource, Pod, PodSecurityContext,
+    PodSpec, ResourceRequirements, SecretKeySelector, SecurityContext, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 
 use crate::agent::provider::{AgentSession, BrowserConfig, ProviderConfig};
+
+/// Hardened security context for all containers: drop all capabilities, no privilege escalation.
+fn container_security() -> SecurityContext {
+    SecurityContext {
+        allow_privilege_escalation: Some(false),
+        capabilities: Some(Capabilities {
+            drop: Some(vec!["ALL".into()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
 
 /// Parameters for building an agent pod. Grouped into a struct to stay under
 /// clippy's 7-argument threshold.
@@ -106,6 +118,12 @@ pub fn build_agent_pod(params: &PodBuildParams<'_>) -> Pod {
         },
         spec: Some(PodSpec {
             restart_policy: Some("Never".into()),
+            security_context: Some(PodSecurityContext {
+                run_as_non_root: Some(true),
+                run_as_user: Some(1000),
+                fs_group: Some(1000),
+                ..Default::default()
+            }),
             init_containers: Some(init_containers),
             containers,
             volumes: Some(volumes),
@@ -183,7 +201,11 @@ fn build_env_vars(
 }
 
 fn build_init_containers(params: &PodBuildParams<'_>, branch: &str) -> Vec<Container> {
-    let mut containers = vec![build_git_clone_container(params.repo_clone_url, branch)];
+    let mut containers = vec![build_git_clone_container(
+        params.repo_clone_url,
+        branch,
+        params.agent_api_token,
+    )];
 
     // Optional setup container (runs after clone, before claude)
     if let Some(ref commands) = params.config.setup_commands
@@ -197,6 +219,7 @@ fn build_init_containers(params: &PodBuildParams<'_>, branch: &str) -> Vec<Conta
             command: Some(vec!["sh".into(), "-c".into(), joined]),
             working_dir: Some("/workspace".into()),
             volume_mounts: Some(vec![workspace_mount()]),
+            security_context: Some(container_security()),
             resources: Some(ResourceRequirements {
                 requests: Some(BTreeMap::from([
                     ("cpu".into(), Quantity("200m".into())),
@@ -215,18 +238,30 @@ fn build_init_containers(params: &PodBuildParams<'_>, branch: &str) -> Vec<Conta
     containers
 }
 
-fn build_git_clone_container(repo_clone_url: &str, branch: &str) -> Container {
+fn build_git_clone_container(repo_clone_url: &str, branch: &str, api_token: &str) -> Container {
+    // Use GIT_ASKPASS to provide the API token for HTTP auth.
+    // The askpass script echoes the token when git prompts for a password.
+    // This avoids embedding tokens in clone URLs (which leak to logs/proc/pod spec).
     Container {
         name: "git-clone".into(),
         image: Some("alpine/git:latest".into()),
         command: Some(vec!["sh".into(), "-c".into()]),
         args: Some(vec![format!(
-            "set -eu; git clone {repo_clone_url} /workspace; cd /workspace; \
-             git checkout {branch} 2>/dev/null || git checkout -b {branch}; \
+            "set -eu; \
+             printf '#!/bin/sh\\necho \"$GIT_AUTH_TOKEN\"\\n' > /tmp/git-askpass.sh; \
+             chmod +x /tmp/git-askpass.sh; \
+             GIT_ASKPASS=/tmp/git-askpass.sh git clone {repo_clone_url} /workspace; \
+             cd /workspace; \
+             git checkout \"$GIT_BRANCH\" 2>/dev/null || git checkout -b \"$GIT_BRANCH\"; \
              git config user.name 'platform-agent'; \
              git config user.email 'agent@platform.local'",
         )]),
+        env: Some(vec![
+            env_var("GIT_AUTH_TOKEN", api_token),
+            env_var("GIT_BRANCH", branch),
+        ]),
         volume_mounts: Some(vec![workspace_mount()]),
+        security_context: Some(container_security()),
         resources: Some(ResourceRequirements {
             requests: Some(BTreeMap::from([
                 ("cpu".into(), Quantity("50m".into())),
@@ -258,6 +293,7 @@ fn build_main_container(
         working_dir: Some("/workspace".into()),
         env: Some(env_vars),
         volume_mounts: Some(vec![workspace_mount()]),
+        security_context: Some(container_security()),
         resources: Some(ResourceRequirements {
             requests: Some(BTreeMap::from([
                 ("cpu".into(), Quantity("200m".into())),
@@ -299,6 +335,7 @@ fn build_browser_sidecar(_browser_config: &BrowserConfig) -> Container {
             mount_path: "/dev/shm".into(),
             ..Default::default()
         }]),
+        security_context: Some(container_security()),
         resources: Some(ResourceRequirements {
             requests: Some(BTreeMap::from([
                 ("cpu".into(), Quantity("200m".into())),
@@ -367,7 +404,7 @@ mod tests {
             config: &ProviderConfig::default(),
             agent_api_token: "plat_api_test",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "platform-agents",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -384,7 +421,7 @@ mod tests {
             config: &ProviderConfig::default(),
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -406,7 +443,7 @@ mod tests {
             config: &ProviderConfig::default(),
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -426,7 +463,7 @@ mod tests {
             config: &ProviderConfig::default(),
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -456,7 +493,7 @@ mod tests {
             config: &ProviderConfig::default(),
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: Some("sk-ant-user-key-1234"),
@@ -477,7 +514,7 @@ mod tests {
             config: &ProviderConfig::default(),
             agent_api_token: "plat_api_xyz",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -512,7 +549,7 @@ mod tests {
             config: &config,
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -534,7 +571,7 @@ mod tests {
             config: &ProviderConfig::default(),
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -558,7 +595,7 @@ mod tests {
             config: &config,
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -577,9 +614,9 @@ mod tests {
         let pod = build_agent_pod(&PodBuildParams {
             session: &session,
             config: &ProviderConfig::default(),
-            agent_api_token: "tok",
+            agent_api_token: "plat_api_test",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/myproject",
+            repo_clone_url: "http://platform:8080/owner/myproject.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -588,12 +625,87 @@ mod tests {
         let init = &spec.init_containers.unwrap()[0];
         assert_eq!(init.name, "git-clone");
         let args = init.args.as_ref().unwrap();
-        assert!(args[0].contains("git clone file:///data/repos/myproject /workspace"));
+        assert!(
+            args[0].contains("git clone http://platform:8080/owner/myproject.git /workspace"),
+            "should clone via HTTP, got: {}",
+            args[0]
+        );
+        assert!(
+            args[0].contains("GIT_ASKPASS=/tmp/git-askpass.sh"),
+            "should use GIT_ASKPASS for auth, got: {}",
+            args[0]
+        );
+        // Branch is passed via env var, not interpolated into shell command
         assert!(
             args[0].contains(
-                "git checkout agent/12345678 2>/dev/null || git checkout -b agent/12345678"
-            )
+                "git checkout \"$GIT_BRANCH\" 2>/dev/null || git checkout -b \"$GIT_BRANCH\""
+            ),
+            "should reference $GIT_BRANCH env var, got: {}",
+            args[0]
         );
+        // Verify env vars are set on init container
+        let env = init.env.as_ref().unwrap();
+        let token_env = env.iter().find(|e| e.name == "GIT_AUTH_TOKEN").unwrap();
+        assert_eq!(token_env.value.as_deref(), Some("plat_api_test"));
+        let branch_env = env.iter().find(|e| e.name == "GIT_BRANCH").unwrap();
+        assert_eq!(branch_env.value.as_deref(), Some("agent/12345678"));
+    }
+
+    #[test]
+    fn init_container_no_token_in_clone_url() {
+        let session = test_session();
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &ProviderConfig::default(),
+            agent_api_token: "plat_secret_token",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: None,
+        });
+        let spec = pod.spec.unwrap();
+        let init = &spec.init_containers.unwrap()[0];
+        let args = init.args.as_ref().unwrap();
+        assert!(
+            !args[0].contains("plat_secret_token"),
+            "token must not appear in clone command args"
+        );
+    }
+
+    #[test]
+    fn branch_passed_as_env_var_not_in_shell_args() {
+        let mut session = test_session();
+        session.branch = Some("feat/$(malicious-cmd)".into());
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &ProviderConfig::default(),
+            agent_api_token: "tok",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: None,
+        });
+        let spec = pod.spec.unwrap();
+        let init = &spec.init_containers.unwrap()[0];
+        let args = init.args.as_ref().unwrap();
+        // Branch name must NOT appear in the shell command (prevents injection)
+        assert!(
+            !args[0].contains("$(malicious-cmd)"),
+            "branch must not be interpolated into shell args, got: {}",
+            args[0]
+        );
+        // Branch should be referenced via $GIT_BRANCH env var
+        assert!(
+            args[0].contains("$GIT_BRANCH"),
+            "should reference $GIT_BRANCH env var, got: {}",
+            args[0]
+        );
+        // GIT_BRANCH env var should be set with the actual branch value
+        let env = init.env.as_ref().unwrap();
+        let branch_env = env.iter().find(|e| e.name == "GIT_BRANCH").unwrap();
+        assert_eq!(branch_env.value.as_deref(), Some("feat/$(malicious-cmd)"));
     }
 
     #[test]
@@ -604,7 +716,7 @@ mod tests {
             config: &ProviderConfig::default(),
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -624,7 +736,7 @@ mod tests {
             config: &ProviderConfig::default(),
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -683,7 +795,7 @@ mod tests {
             config: &config,
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -702,7 +814,7 @@ mod tests {
             config: &ProviderConfig::default(),
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: Some("rust:1.80"),
             anthropic_api_key: None,
@@ -725,7 +837,7 @@ mod tests {
             config: &config,
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -751,7 +863,7 @@ mod tests {
             config: &config,
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -769,7 +881,7 @@ mod tests {
             config: &ProviderConfig::default(),
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -800,7 +912,7 @@ mod tests {
             config: &config,
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -819,7 +931,7 @@ mod tests {
             config: &ProviderConfig::default(),
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -837,7 +949,7 @@ mod tests {
             config: &config,
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -863,7 +975,7 @@ mod tests {
             config: &ProviderConfig::default(),
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -882,7 +994,7 @@ mod tests {
             config: &config,
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -909,7 +1021,7 @@ mod tests {
             config: &ProviderConfig::default(),
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -935,7 +1047,7 @@ mod tests {
             config: &config,
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -957,7 +1069,7 @@ mod tests {
             config: &config,
             agent_api_token: "tok",
             platform_api_url: "http://platform:8080",
-            repo_clone_url: "file:///data/repos/test",
+            repo_clone_url: "http://platform:8080/owner/test.git",
             namespace: "ns",
             project_agent_image: None,
             anthropic_api_key: None,
@@ -968,5 +1080,72 @@ mod tests {
         assert_eq!(mounts.len(), 1);
         assert_eq!(mounts[0].name, "dshm");
         assert_eq!(mounts[0].mount_path, "/dev/shm");
+    }
+
+    // -- SecurityContext --
+
+    #[test]
+    fn pod_security_context_runs_as_non_root() {
+        let session = test_session();
+        let config = ProviderConfig::default();
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &config,
+            agent_api_token: "tok",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: None,
+        });
+        let spec = pod.spec.unwrap();
+        let psc = spec.security_context.unwrap();
+        assert_eq!(psc.run_as_non_root, Some(true));
+        assert_eq!(psc.run_as_user, Some(1000));
+        assert_eq!(psc.fs_group, Some(1000));
+    }
+
+    #[test]
+    fn main_container_drops_all_capabilities() {
+        let session = test_session();
+        let config = ProviderConfig::default();
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &config,
+            agent_api_token: "tok",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: None,
+        });
+        let spec = pod.spec.unwrap();
+        let container = &spec.containers[0];
+        let sc = container.security_context.as_ref().unwrap();
+        assert_eq!(sc.allow_privilege_escalation, Some(false));
+        let caps = sc.capabilities.as_ref().unwrap();
+        assert_eq!(caps.drop.as_ref().unwrap(), &vec!["ALL".to_string()]);
+    }
+
+    #[test]
+    fn init_container_drops_all_capabilities() {
+        let session = test_session();
+        let config = ProviderConfig::default();
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &config,
+            agent_api_token: "tok",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: None,
+        });
+        let spec = pod.spec.unwrap();
+        let init = &spec.init_containers.unwrap()[0];
+        let sc = init.security_context.as_ref().unwrap();
+        assert_eq!(sc.allow_privilege_escalation, Some(false));
+        let caps = sc.capabilities.as_ref().unwrap();
+        assert_eq!(caps.drop.as_ref().unwrap(), &vec!["ALL".to_string()]);
     }
 }

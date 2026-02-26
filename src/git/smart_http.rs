@@ -138,6 +138,39 @@ pub async fn authenticate_basic(headers: &HeaderMap, pool: &PgPool) -> Result<Gi
         });
     }
 
+    // Fallback: token-only auth (supports GIT_ASKPASS where the token is used
+    // as both username and password, so username won't match any user name).
+    if user_row.is_none() {
+        let token_with_user = sqlx::query!(
+            r#"
+            SELECT t.project_id, t.scope_workspace_id,
+                   u.id as "user_id!: Uuid", u.name as "user_name!: String",
+                   u.is_active as "is_active!: bool"
+            FROM api_tokens t
+            JOIN users u ON u.id = t.user_id
+            WHERE t.token_hash = $1
+              AND (t.expires_at IS NULL OR t.expires_at > now())
+            "#,
+            token_hash,
+        )
+        .fetch_optional(pool)
+        .await?;
+
+        if let Some(row) = token_with_user {
+            if !row.is_active {
+                return Err(ApiError::Unauthorized);
+            }
+            tracing::debug!(user_id = %row.user_id, "git auth via token-only fallback (GIT_ASKPASS)");
+            return Ok(GitUser {
+                user_id: row.user_id,
+                user_name: row.user_name,
+                ip_addr: None,
+                scope_project_id: row.project_id,
+                scope_workspace_id: row.scope_workspace_id,
+            });
+        }
+    }
+
     // Always run argon2 verify to prevent timing oracle (user enumeration)
     let hash_to_verify = user_row
         .as_ref()
@@ -261,8 +294,11 @@ async fn info_refs(
     check_access(&state, &headers, &project, service == "git-upload-pack").await?;
 
     // Run git service with --advertise-refs
+    // The service query value is "git-upload-pack" or "git-receive-pack" but
+    // the git subcommand names are "upload-pack" and "receive-pack".
+    let git_cmd = service.strip_prefix("git-").unwrap_or(service);
     let output = tokio::process::Command::new("git")
-        .arg(service)
+        .arg(git_cmd)
         .arg("--stateless-rpc")
         .arg("--advertise-refs")
         .arg(&project.repo_disk_path)
