@@ -10,6 +10,7 @@ pub mod pipelines;
 pub mod projects;
 pub mod secrets;
 pub mod sessions;
+pub mod setup;
 pub mod user_keys;
 pub mod users;
 pub mod webhooks;
@@ -36,5 +37,6 @@ pub fn router() -> Router<AppState> {
         .merge(user_keys::router())
         .merge(workspaces::router())
         .merge(dashboard::router())
+        .merge(setup::router())
         .merge(crate::git::browser_router())
 }

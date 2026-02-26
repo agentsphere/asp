@@ -93,13 +93,24 @@ async fn create_project_with_repo(pool: &PgPool, repo_path: &str) -> (Uuid, Uuid
         .unwrap();
     let owner_id = row.0;
 
+    // Get admin's workspace
+    let ws_row: (Uuid,) = sqlx::query_as(
+        "SELECT id FROM workspaces WHERE owner_id = $1 AND is_active = true ORDER BY created_at LIMIT 1",
+    )
+    .bind(owner_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let workspace_id = ws_row.0;
+
     let project_name = format!("test-project-{}", Uuid::new_v4());
     let row: (Uuid,) = sqlx::query_as(
-        "INSERT INTO projects (owner_id, name, repo_path, visibility) VALUES ($1, $2, $3, 'private') RETURNING id",
+        "INSERT INTO projects (owner_id, name, repo_path, visibility, workspace_id) VALUES ($1, $2, $3, 'private', $4) RETURNING id",
     )
     .bind(owner_id)
     .bind(&project_name)
     .bind(repo_path)
+    .bind(workspace_id)
     .fetch_one(pool)
     .await
     .unwrap();

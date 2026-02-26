@@ -63,7 +63,7 @@ pub async fn e2e_state(pool: PgPool) -> (AppState, String) {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Bootstrap seed data
-    platform::store::bootstrap::run(&pool, Some("testpassword"))
+    platform::store::bootstrap::run(&pool, Some("testpassword"), true)
         .await
         .expect("bootstrap failed");
 

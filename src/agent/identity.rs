@@ -3,9 +3,9 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::auth::{password, token};
-use crate::rbac::delegation::{self, CreateDelegationParams};
-use crate::rbac::types::Permission;
+use crate::rbac::resolver;
 
+use super::AgentRoleName;
 use super::error::AgentError;
 
 /// Result of creating an ephemeral agent identity.
@@ -15,20 +15,21 @@ pub struct AgentIdentity {
     pub api_token: String,
 }
 
-/// Create an ephemeral agent user, assign the `agent` role, delegate permissions
-/// from the requesting user, and generate an API token for the pod.
+/// Create an ephemeral agent user, assign the requested agent role, compute
+/// effective permissions (role ∩ spawner), and generate a scoped API token.
 ///
-/// `extra_permissions` extends the base set (`ProjectRead` + `ProjectWrite`) with
-/// additional capabilities (e.g. `DeployRead`, `DeployPromote` for ops agents).
-/// Each permission is silently skipped if the delegator doesn't hold it.
-#[tracing::instrument(skip(pool, valkey, extra_permissions), fields(%session_id, %delegator_id, %project_id), err)]
+/// No delegation rows are created — the token's `scopes` column carries the
+/// pre-computed permission set, and `project_id` / `scope_workspace_id` enforce
+/// hard boundaries.
+#[tracing::instrument(skip(pool, valkey), fields(%session_id, %spawner_id, %project_id, %workspace_id, %agent_role), err)]
 pub async fn create_agent_identity(
     pool: &PgPool,
     valkey: &fred::clients::Pool,
     session_id: Uuid,
-    delegator_id: Uuid,
+    spawner_id: Uuid,
     project_id: Uuid,
-    extra_permissions: &[Permission],
+    workspace_id: Uuid,
+    agent_role: AgentRoleName,
 ) -> Result<AgentIdentity, AgentError> {
     let agent_user_id = Uuid::new_v4();
     let short_id = &session_id.to_string()[..8];
@@ -52,68 +53,68 @@ pub async fn create_agent_identity(
     .execute(pool)
     .await?;
 
-    // 2. Assign the "agent" system role
-    let role_id = sqlx::query_scalar!("SELECT id FROM roles WHERE name = 'agent'",)
-        .fetch_one(pool)
-        .await?;
+    // 2. Assign the REQUESTED agent role (e.g. "agent-dev"), not the generic "agent"
+    let role_id = sqlx::query_scalar!(
+        "SELECT id FROM roles WHERE name = $1",
+        agent_role.db_role_name(),
+    )
+    .fetch_one(pool)
+    .await?;
+
+    let role_project_id = if agent_role.is_workspace_scoped() {
+        None
+    } else {
+        Some(project_id)
+    };
 
     sqlx::query!(
-        "INSERT INTO user_roles (id, user_id, role_id) VALUES ($1, $2, $3)",
+        "INSERT INTO user_roles (id, user_id, role_id, project_id) VALUES ($1, $2, $3, $4)",
         Uuid::new_v4(),
         agent_user_id,
         role_id,
+        role_project_id,
     )
     .execute(pool)
     .await?;
 
-    // 3. Delegate permissions from requesting user to agent user.
-    //    Base set: project:read + project:write on the specific project.
-    //    Extra permissions (e.g. deploy:read, deploy:promote) are appended.
-    //    24-hour hard expiry as a safety net.
-    let expires_at = Some(Utc::now() + Duration::hours(24));
-    let base_permissions = [Permission::ProjectRead, Permission::ProjectWrite];
-    let all_permissions: Vec<&Permission> = base_permissions
+    // 3. Compute effective permissions: role_perms ∩ spawner_perms
+    let role_perms = resolver::role_permissions(pool, role_id).await?;
+    let spawner_perms =
+        resolver::effective_permissions(pool, valkey, spawner_id, Some(project_id)).await?;
+
+    let effective: Vec<String> = role_perms
         .iter()
-        .chain(extra_permissions.iter())
+        .filter(|p| spawner_perms.contains(p))
+        .map(|p| p.as_str().to_owned())
         .collect();
 
-    for perm in &all_permissions {
-        // If delegator doesn't hold a permission, create_delegation returns
-        // Forbidden — we silently skip (agent gets fewer capabilities).
-        let _ = delegation::create_delegation(
-            pool,
-            valkey,
-            &CreateDelegationParams {
-                delegator_id,
-                delegate_id: agent_user_id,
-                permission: **perm,
-                project_id: Some(project_id),
-                expires_at,
-                reason: Some(format!("agent session {session_id}")),
-            },
-        )
-        .await;
-    }
-
-    // 4. Generate API token for the agent pod
+    // 4. Create SCOPED API token with hard boundaries
     let (raw_token, token_hash) = token::generate_api_token();
     let token_expires = Utc::now() + Duration::hours(24);
 
+    let (scope_ws, scope_proj) = if agent_role.is_workspace_scoped() {
+        (Some(workspace_id), None) // manager: workspace boundary only
+    } else {
+        (Some(workspace_id), Some(project_id)) // dev/ops/test/review: project boundary
+    };
+
     sqlx::query!(
         r#"
-        INSERT INTO api_tokens (user_id, name, token_hash, scopes, expires_at)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO api_tokens (user_id, name, token_hash, scopes, project_id, scope_workspace_id, expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         "#,
         agent_user_id,
         format!("agent-session-{session_id}"),
         token_hash,
-        &["agent:session".to_owned()][..],
+        &effective,
+        scope_proj,
+        scope_ws,
         token_expires,
     )
     .execute(pool)
     .await?;
 
-    tracing::info!(%agent_user_id, %session_id, "agent identity created");
+    tracing::info!(%agent_user_id, %session_id, role = %agent_role, perms = effective.len(), "agent identity created");
 
     Ok(AgentIdentity {
         user_id: agent_user_id,
@@ -121,7 +122,7 @@ pub async fn create_agent_identity(
     })
 }
 
-/// Cleanup an agent identity: revoke delegations, delete tokens, deactivate user.
+/// Cleanup an agent identity: delete roles, tokens, sessions, deactivate user.
 /// Called when a session finishes (completed, failed, or stopped).
 #[tracing::instrument(skip(pool, valkey), fields(%agent_user_id), err)]
 pub async fn cleanup_agent_identity(
@@ -129,17 +130,10 @@ pub async fn cleanup_agent_identity(
     valkey: &fred::clients::Pool,
     agent_user_id: Uuid,
 ) -> Result<(), AgentError> {
-    // Revoke all active delegations where this agent is the delegate
-    let delegations = sqlx::query!(
-        "SELECT id FROM delegations WHERE delegate_id = $1 AND revoked_at IS NULL",
-        agent_user_id,
-    )
-    .fetch_all(pool)
-    .await?;
-
-    for d in &delegations {
-        let _ = delegation::revoke_delegation(pool, valkey, d.id).await;
-    }
+    // Delete role assignments for this agent user
+    sqlx::query!("DELETE FROM user_roles WHERE user_id = $1", agent_user_id)
+        .execute(pool)
+        .await?;
 
     // Delete all API tokens for this agent user
     sqlx::query!("DELETE FROM api_tokens WHERE user_id = $1", agent_user_id)

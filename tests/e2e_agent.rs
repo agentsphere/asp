@@ -404,11 +404,10 @@ async fn agent_role_determines_mcp_config(pool: PgPool) {
         serde_json::json!({
             "prompt": "MCP role test",
             "provider": "claude-code",
+            "role": "ops",
             "config": {
                 "role": "ops",
             },
-            "delegate_deploy": true,
-            "delegate_observe": true,
         }),
     )
     .await;

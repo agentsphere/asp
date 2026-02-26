@@ -382,7 +382,7 @@ async fn execute_create_project(
         .map(String::from);
 
     // Look up owner username
-    let owner_name: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+    let owner_name: String = sqlx::query_scalar("SELECT name FROM users WHERE id = $1")
         .bind(handle.user_id)
         .fetch_one(&state.pool)
         .await?;
@@ -395,9 +395,18 @@ async fn execute_create_project(
     let project_id = Uuid::new_v4();
     let repo_path_str = repo_path.to_string_lossy().to_string();
 
+    // Ensure the user has a workspace for the project
+    let workspace_id = crate::workspace::service::get_or_create_default_workspace(
+        &state.pool,
+        handle.user_id,
+        &owner_name,
+        &owner_name,
+    )
+    .await?;
+
     sqlx::query(
-        "INSERT INTO projects (id, name, display_name, description, owner_id, visibility, repo_path) \
-         VALUES ($1, $2, $3, $4, $5, 'private', $6)",
+        "INSERT INTO projects (id, name, display_name, description, owner_id, visibility, repo_path, workspace_id) \
+         VALUES ($1, $2, $3, $4, $5, 'private', $6, $7)",
     )
     .bind(project_id)
     .bind(name)
@@ -405,6 +414,7 @@ async fn execute_create_project(
     .bind(&description)
     .bind(handle.user_id)
     .bind(&repo_path_str)
+    .bind(workspace_id)
     .execute(&state.pool)
     .await?;
 
@@ -479,7 +489,7 @@ async fn execute_create_ops_repo(
     .await?;
 
     // Audit
-    let owner_name: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+    let owner_name: String = sqlx::query_scalar("SELECT name FROM users WHERE id = $1")
         .bind(handle.user_id)
         .fetch_one(&state.pool)
         .await?;
@@ -525,7 +535,7 @@ async fn execute_spawn_agent(
         "claude-code",
         None,
         None,
-        &[],
+        super::AgentRoleName::Dev,
     )
     .await?;
 
@@ -731,5 +741,10 @@ mod tests {
     fn parse_uuid_field_invalid() {
         let input = serde_json::json!({"project_id": "not-a-uuid"});
         assert!(parse_uuid_field(&input, "project_id").is_err());
+    }
+
+    #[test]
+    fn system_prompt_mentions_create_ops_repo() {
+        assert!(CREATE_APP_SYSTEM_PROMPT.contains("create_ops_repo"));
     }
 }

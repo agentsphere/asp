@@ -30,6 +30,10 @@ pub struct GitUser {
     pub user_id: Uuid,
     pub user_name: String,
     pub ip_addr: Option<String>,
+    /// Hard project scope from API token (if token-authenticated).
+    pub scope_project_id: Option<Uuid>,
+    /// Hard workspace scope from API token (if token-authenticated).
+    pub scope_workspace_id: Option<Uuid>,
 }
 
 /// Resolved project from /:owner/:repo path.
@@ -102,10 +106,10 @@ pub async fn authenticate_basic(headers: &HeaderMap, pool: &PgPool) -> Result<Gi
 
     // Try password as API token first (SHA-256 is constant-time relative to user existence)
     let token_hash = token::hash_token(&password_raw);
-    let token_match = if let Some(ref user) = user_row {
-        sqlx::query_scalar!(
+    let token_row = if let Some(ref user) = user_row {
+        sqlx::query!(
             r#"
-        SELECT COUNT(*) as "count!: i64"
+        SELECT project_id, scope_workspace_id
         FROM api_tokens
         WHERE token_hash = $1
           AND user_id = $2
@@ -114,14 +118,14 @@ pub async fn authenticate_basic(headers: &HeaderMap, pool: &PgPool) -> Result<Gi
             token_hash,
             user.id,
         )
-        .fetch_one(pool)
+        .fetch_optional(pool)
         .await?
     } else {
-        0
+        None
     };
 
-    if token_match > 0 {
-        let user = user_row.expect("token_match > 0 implies user exists");
+    if let Some(token_row) = token_row {
+        let user = user_row.expect("token match implies user exists");
         if !user.is_active {
             return Err(ApiError::Unauthorized);
         }
@@ -129,6 +133,8 @@ pub async fn authenticate_basic(headers: &HeaderMap, pool: &PgPool) -> Result<Gi
             user_id: user.id,
             user_name: user.name,
             ip_addr: None,
+            scope_project_id: token_row.project_id,
+            scope_workspace_id: token_row.scope_workspace_id,
         });
     }
 
@@ -150,6 +156,8 @@ pub async fn authenticate_basic(headers: &HeaderMap, pool: &PgPool) -> Result<Gi
         user_id: user.id,
         user_name: user.name,
         ip_addr: None,
+        scope_project_id: None,
+        scope_workspace_id: None,
     })
 }
 
@@ -415,6 +423,27 @@ async fn check_access(
 
     // Authenticate
     let git_user = authenticate_basic(headers, &state.pool).await?;
+
+    // Enforce hard project scope from API token
+    if let Some(scope_pid) = git_user.scope_project_id
+        && scope_pid != project.project_id
+    {
+        return Err(ApiError::NotFound("repository".into()));
+    }
+
+    // Enforce hard workspace scope from API token
+    if let Some(scope_wid) = git_user.scope_workspace_id {
+        let in_workspace = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1 AND workspace_id = $2 AND is_active = true) as "exists!: bool""#,
+            project.project_id, scope_wid,
+        )
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?;
+        if !in_workspace {
+            return Err(ApiError::NotFound("repository".into()));
+        }
+    }
 
     if is_read && project.visibility == "internal" {
         // Any authenticated user can read internal projects

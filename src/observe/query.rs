@@ -205,12 +205,13 @@ async fn require_observe_read(
     auth: &AuthUser,
     project_id: Option<Uuid>,
 ) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission(
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         None,
         Permission::ObserveRead,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;
@@ -230,26 +231,39 @@ async fn require_project_read(
     auth: &AuthUser,
     project_id: Uuid,
 ) -> Result<(), ApiError> {
-    let project =
-        sqlx::query("SELECT visibility, owner_id FROM projects WHERE id = $1 AND is_active = true")
-            .bind(project_id)
-            .fetch_optional(&state.pool)
-            .await?
-            .ok_or_else(|| ApiError::NotFound("project".into()))?;
+    // Enforce hard project scope from API token
+    auth.check_project_scope(project_id)?;
+
+    let project = sqlx::query(
+        "SELECT visibility, owner_id, workspace_id FROM projects WHERE id = $1 AND is_active = true",
+    )
+    .bind(project_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("project".into()))?;
 
     let visibility: String = project.get("visibility");
     let owner_id: Uuid = project.get("owner_id");
+
+    // Enforce hard workspace scope from API token
+    if let Some(scope_wid) = auth.scope_workspace_id {
+        let ws_id: Uuid = project.get("workspace_id");
+        if ws_id != scope_wid {
+            return Err(ApiError::NotFound("project".into()));
+        }
+    }
 
     if visibility == "public" || visibility == "internal" || owner_id == auth.user_id {
         return Ok(());
     }
 
-    let allowed = resolver::has_permission(
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         Some(project_id),
         Permission::ProjectRead,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;

@@ -6,6 +6,45 @@ use uuid::Uuid;
 use super::error::AgentError;
 
 // ---------------------------------------------------------------------------
+// Role validation
+// ---------------------------------------------------------------------------
+
+/// Valid agent roles that control which MCP servers are loaded.
+/// Used as reference in tests; production validation uses [`resolve_role`].
+#[cfg(test)]
+pub const VALID_ROLES: &[&str] = &[
+    "dev",
+    "ops",
+    "manager",
+    "test",
+    "review",
+    "admin",
+    "ui",
+    "create-app",
+];
+
+/// Resolve a role string, mapping legacy aliases to canonical names.
+/// Returns the canonical role name if valid, or `None` if unknown.
+pub fn resolve_role(role: &str) -> Option<&'static str> {
+    match role {
+        "dev" => Some("dev"),
+        "ops" => Some("ops"),
+        "manager" | "create-app" => Some("manager"),
+        "test" => Some("test"),
+        "review" => Some("review"),
+        "admin" => Some("admin"),
+        "ui" => Some("ui"),
+        _ => None,
+    }
+}
+
+/// Check if a role string is valid (including legacy aliases).
+#[cfg(test)]
+pub fn is_valid_role(role: &str) -> bool {
+    VALID_ROLES.contains(&role)
+}
+
+// ---------------------------------------------------------------------------
 // Agent session (internal DB model)
 // ---------------------------------------------------------------------------
 
@@ -203,5 +242,54 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let parsed: BrowserConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.allowed_origins, config.allowed_origins);
+    }
+
+    // -- VALID_ROLES tests --
+
+    #[test]
+    fn valid_roles_contains_manager() {
+        assert!(VALID_ROLES.contains(&"manager"));
+    }
+
+    #[test]
+    fn valid_roles_contains_create_app_alias() {
+        assert!(VALID_ROLES.contains(&"create-app"));
+    }
+
+    #[test]
+    fn valid_roles_contains_dev_ops_test_review() {
+        assert!(VALID_ROLES.contains(&"dev"));
+        assert!(VALID_ROLES.contains(&"ops"));
+        assert!(VALID_ROLES.contains(&"test"));
+        assert!(VALID_ROLES.contains(&"review"));
+    }
+
+    #[test]
+    fn valid_roles_rejects_unknown() {
+        assert!(!is_valid_role("unknown-role"));
+        assert!(!is_valid_role(""));
+        assert!(!is_valid_role("hacker"));
+    }
+
+    #[test]
+    fn create_app_alias_resolves_to_manager() {
+        assert_eq!(resolve_role("create-app"), Some("manager"));
+        assert_eq!(resolve_role("manager"), Some("manager"));
+    }
+
+    #[test]
+    fn resolve_role_all_valid() {
+        assert_eq!(resolve_role("dev"), Some("dev"));
+        assert_eq!(resolve_role("ops"), Some("ops"));
+        assert_eq!(resolve_role("test"), Some("test"));
+        assert_eq!(resolve_role("review"), Some("review"));
+        assert_eq!(resolve_role("admin"), Some("admin"));
+        assert_eq!(resolve_role("ui"), Some("ui"));
+    }
+
+    #[test]
+    fn resolve_role_unknown_returns_none() {
+        assert_eq!(resolve_role("unknown"), None);
+        assert_eq!(resolve_role(""), None);
     }
 }

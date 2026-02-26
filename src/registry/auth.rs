@@ -16,6 +16,10 @@ use crate::store::AppState;
 pub struct RegistryUser {
     pub user_id: Uuid,
     pub user_name: String,
+    /// Hard project scope from API token.
+    pub scope_project_id: Option<Uuid>,
+    /// Hard workspace scope from API token.
+    pub scope_workspace_id: Option<Uuid>,
 }
 
 /// Rejection type for registry auth — returns OCI-compliant 401 with Www-Authenticate.
@@ -45,6 +49,8 @@ struct TokenLookup {
     user_id: Uuid,
     user_name: String,
     is_active: bool,
+    scope_project_id: Option<Uuid>,
+    scope_workspace_id: Option<Uuid>,
 }
 
 impl FromRequestParts<AppState> for RegistryUser {
@@ -72,6 +78,8 @@ impl FromRequestParts<AppState> for RegistryUser {
                 return Ok(Self {
                     user_id: user.user_id,
                     user_name: user.user_name,
+                    scope_project_id: user.scope_project_id,
+                    scope_workspace_id: user.scope_workspace_id,
                 });
             }
             return Err(RegistryAuthRejection);
@@ -88,6 +96,8 @@ impl FromRequestParts<AppState> for RegistryUser {
                 return Ok(Self {
                     user_id: user.user_id,
                     user_name: user.user_name,
+                    scope_project_id: user.scope_project_id,
+                    scope_workspace_id: user.scope_workspace_id,
                 });
             }
             return Err(RegistryAuthRejection);
@@ -104,7 +114,8 @@ async fn lookup_api_token(pool: &sqlx::PgPool, raw_token: &str) -> Option<TokenL
     let row = sqlx::query_as!(
         TokenLookup,
         r#"
-        SELECT u.id as "user_id!", u.name as "user_name!", u.is_active as "is_active!"
+        SELECT u.id as "user_id!", u.name as "user_name!", u.is_active as "is_active!",
+               t.project_id as "scope_project_id?", t.scope_workspace_id
         FROM api_tokens t
         JOIN users u ON u.id = t.user_id
         WHERE t.token_hash = $1
@@ -144,7 +155,8 @@ async fn lookup_basic_auth(
     let row = sqlx::query_as!(
         TokenLookup,
         r#"
-        SELECT u.id as "user_id!", u.name as "user_name!", u.is_active as "is_active!"
+        SELECT u.id as "user_id!", u.name as "user_name!", u.is_active as "is_active!",
+               t.project_id as "scope_project_id?", t.scope_workspace_id
         FROM api_tokens t
         JOIN users u ON u.id = t.user_id
         WHERE t.token_hash = $1

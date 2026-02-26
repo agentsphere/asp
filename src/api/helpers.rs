@@ -15,20 +15,30 @@ pub struct ListResponse<T> {
     pub total: i64,
 }
 
-/// Check project-level read access considering visibility, ownership, and RBAC.
+/// Check project-level read access considering scope, visibility, ownership, and RBAC.
 /// Returns 404 (not 403) for private resources to avoid leaking existence.
 pub async fn require_project_read(
     state: &AppState,
     auth: &AuthUser,
     project_id: Uuid,
 ) -> Result<(), ApiError> {
+    // Hard scope check FIRST — before any DB query
+    auth.check_project_scope(project_id)?;
+
     let project = sqlx::query!(
-        "SELECT visibility, owner_id FROM projects WHERE id = $1 AND is_active = true",
+        "SELECT visibility, owner_id, workspace_id FROM projects WHERE id = $1 AND is_active = true",
         project_id,
     )
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| ApiError::NotFound("project".into()))?;
+
+    // If workspace-scoped, verify project belongs to that workspace
+    if let Some(scope_wid) = auth.scope_workspace_id
+        && project.workspace_id != scope_wid
+    {
+        return Err(ApiError::NotFound("project".into()));
+    }
 
     if project.visibility == "public"
         || project.visibility == "internal"
@@ -37,12 +47,13 @@ pub async fn require_project_read(
         return Ok(());
     }
 
-    let allowed = resolver::has_permission(
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         Some(project_id),
         Permission::ProjectRead,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;
@@ -53,18 +64,35 @@ pub async fn require_project_read(
     Ok(())
 }
 
-/// Check project-level write access via RBAC.
+/// Check project-level write access via scope + RBAC.
 pub async fn require_project_write(
     state: &AppState,
     auth: &AuthUser,
     project_id: Uuid,
 ) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission(
+    // Hard scope check FIRST
+    auth.check_project_scope(project_id)?;
+
+    // If workspace-scoped, verify project belongs to that workspace
+    if let Some(scope_wid) = auth.scope_workspace_id {
+        let in_workspace = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1 AND workspace_id = $2 AND is_active = true) as "exists!: bool""#,
+            project_id, scope_wid,
+        )
+        .fetch_one(&state.pool)
+        .await?;
+        if !in_workspace {
+            return Err(ApiError::NotFound("project".into()));
+        }
+    }
+
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         Some(project_id),
         Permission::ProjectWrite,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;

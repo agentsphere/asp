@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use ts_rs::TS;
 
+use crate::agent::AgentRoleName;
 use crate::agent::service;
 use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
@@ -28,15 +29,8 @@ pub struct CreateSessionRequest {
     pub provider: Option<String>,
     pub branch: Option<String>,
     pub config: Option<serde_json::Value>,
-    /// Delegate deploy:read + deploy:promote to the agent.
-    #[serde(default)]
-    pub delegate_deploy: bool,
-    /// Delegate observe:read to the agent.
-    #[serde(default)]
-    pub delegate_observe: bool,
-    /// Delegate admin:users + admin:roles + admin:config to the agent.
-    #[serde(default)]
-    pub delegate_admin: bool,
+    /// Agent role: "dev" (default), "ops", "test", "review", "manager".
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,12 +158,14 @@ async fn require_agent_run(
     auth: &AuthUser,
     project_id: Uuid,
 ) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission(
+    auth.check_project_scope(project_id)?;
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         Some(project_id),
         Permission::AgentRun,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;
@@ -187,15 +183,17 @@ async fn require_session_write(
     project_id: Uuid,
     session_user_id: Uuid,
 ) -> Result<(), ApiError> {
+    auth.check_project_scope(project_id)?;
     if auth.user_id == session_user_id {
         return Ok(());
     }
-    let allowed = resolver::has_permission(
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         Some(project_id),
         Permission::ProjectWrite,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;
@@ -207,11 +205,7 @@ async fn require_session_write(
 }
 
 /// Validate provider config fields (image, `setup_commands`, browser).
-fn validate_provider_config(
-    config: &serde_json::Value,
-    delegate_admin: bool,
-    user_id: Uuid,
-) -> Result<(), ApiError> {
+fn validate_provider_config(config: &serde_json::Value) -> Result<(), ApiError> {
     let Ok(parsed) =
         serde_json::from_value::<crate::agent::provider::ProviderConfig>(config.clone())
     else {
@@ -223,6 +217,13 @@ fn validate_provider_config(
     if let Some(ref commands) = parsed.setup_commands {
         validation::check_setup_commands(commands)?;
     }
+    if let Some(ref role) = parsed.role
+        && crate::agent::provider::resolve_role(role).is_none()
+    {
+        return Err(ApiError::BadRequest(format!(
+            "invalid agent role: '{role}'. Valid roles: dev, ops, manager, test, review, admin, ui"
+        )));
+    }
     if let Some(ref browser) = parsed.browser {
         validation::check_browser_config(browser)?;
         let role = parsed.role.as_deref().unwrap_or("dev");
@@ -231,12 +232,6 @@ fn validate_provider_config(
                 "browser access is only available for 'ui' and 'test' roles".into(),
             ));
         }
-    }
-    if parsed.role.as_deref() == Some("admin") && !delegate_admin {
-        tracing::warn!(
-            %user_id,
-            "agent session requested admin role without delegate_admin flag — admin MCP tools will get 403"
-        );
     }
     Ok(())
 }
@@ -272,9 +267,17 @@ async fn create_session(
         validation::check_branch_name(branch)?;
     }
 
+    // Parse agent role (default: "dev")
+    let role_str = body.role.as_deref().unwrap_or("dev");
+    let agent_role: AgentRoleName = role_str.parse().map_err(|_| {
+        ApiError::BadRequest(format!(
+            "invalid agent role: '{role_str}'. Valid roles: dev, ops, test, review, manager"
+        ))
+    })?;
+
     // Validate provider config if provided
     if let Some(ref config) = body.config {
-        validate_provider_config(config, body.delegate_admin, auth.user_id)?;
+        validate_provider_config(config)?;
     }
 
     // Verify project exists
@@ -286,21 +289,6 @@ async fn create_session(
     .await?
     .ok_or_else(|| ApiError::NotFound("project".into()))?;
 
-    // Build extra permission delegations based on request flags
-    let mut extra_permissions = Vec::new();
-    if body.delegate_deploy {
-        extra_permissions.push(Permission::DeployRead);
-        extra_permissions.push(Permission::DeployPromote);
-    }
-    if body.delegate_observe {
-        extra_permissions.push(Permission::ObserveRead);
-    }
-    if body.delegate_admin {
-        extra_permissions.push(Permission::AdminUsers);
-        extra_permissions.push(Permission::AdminRoles);
-        extra_permissions.push(Permission::AdminConfig);
-    }
-
     // Create session (identity + pod)
     let session = service::create_session(
         &state,
@@ -310,7 +298,7 @@ async fn create_session(
         provider,
         body.branch.as_deref(),
         body.config,
-        &extra_permissions,
+        agent_role,
     )
     .await
     .map_err(ApiError::from)?;
@@ -328,6 +316,7 @@ async fn create_session(
             detail: Some(serde_json::json!({
                 "provider": provider,
                 "branch": session.branch,
+                "role": role_str,
             })),
             ip_addr: auth.ip_addr.as_deref(),
         },
@@ -553,6 +542,11 @@ async fn create_app(
     auth: AuthUser,
     Json(body): Json<CreateAppRequest>,
 ) -> Result<(StatusCode, Json<SessionResponse>), ApiError> {
+    // Project-scoped tokens cannot create project-less sessions
+    if auth.scope_project_id.is_some() {
+        return Err(ApiError::Forbidden);
+    }
+
     // Rate limit: 5 create-app sessions per 10 minutes per user
     crate::auth::rate_limit::check_rate(
         &state.valkey,
@@ -568,21 +562,23 @@ async fn create_app(
     validation::check_length("provider", provider, 1, 50)?;
 
     // Check that the user has project:write and agent:run (global scope)
-    let has_write = resolver::has_permission(
+    let has_write = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         None,
         Permission::ProjectWrite,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;
-    let has_run = resolver::has_permission(
+    let has_run = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         None,
         Permission::AgentRun,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;
@@ -674,13 +670,17 @@ async fn spawn_child(
 ) -> Result<(StatusCode, Json<SessionResponse>), ApiError> {
     validation::check_length("prompt", &body.prompt, 1, 100_000)?;
 
+    // Enforce hard project scope from API token
+    auth.check_project_scope(id)?;
+
     // Check agent:spawn permission
-    let allowed = resolver::has_permission(
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         Some(id),
         Permission::AgentSpawn,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;
@@ -1050,26 +1050,26 @@ mod tests {
     #[test]
     fn validate_provider_config_empty_ok() {
         let config = serde_json::json!({});
-        assert!(validate_provider_config(&config, false, Uuid::new_v4()).is_ok());
+        assert!(validate_provider_config(&config).is_ok());
     }
 
     #[test]
     fn validate_provider_config_valid_image() {
         let config = serde_json::json!({ "image": "alpine:3.19" });
-        assert!(validate_provider_config(&config, false, Uuid::new_v4()).is_ok());
+        assert!(validate_provider_config(&config).is_ok());
     }
 
     #[test]
     fn validate_provider_config_invalid_image() {
         let config = serde_json::json!({ "image": "image;rm -rf /" });
-        assert!(validate_provider_config(&config, false, Uuid::new_v4()).is_err());
+        assert!(validate_provider_config(&config).is_err());
     }
 
     #[test]
     fn validate_provider_config_too_many_setup_commands() {
         let cmds: Vec<String> = (0..21).map(|i| format!("cmd {i}")).collect();
         let config = serde_json::json!({ "setup_commands": cmds });
-        assert!(validate_provider_config(&config, false, Uuid::new_v4()).is_err());
+        assert!(validate_provider_config(&config).is_err());
     }
 
     #[test]
@@ -1078,7 +1078,7 @@ mod tests {
             "browser": { "allowed_origins": ["http://localhost:3000"] },
             "role": "dev"
         });
-        let result = validate_provider_config(&config, false, Uuid::new_v4());
+        let result = validate_provider_config(&config);
         assert!(result.is_err());
     }
 
@@ -1088,7 +1088,7 @@ mod tests {
             "browser": { "allowed_origins": ["http://localhost:3000"] },
             "role": "ui"
         });
-        assert!(validate_provider_config(&config, false, Uuid::new_v4()).is_ok());
+        assert!(validate_provider_config(&config).is_ok());
     }
 
     #[test]
@@ -1097,7 +1097,7 @@ mod tests {
             "browser": { "allowed_origins": ["http://localhost:3000"] },
             "role": "test"
         });
-        assert!(validate_provider_config(&config, false, Uuid::new_v4()).is_ok());
+        assert!(validate_provider_config(&config).is_ok());
     }
 
     #[test]

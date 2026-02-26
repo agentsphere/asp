@@ -114,36 +114,23 @@ async fn main() -> anyhow::Result<()> {
     // Set configurable permission cache TTL
     rbac::resolver::set_cache_ttl(cfg.permission_cache_ttl_secs);
 
-    // Bootstrap system roles, permissions, and admin user on first run
-    store::bootstrap::run(&pool, cfg.admin_password.as_deref()).await?;
+    // Bootstrap system roles, permissions, and create admin (dev) or setup token (prod)
+    match store::bootstrap::run(&pool, cfg.admin_password.as_deref(), cfg.dev_mode).await? {
+        store::bootstrap::BootstrapResult::Skipped => {}
+        store::bootstrap::BootstrapResult::DevAdmin => {
+            tracing::info!("dev mode: admin user created with default credentials");
+        }
+        store::bootstrap::BootstrapResult::SetupToken(token) => {
+            tracing::warn!("=======================================================");
+            tracing::warn!("  SETUP TOKEN (use within 1 hour):");
+            tracing::warn!("  {token}");
+            tracing::warn!("  Open /setup in your browser and enter this token");
+            tracing::warn!("  to create the first admin user.");
+            tracing::warn!("=======================================================");
+        }
+    }
 
-    // Start background tasks
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
-    tokio::spawn(pipeline::executor::run(state.clone(), shutdown_rx.clone()));
-    let eventbus_shutdown_rx = shutdown_tx.subscribe();
-    tokio::spawn(store::eventbus::run(state.clone(), eventbus_shutdown_rx));
-    let deployer_shutdown_rx = shutdown_tx.subscribe();
-    tokio::spawn(deployer::reconciler::run(
-        state.clone(),
-        deployer_shutdown_rx,
-    ));
-    let preview_shutdown_rx = shutdown_tx.subscribe();
-    tokio::spawn(deployer::preview::run(state.clone(), preview_shutdown_rx));
-
-    // Start agent session reaper background task
-    let agent_shutdown_rx = shutdown_tx.subscribe();
-    tokio::spawn(agent::service::run_reaper(state.clone(), agent_shutdown_rx));
-
-    // Start observe background tasks (flush, rotation, alert evaluation)
-    let observe_shutdown_rx = shutdown_tx.subscribe();
-    let observe_channels = observe::spawn_background_tasks(state.clone(), observe_shutdown_rx);
-
-    // Start registry GC background task
-    let registry_shutdown_rx = shutdown_tx.subscribe();
-    tokio::spawn(registry::gc::run(state.clone(), registry_shutdown_rx));
-
-    // Spawn expired session/token cleanup task (hourly)
-    tokio::spawn(run_session_cleanup(pool.clone()));
+    let (shutdown_tx, observe_channels) = spawn_background_tasks(&state, &pool);
 
     // Build router
     let app = axum::Router::new()
@@ -186,6 +173,34 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("platform stopped");
     Ok(())
+}
+
+fn spawn_background_tasks(
+    state: &store::AppState,
+    pool: &sqlx::PgPool,
+) -> (
+    tokio::sync::watch::Sender<()>,
+    observe::ingest::IngestChannels,
+) {
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    tokio::spawn(pipeline::executor::run(state.clone(), shutdown_rx.clone()));
+    tokio::spawn(store::eventbus::run(state.clone(), shutdown_tx.subscribe()));
+    tokio::spawn(deployer::reconciler::run(
+        state.clone(),
+        shutdown_tx.subscribe(),
+    ));
+    tokio::spawn(deployer::preview::run(
+        state.clone(),
+        shutdown_tx.subscribe(),
+    ));
+    tokio::spawn(agent::service::run_reaper(
+        state.clone(),
+        shutdown_tx.subscribe(),
+    ));
+    let observe_channels = observe::spawn_background_tasks(state.clone(), shutdown_tx.subscribe());
+    tokio::spawn(registry::gc::run(state.clone(), shutdown_tx.subscribe()));
+    tokio::spawn(run_session_cleanup(pool.clone()));
+    (shutdown_tx, observe_channels)
 }
 
 async fn run_session_cleanup(pool: sqlx::PgPool) {

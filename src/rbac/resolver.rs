@@ -203,6 +203,23 @@ async fn add_workspace_permissions(
     Ok(())
 }
 
+/// Get permissions for a specific role by ID (from `role_permissions` join table).
+/// Returns the set of permissions assigned to this role.
+#[tracing::instrument(skip(pool), fields(%role_id), err)]
+pub async fn role_permissions(pool: &PgPool, role_id: Uuid) -> anyhow::Result<HashSet<Permission>> {
+    let rows: Vec<String> = sqlx::query_scalar!(
+        r#"SELECT p.name as "name!" FROM permissions p JOIN role_permissions rp ON rp.permission_id = p.id WHERE rp.role_id = $1"#,
+        role_id,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .filter_map(|n| Permission::from_str(n).ok())
+        .collect())
+}
+
 /// Invalidate cached permissions for a user.
 ///
 /// When `project_id` is `Some`, clears the global cache and that specific project cache.

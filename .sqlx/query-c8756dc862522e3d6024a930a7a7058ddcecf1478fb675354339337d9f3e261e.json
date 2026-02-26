@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id FROM delegations WHERE delegate_id = $1 AND revoked_at IS NULL",
+  "query": "SELECT workspace_id FROM projects WHERE id = $1 AND is_active = true",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
+        "name": "workspace_id",
         "type_info": "Uuid"
       }
     ],
@@ -18,5 +18,5 @@
       false
     ]
   },
-  "hash": "92d350c5af2713881b229de443ad65291fa2e4e3d761752b4dbac516d5d74945"
+  "hash": "c8756dc862522e3d6024a930a7a7058ddcecf1478fb675354339337d9f3e261e"
 }

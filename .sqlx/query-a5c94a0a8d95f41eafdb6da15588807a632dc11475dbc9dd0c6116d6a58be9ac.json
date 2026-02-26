@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT visibility, owner_id FROM projects WHERE id = $1 AND is_active = true",
+  "query": "SELECT visibility, owner_id, workspace_id FROM projects WHERE id = $1 AND is_active = true",
   "describe": {
     "columns": [
       {
@@ -12,6 +12,11 @@
         "ordinal": 1,
         "name": "owner_id",
         "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "workspace_id",
+        "type_info": "Uuid"
       }
     ],
     "parameters": {
@@ -21,8 +26,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "5c3bf4d353eded03ee8c5d88e7de1c1d718ab8346fd94a4a7059b224004dc7cf"
+  "hash": "a5c94a0a8d95f41eafdb6da15588807a632dc11475dbc9dd0c6116d6a58be9ac"
 }

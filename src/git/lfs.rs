@@ -86,6 +86,26 @@ async fn batch(
     let project =
         super::smart_http::resolve_project(&state.pool, &state.config, &owner, &repo).await?;
 
+    // Enforce hard project scope from API token
+    if let Some(scope_pid) = git_user.scope_project_id
+        && scope_pid != project.project_id
+    {
+        return Err(ApiError::NotFound("repository".into()));
+    }
+
+    // Enforce hard workspace scope from API token
+    if let Some(scope_wid) = git_user.scope_workspace_id {
+        let in_workspace = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1 AND workspace_id = $2 AND is_active = true) as "exists!: bool""#,
+            project.project_id, scope_wid,
+        )
+        .fetch_one(&state.pool)
+        .await?;
+        if !in_workspace {
+            return Err(ApiError::NotFound("repository".into()));
+        }
+    }
+
     // Check permission: download = ProjectRead, upload = ProjectWrite
     let required_perm = match body.operation.as_str() {
         "download" => Permission::ProjectRead,

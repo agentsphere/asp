@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT project_id, scope_workspace_id\n        FROM api_tokens\n        WHERE token_hash = $1\n          AND user_id = $2\n          AND (expires_at IS NULL OR expires_at > now())\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "project_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "scope_workspace_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "9b2c246ec155c73d8e870c8774da78a6251057dbf2d00a2ae4b9cd6b34c189cf"
+}

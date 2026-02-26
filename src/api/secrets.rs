@@ -71,12 +71,14 @@ async fn require_secret_read(
     auth: &AuthUser,
     project_id: Uuid,
 ) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission(
+    auth.check_project_scope(project_id)?;
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         Some(project_id),
         Permission::SecretRead,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;
@@ -92,12 +94,14 @@ async fn require_secret_write(
     auth: &AuthUser,
     project_id: Uuid,
 ) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission(
+    auth.check_project_scope(project_id)?;
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         Some(project_id),
         Permission::SecretWrite,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;

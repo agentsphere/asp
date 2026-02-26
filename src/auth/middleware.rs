@@ -22,6 +22,37 @@ pub struct AuthUser {
     /// Some(vec![]) or Some(vec!["*"]) = unrestricted token.
     /// Some(vec!["project:read", ...]) = scoped token.
     pub token_scopes: Option<Vec<String>>,
+    /// Hard workspace boundary from scoped API token.
+    /// When set, all requests are restricted to this workspace's resources.
+    pub scope_workspace_id: Option<Uuid>,
+    /// Hard project boundary from scoped API token.
+    /// When set, all requests are restricted to this specific project.
+    pub scope_project_id: Option<Uuid>,
+}
+
+impl AuthUser {
+    /// Verify this request is allowed to access the given project.
+    /// Returns 404 for scope violations (don't leak resource existence).
+    pub fn check_project_scope(&self, project_id: Uuid) -> Result<(), ApiError> {
+        if let Some(scope_pid) = self.scope_project_id
+            && scope_pid != project_id
+        {
+            return Err(ApiError::NotFound("project".into()));
+        }
+        Ok(())
+    }
+
+    /// Verify this request is allowed to access resources in the given workspace.
+    /// Returns 404 for scope violations (don't leak resource existence).
+    #[allow(dead_code)] // symmetric with check_project_scope; used by workspace-aware handlers
+    pub fn check_workspace_scope(&self, workspace_id: Uuid) -> Result<(), ApiError> {
+        if let Some(scope_wid) = self.scope_workspace_id
+            && scope_wid != workspace_id
+        {
+            return Err(ApiError::NotFound("workspace".into()));
+        }
+        Ok(())
+    }
 }
 
 /// Row returned when looking up an API token.
@@ -31,6 +62,8 @@ struct TokenAuthLookup {
     user_type: String,
     is_active: bool,
     scopes: Vec<String>,
+    scope_project_id: Option<Uuid>,
+    scope_workspace_id: Option<Uuid>,
 }
 
 /// Row returned when looking up a session.
@@ -67,6 +100,8 @@ impl FromRequestParts<AppState> for AuthUser {
                     user_type,
                     ip_addr,
                     token_scopes: Some(user.scopes),
+                    scope_workspace_id: user.scope_workspace_id,
+                    scope_project_id: user.scope_project_id,
                 });
             }
             // Bearer token not in api_tokens — try as session token
@@ -87,6 +122,8 @@ impl FromRequestParts<AppState> for AuthUser {
                     user_type,
                     ip_addr,
                     token_scopes: None,
+                    scope_workspace_id: None,
+                    scope_project_id: None,
                 });
             }
         }
@@ -112,6 +149,8 @@ impl FromRequestParts<AppState> for AuthUser {
                 user_type,
                 ip_addr,
                 token_scopes: None,
+                scope_workspace_id: None,
+                scope_project_id: None,
             });
         }
 
@@ -193,7 +232,9 @@ async fn lookup_api_token(
         r#"
         SELECT u.id as "user_id!", u.name as "user_name!",
                u.user_type as "user_type!", u.is_active as "is_active!",
-               t.scopes as "scopes!"
+               t.scopes as "scopes!",
+               t.project_id as "scope_project_id?",
+               t.scope_workspace_id as "scope_workspace_id?"
         FROM api_tokens t
         JOIN users u ON u.id = t.user_id
         WHERE t.token_hash = $1
@@ -256,6 +297,8 @@ impl AuthUser {
             user_type: UserType::Human,
             ip_addr: Some("127.0.0.1".into()),
             token_scopes: None,
+            scope_workspace_id: None,
+            scope_project_id: None,
         }
     }
 
@@ -267,6 +310,8 @@ impl AuthUser {
             user_type: UserType::Human,
             ip_addr: Some("127.0.0.1".into()),
             token_scopes: None,
+            scope_workspace_id: None,
+            scope_project_id: None,
         }
     }
 
@@ -278,6 +323,34 @@ impl AuthUser {
             user_type: UserType::Human,
             ip_addr: Some("127.0.0.1".into()),
             token_scopes: Some(scopes),
+            scope_workspace_id: None,
+            scope_project_id: None,
+        }
+    }
+
+    /// Create a test `AuthUser` with a project scope boundary.
+    pub fn test_with_project_scope(user_id: Uuid, project_id: Uuid) -> Self {
+        Self {
+            user_id,
+            user_name: "test_user".into(),
+            user_type: UserType::Human,
+            ip_addr: Some("127.0.0.1".into()),
+            token_scopes: None,
+            scope_workspace_id: None,
+            scope_project_id: Some(project_id),
+        }
+    }
+
+    /// Create a test `AuthUser` with a workspace scope boundary.
+    pub fn test_with_workspace_scope(user_id: Uuid, workspace_id: Uuid) -> Self {
+        Self {
+            user_id,
+            user_name: "test_user".into(),
+            user_type: UserType::Human,
+            ip_addr: Some("127.0.0.1".into()),
+            token_scopes: None,
+            scope_workspace_id: Some(workspace_id),
+            scope_project_id: None,
         }
     }
 }
@@ -475,5 +548,70 @@ mod tests {
         let id = Uuid::new_v4();
         let auth = AuthUser::test_with_scopes(id, vec!["project:read".into()]);
         assert_eq!(auth.token_scopes, Some(vec!["project:read".to_string()]));
+    }
+
+    // -- Scope check tests --
+
+    #[test]
+    fn check_project_scope_none_allows_any() {
+        let auth = AuthUser::test_human(Uuid::new_v4());
+        assert!(auth.check_project_scope(Uuid::new_v4()).is_ok());
+    }
+
+    #[test]
+    fn check_project_scope_matching_allows() {
+        let project_id = Uuid::new_v4();
+        let auth = AuthUser::test_with_project_scope(Uuid::new_v4(), project_id);
+        assert!(auth.check_project_scope(project_id).is_ok());
+    }
+
+    #[test]
+    fn check_project_scope_mismatch_returns_not_found() {
+        let auth = AuthUser::test_with_project_scope(Uuid::new_v4(), Uuid::new_v4());
+        let result = auth.check_project_scope(Uuid::new_v4());
+        assert!(matches!(result, Err(ApiError::NotFound(_))));
+    }
+
+    #[test]
+    fn check_workspace_scope_none_allows_any() {
+        let auth = AuthUser::test_human(Uuid::new_v4());
+        assert!(auth.check_workspace_scope(Uuid::new_v4()).is_ok());
+    }
+
+    #[test]
+    fn check_workspace_scope_matching_allows() {
+        let ws_id = Uuid::new_v4();
+        let auth = AuthUser::test_with_workspace_scope(Uuid::new_v4(), ws_id);
+        assert!(auth.check_workspace_scope(ws_id).is_ok());
+    }
+
+    #[test]
+    fn check_workspace_scope_mismatch_returns_not_found() {
+        let auth = AuthUser::test_with_workspace_scope(Uuid::new_v4(), Uuid::new_v4());
+        let result = auth.check_workspace_scope(Uuid::new_v4());
+        assert!(matches!(result, Err(ApiError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_human_has_none_scopes() {
+        let auth = AuthUser::test_human(Uuid::new_v4());
+        assert!(auth.scope_workspace_id.is_none());
+        assert!(auth.scope_project_id.is_none());
+    }
+
+    #[test]
+    fn test_with_project_scope_constructor_sets_field() {
+        let project_id = Uuid::new_v4();
+        let auth = AuthUser::test_with_project_scope(Uuid::new_v4(), project_id);
+        assert_eq!(auth.scope_project_id, Some(project_id));
+        assert!(auth.scope_workspace_id.is_none());
+    }
+
+    #[test]
+    fn test_with_workspace_scope_constructor_sets_field() {
+        let ws_id = Uuid::new_v4();
+        let auth = AuthUser::test_with_workspace_scope(Uuid::new_v4(), ws_id);
+        assert_eq!(auth.scope_workspace_id, Some(ws_id));
+        assert!(auth.scope_project_id.is_none());
     }
 }

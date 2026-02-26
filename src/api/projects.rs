@@ -5,6 +5,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use ts_rs::TS;
@@ -53,7 +54,7 @@ pub struct ListProjectsParams {
 pub struct ProjectResponse {
     pub id: Uuid,
     pub owner_id: Uuid,
-    pub workspace_id: Option<Uuid>,
+    pub workspace_id: Uuid,
     pub name: String,
     pub display_name: Option<String>,
     pub description: Option<String>,
@@ -83,31 +84,33 @@ pub fn router() -> Router<AppState> {
 }
 
 // ---------------------------------------------------------------------------
-// Handlers
+// Helpers
 // ---------------------------------------------------------------------------
 
-#[tracing::instrument(skip(state, body), fields(project_name = %body.name), err)]
-async fn create_project(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Json(body): Json<CreateProjectRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    // Require project:write globally or admin
-    let allowed = resolver::has_permission(
-        &state.pool,
-        &state.valkey,
-        auth.user_id,
-        None,
-        Permission::ProjectWrite,
-    )
-    .await
-    .map_err(ApiError::Internal)?;
-
-    if !allowed {
-        return Err(ApiError::Forbidden);
+/// Resolve workspace: use explicit ID (validating membership) or auto-assign the user's default.
+async fn resolve_workspace(
+    pool: &PgPool,
+    user_id: Uuid,
+    owner_name: &str,
+    workspace_id: Option<Uuid>,
+) -> Result<Uuid, ApiError> {
+    if let Some(ws_id) = workspace_id {
+        if !crate::workspace::service::is_member(pool, ws_id, user_id).await? {
+            return Err(ApiError::BadRequest(
+                "you are not a member of this workspace".into(),
+            ));
+        }
+        Ok(ws_id)
+    } else {
+        crate::workspace::service::get_or_create_default_workspace(
+            pool, user_id, owner_name, owner_name,
+        )
+        .await
     }
+}
 
-    // Validate inputs
+/// Validate inputs for creating a project.
+fn validate_create_inputs(body: &CreateProjectRequest) -> Result<(), ApiError> {
     validation::check_name(&body.name)?;
     if let Some(ref dn) = body.display_name {
         validation::check_length("display_name", dn, 1, 255)?;
@@ -118,22 +121,27 @@ async fn create_project(
     if let Some(ref branch) = body.default_branch {
         validation::check_branch_name(branch)?;
     }
-
     let visibility = body.visibility.as_deref().unwrap_or("private");
     if !["private", "internal", "public"].contains(&visibility) {
         return Err(ApiError::BadRequest(
             "visibility must be private, internal, or public".into(),
         ));
     }
+    Ok(())
+}
 
+/// Initialize a bare git repo and resolve the workspace for a new project.
+async fn init_project_repo_and_workspace(
+    state: &AppState,
+    auth: &AuthUser,
+    body: &CreateProjectRequest,
+) -> Result<(String, Uuid), ApiError> {
     let default_branch = body.default_branch.as_deref().unwrap_or("main");
 
-    // Look up owner name for repo path
     let owner_name = sqlx::query_scalar!("SELECT name FROM users WHERE id = $1", auth.user_id)
         .fetch_one(&state.pool)
         .await?;
 
-    // Initialize bare git repo
     let repo_path = crate::git::repo::init_bare_repo(
         &state.config.git_repos_path,
         &owner_name,
@@ -145,14 +153,67 @@ async fn create_project(
 
     let repo_path_str = repo_path.to_string_lossy().to_string();
 
-    // If workspace_id provided, validate the user is a member
-    if let Some(ws_id) = body.workspace_id
-        && !crate::workspace::service::is_member(&state.pool, ws_id, auth.user_id).await?
-    {
-        return Err(ApiError::BadRequest(
-            "you are not a member of this workspace".into(),
-        ));
+    // Workspace-scoped tokens must create projects in their workspace
+    let requested_workspace_id = if let Some(scope_wid) = auth.scope_workspace_id {
+        if body.workspace_id.is_some() && body.workspace_id != Some(scope_wid) {
+            return Err(ApiError::BadRequest(
+                "workspace_id does not match token scope".into(),
+            ));
+        }
+        Some(scope_wid)
+    } else {
+        body.workspace_id
+    };
+
+    let workspace_id = resolve_workspace(
+        &state.pool,
+        auth.user_id,
+        &owner_name,
+        requested_workspace_id,
+    )
+    .await?;
+
+    Ok((repo_path_str, workspace_id))
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+#[tracing::instrument(skip(state, body), fields(project_name = %body.name), err)]
+async fn create_project(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<CreateProjectRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Project-scoped tokens cannot create new projects
+    if auth.scope_project_id.is_some() {
+        return Err(ApiError::Forbidden);
     }
+
+    // Require project:write globally or admin
+    let allowed = resolver::has_permission_scoped(
+        &state.pool,
+        &state.valkey,
+        auth.user_id,
+        None,
+        Permission::ProjectWrite,
+        auth.token_scopes.as_deref(),
+    )
+    .await
+    .map_err(ApiError::Internal)?;
+
+    if !allowed {
+        return Err(ApiError::Forbidden);
+    }
+
+    validate_create_inputs(&body)?;
+
+    let visibility = body.visibility.as_deref().unwrap_or("private");
+    let default_branch = body.default_branch.as_deref().unwrap_or("main");
+
+    let (repo_path_str, workspace_id) =
+        init_project_repo_and_workspace(&state, &auth, &body).await?;
 
     let project = sqlx::query!(
         r#"
@@ -167,7 +228,7 @@ async fn create_project(
         visibility,
         default_branch,
         repo_path_str,
-        body.workspace_id,
+        workspace_id,
     )
     .fetch_one(&state.pool)
     .await?;
@@ -290,6 +351,9 @@ async fn get_project(
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ProjectResponse>, ApiError> {
+    // Enforce hard project scope from API token
+    auth.check_project_scope(id)?;
+
     let project = sqlx::query!(
         r#"
         SELECT id, owner_id, workspace_id, name, display_name, description, visibility, default_branch, agent_image, is_active, created_at, updated_at
@@ -301,14 +365,22 @@ async fn get_project(
     .await?
     .ok_or_else(|| ApiError::NotFound("project".into()))?;
 
+    // Enforce hard workspace scope from API token
+    if let Some(scope_wid) = auth.scope_workspace_id
+        && project.workspace_id != scope_wid
+    {
+        return Err(ApiError::NotFound("project".into()));
+    }
+
     // Visibility check: private projects only visible to owner or those with project:read
     if project.visibility == "private" && project.owner_id != auth.user_id {
-        let allowed = resolver::has_permission(
+        let allowed = resolver::has_permission_scoped(
             &state.pool,
             &state.valkey,
             auth.user_id,
             Some(id),
             Permission::ProjectRead,
+            auth.token_scopes.as_deref(),
         )
         .await
         .map_err(ApiError::Internal)?;
@@ -341,6 +413,9 @@ async fn update_project(
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateProjectRequest>,
 ) -> Result<Json<ProjectResponse>, ApiError> {
+    // Enforce hard project scope from API token
+    auth.check_project_scope(id)?;
+
     // Owner or project:write
     let project_owner = sqlx::query_scalar!(
         "SELECT owner_id FROM projects WHERE id = $1 AND is_active = true",
@@ -351,12 +426,13 @@ async fn update_project(
     .ok_or_else(|| ApiError::NotFound("project".into()))?;
 
     if project_owner != auth.user_id {
-        let allowed = resolver::has_permission(
+        let allowed = resolver::has_permission_scoped(
             &state.pool,
             &state.valkey,
             auth.user_id,
             Some(id),
             Permission::ProjectWrite,
+            auth.token_scopes.as_deref(),
         )
         .await
         .map_err(ApiError::Internal)?;
@@ -448,6 +524,9 @@ async fn delete_project(
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // Enforce hard project scope from API token
+    auth.check_project_scope(id)?;
+
     // Owner or admin
     let project_owner = sqlx::query_scalar!(
         "SELECT owner_id FROM projects WHERE id = $1 AND is_active = true",

@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO api_tokens (user_id, name, token_hash, scopes, project_id, scope_workspace_id, expires_at)\n        VALUES ($1, $2, $3, $4, $5, $6, $7)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "TextArray",
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e4ebc7f97a5e29c72fbca59d22c7cd5ff3db2d1c41990fe5b50bf1ac0642d00b"
+}

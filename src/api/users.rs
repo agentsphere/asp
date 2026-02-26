@@ -391,6 +391,18 @@ async fn create_user(
     .fetch_one(&state.pool)
     .await?;
 
+    // Create personal workspace for human users
+    if user_type == UserType::Human {
+        let display = user.display_name.as_deref().unwrap_or(&user.name);
+        let _ = crate::workspace::service::get_or_create_default_workspace(
+            &state.pool,
+            user.id,
+            &user.name,
+            display,
+        )
+        .await;
+    }
+
     write_audit(
         &state.pool,
         &AuditEntry {

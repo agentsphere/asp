@@ -50,18 +50,29 @@ pub async fn resolve_repo_with_access(
 
     let project_id = project.id;
 
+    // Enforce hard project scope from API token
+    if let Some(scope_pid) = user.scope_project_id
+        && scope_pid != project_id
+    {
+        return Err(RegistryError::NameUnknown);
+    }
+
+    // Enforce hard workspace scope from API token
+    if let Some(scope_wid) = user.scope_workspace_id
+        && project.workspace_id != scope_wid
+    {
+        return Err(RegistryError::NameUnknown);
+    }
+
     // 2. Owner always has full access
     let is_owner = project.owner_id == user.user_id;
 
     if !is_owner {
-        // 3. Check workspace membership (if project belongs to a workspace)
-        let is_workspace_member = if let Some(ws_id) = project.workspace_id {
-            workspace::service::is_member(&state.pool, ws_id, user.user_id)
+        // 3. Check workspace membership
+        let is_workspace_member =
+            workspace::service::is_member(&state.pool, project.workspace_id, user.user_id)
                 .await
-                .map_err(|e| RegistryError::Internal(anyhow::anyhow!("{e}")))?
-        } else {
-            false
-        };
+                .map_err(|e| RegistryError::Internal(anyhow::anyhow!("{e}")))?;
 
         // Workspace members get implicit pull access.
         // Push always requires explicit RBAC permission.

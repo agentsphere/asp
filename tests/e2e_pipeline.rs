@@ -116,7 +116,12 @@ async fn pipeline_trigger_and_execute(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::CREATED, "trigger failed: {body}");
     let pipeline_id = body["id"].as_str().expect("pipeline should have id");
-    assert_eq!(body["status"], "pending");
+    // Status may be "pending" or "running" depending on executor race
+    let status_val = body["status"].as_str().unwrap();
+    assert!(
+        status_val == "pending" || status_val == "running",
+        "unexpected initial status: {status_val}"
+    );
 
     // Wake the executor
     state.pipeline_notify.notify_one();

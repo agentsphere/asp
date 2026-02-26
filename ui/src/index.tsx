@@ -1,10 +1,12 @@
 import { render } from 'preact';
 import Router from 'preact-router';
+import { useState, useEffect } from 'preact/hooks';
 import { AuthProvider, useAuth } from './lib/auth';
 import { Layout } from './components/Layout';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastProvider } from './components/Toast';
 import { Login } from './pages/Login';
+import { Setup } from './pages/Setup';
 import { Dashboard } from './pages/Dashboard';
 import { Projects } from './pages/Projects';
 import { ProjectDetail } from './pages/ProjectDetail';
@@ -29,8 +31,17 @@ import { OnboardingOverlay } from './components/OnboardingOverlay';
 
 function AppRouter() {
   const { user, loading } = useAuth();
+  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
 
-  if (loading) return <div class="loading">Loading...</div>;
+  useEffect(() => {
+    fetch('/api/setup/status')
+      .then(r => r.json())
+      .then(d => setNeedsSetup(d.needs_setup))
+      .catch(() => setNeedsSetup(false));
+  }, []);
+
+  if (loading || needsSetup === null) return <div class="loading">Loading...</div>;
+  if (needsSetup) return <Setup />;
   if (!user) return <Login />;
 
   return (

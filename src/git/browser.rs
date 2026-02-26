@@ -169,12 +169,14 @@ async fn check_project_read(
     auth: &AuthUser,
     project_id: Uuid,
 ) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission(
+    auth.check_project_scope(project_id)?;
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         Some(project_id),
         Permission::ProjectRead,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;

@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::secrets::user_keys;
 use crate::store::AppState;
 
+use super::AgentRoleName;
 use super::claude_code::ClaudeCodeProvider;
 use super::error::AgentError;
 use super::identity;
@@ -35,7 +36,7 @@ pub fn get_provider(name: &str) -> Result<Box<dyn AgentProvider>, AgentError> {
 
 /// Create a new agent session: insert DB row, create identity, spawn K8s pod.
 #[allow(clippy::too_many_arguments)]
-#[tracing::instrument(skip(state, prompt, provider_config, extra_permissions), fields(%user_id, %project_id), err)]
+#[tracing::instrument(skip(state, prompt, provider_config), fields(%user_id, %project_id, %agent_role), err)]
 pub async fn create_session(
     state: &AppState,
     user_id: Uuid,
@@ -44,7 +45,7 @@ pub async fn create_session(
     provider_name: &str,
     branch: Option<&str>,
     provider_config: Option<serde_json::Value>,
-    extra_permissions: &[crate::rbac::Permission],
+    agent_role: AgentRoleName,
 ) -> Result<AgentSession, AgentError> {
     let provider = get_provider(provider_name)?;
     let config: ProviderConfig = provider_config
@@ -73,14 +74,23 @@ pub async fn create_session(
     .execute(&state.pool)
     .await?;
 
-    // 2. Create ephemeral agent identity with delegated permissions
+    // 2. Look up project's workspace_id for scope boundaries
+    let workspace_id = sqlx::query_scalar!(
+        "SELECT workspace_id FROM projects WHERE id = $1 AND is_active = true",
+        project_id,
+    )
+    .fetch_one(&state.pool)
+    .await?;
+
+    // 3. Create ephemeral agent identity with role-based permissions
     let agent_identity = identity::create_agent_identity(
         &state.pool,
         &state.valkey,
         session_id,
         user_id,
         project_id,
-        extra_permissions,
+        workspace_id,
+        agent_role,
     )
     .await?;
 

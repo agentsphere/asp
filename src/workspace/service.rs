@@ -246,6 +246,54 @@ pub async fn remove_member(
     Ok(result.rows_affected() > 0)
 }
 
+/// Build the default workspace name for a user: `"{username}-personal"`.
+pub fn default_workspace_name(username: &str) -> String {
+    format!("{username}-personal")
+}
+
+/// Build the default workspace display name: `"{display_name}'s workspace"`.
+pub fn default_workspace_display_name(display_name: &str) -> String {
+    format!("{display_name}'s workspace")
+}
+
+/// Get or create a user's default (personal) workspace. Idempotent.
+///
+/// Looks for an existing workspace owned by the user with the `-personal` suffix.
+/// If none exists, creates one and adds the user as owner member.
+pub async fn get_or_create_default_workspace(
+    pool: &PgPool,
+    user_id: Uuid,
+    username: &str,
+    display_name: &str,
+) -> Result<Uuid, ApiError> {
+    // Check for existing workspace owned by this user
+    let existing = sqlx::query_scalar!(
+        r#"SELECT id as "id: Uuid" FROM workspaces
+           WHERE owner_id = $1 AND is_active = true
+           ORDER BY created_at LIMIT 1"#,
+        user_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+
+    // Create personal workspace
+    let ws_name = default_workspace_name(username);
+    let ws_display = default_workspace_display_name(display_name);
+    let ws = create_workspace(
+        pool,
+        user_id,
+        &ws_name,
+        Some(&ws_display),
+        Some("Personal workspace"),
+    )
+    .await?;
+    Ok(ws.id)
+}
+
 /// Get workspace role for a user. Returns None if not a member.
 #[allow(dead_code)]
 pub async fn get_member_role(
@@ -261,4 +309,27 @@ pub async fn get_member_role(
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_workspace_name_format() {
+        assert_eq!(default_workspace_name("alice"), "alice-personal");
+        assert_eq!(default_workspace_name("admin"), "admin-personal");
+    }
+
+    #[test]
+    fn default_workspace_display_name_format() {
+        assert_eq!(
+            default_workspace_display_name("Alice Smith"),
+            "Alice Smith's workspace"
+        );
+        assert_eq!(
+            default_workspace_display_name("Administrator"),
+            "Administrator's workspace"
+        );
+    }
 }
