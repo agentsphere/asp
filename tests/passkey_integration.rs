@@ -1,7 +1,6 @@
 //! Integration tests for passkey (WebAuthn) credential management.
-//! Tests list, rename, delete, and begin_register/begin_login endpoints.
-//! NOTE: complete_register and complete_login require a real WebAuthn ceremony
-//! which can't be simulated in integration tests.
+//! Tests list, rename, delete, begin/complete register, and begin/complete login.
+//! Full ceremony tests use webauthn-authenticator-rs SoftPasskey.
 
 mod helpers;
 
@@ -965,4 +964,318 @@ async fn list_passkeys_ordered_by_created_at_desc(pool: PgPool) {
     // Most recent first (DESC)
     assert_eq!(keys[0]["name"], "Second Key");
     assert_eq!(keys[1]["name"], "First Key");
+}
+
+// ---------------------------------------------------------------------------
+// Full WebAuthn ceremony tests (using SoftPasskey)
+// ---------------------------------------------------------------------------
+
+use url::Url;
+use webauthn_authenticator_rs::AuthenticatorBackend;
+use webauthn_authenticator_rs::softpasskey::SoftPasskey;
+use webauthn_rs::prelude::{
+    Base64UrlSafeData, CreationChallengeResponse, RegisterPublicKeyCredential,
+    RequestChallengeResponse,
+};
+use webauthn_rs_proto::AllowCredentials;
+
+/// Helper: register a passkey via the full ceremony and return the credential ID.
+async fn register_passkey_ceremony(
+    app: &axum::Router,
+    token: &str,
+    authenticator: &mut SoftPasskey,
+) -> Uuid {
+    // 1. Begin registration
+    let (status, body) = helpers::post_json(
+        app,
+        token,
+        "/api/auth/passkeys/register/begin",
+        serde_json::json!({"name": "Ceremony Key"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "begin_register failed: {body}");
+
+    // 2. Parse the CreationChallengeResponse
+    let ccr: CreationChallengeResponse =
+        serde_json::from_value(body).expect("parse CreationChallengeResponse");
+
+    // 3. Use SoftPasskey to create the registration response
+    let origin = Url::parse("http://localhost:8080").unwrap();
+    let reg_response: RegisterPublicKeyCredential = authenticator
+        .perform_register(origin, ccr.public_key, 60000)
+        .expect("SoftPasskey perform_register");
+
+    // 4. Complete registration
+    let reg_json = serde_json::to_value(&reg_response).unwrap();
+    let (status, body) =
+        helpers::post_json(app, token, "/api/auth/passkeys/register/complete", reg_json).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "complete_register failed: {body}"
+    );
+    assert!(body["id"].is_string());
+
+    Uuid::parse_str(body["id"].as_str().unwrap()).unwrap()
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn full_registration_ceremony(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let mut authenticator = SoftPasskey::new(true);
+    let cred_id = register_passkey_ceremony(&app, &admin_token, &mut authenticator).await;
+
+    // Verify the credential appears in the list
+    let (status, body) = helpers::get_json(&app, &admin_token, "/api/auth/passkeys").await;
+    assert_eq!(status, StatusCode::OK);
+    let keys = body.as_array().unwrap();
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0]["id"], cred_id.to_string());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn register_multiple_passkeys(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    // Register two passkeys with different authenticators
+    let mut auth1 = SoftPasskey::new(true);
+    let mut auth2 = SoftPasskey::new(true);
+    let _id1 = register_passkey_ceremony(&app, &admin_token, &mut auth1).await;
+    let _id2 = register_passkey_ceremony(&app, &admin_token, &mut auth2).await;
+
+    // Verify both appear
+    let (status, body) = helpers::get_json(&app, &admin_token, "/api/auth/passkeys").await;
+    assert_eq!(status, StatusCode::OK);
+    let keys = body.as_array().unwrap();
+    assert_eq!(keys.len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// Full login ceremony tests (SoftPasskey + allowCredentials injection)
+//
+// SoftPasskey doesn't support discoverable auth (empty allowCredentials).
+// Workaround: after begin_login returns the discoverable challenge, inject
+// the registered credential ID into allowCredentials so SoftPasskey can
+// locate the key. The cryptographic signature is unaffected because
+// allowCredentials is just a client hint, not part of the signed data.
+// ---------------------------------------------------------------------------
+
+/// Helper: perform a full passkey login ceremony using SoftPasskey.
+/// The authenticator must already have registered a credential.
+async fn login_passkey_ceremony(
+    app: &axum::Router,
+    pool: &PgPool,
+    user_id: Uuid,
+    authenticator: &mut SoftPasskey,
+) -> serde_json::Value {
+    // 1. Begin login (unauthenticated)
+    let (status, body) = helpers::post_json(
+        app,
+        "",
+        "/api/auth/passkey/login/begin",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "begin_login failed: {body}");
+    let challenge_id = body["challenge_id"].as_str().unwrap().to_string();
+
+    // 2. Parse the challenge and inject allowCredentials for SoftPasskey
+    let mut rcr: RequestChallengeResponse =
+        serde_json::from_value(body["challenge"].clone()).expect("parse RequestChallengeResponse");
+
+    let cred_bytes: Vec<u8> = sqlx::query_scalar(
+        "SELECT credential_id FROM passkey_credentials WHERE user_id = $1 LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .expect("credential should exist in DB");
+
+    rcr.public_key.allow_credentials = vec![AllowCredentials {
+        type_: "public-key".to_string(),
+        id: Base64UrlSafeData::from(cred_bytes),
+        transports: None,
+    }];
+
+    // 3. SoftPasskey signs the challenge
+    let origin = Url::parse("http://localhost:8080").unwrap();
+    let auth_response = authenticator
+        .perform_auth(origin, rcr.public_key, 60000)
+        .expect("SoftPasskey perform_auth");
+
+    // 4. Complete login
+    let (status, body) = helpers::post_json(
+        app,
+        "",
+        "/api/auth/passkey/login/complete",
+        serde_json::json!({
+            "challenge_id": challenge_id,
+            "credential": auth_response,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "complete_login failed: {body}");
+    body
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn full_login_ceremony(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
+    let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
+
+    // Register a passkey
+    let mut authenticator = SoftPasskey::new(true);
+    let _cred_id = register_passkey_ceremony(&app, &admin_token, &mut authenticator).await;
+
+    // Login with the passkey
+    let body = login_passkey_ceremony(&app, &pool, user_id, &mut authenticator).await;
+
+    assert!(body["token"].is_string(), "should return a session token");
+    assert!(body["expires_at"].is_string(), "should return expires_at");
+    assert!(body["user"]["id"].is_string(), "should return user info");
+    assert_eq!(body["user"]["name"].as_str().unwrap(), "admin");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn login_updates_sign_count_and_last_used(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
+    let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
+
+    let mut authenticator = SoftPasskey::new(true);
+    let cred_id = register_passkey_ceremony(&app, &admin_token, &mut authenticator).await;
+
+    // Before login: sign_count = 0, last_used_at = NULL
+    let before: (i64, Option<chrono::DateTime<chrono::Utc>>) =
+        sqlx::query_as("SELECT sign_count, last_used_at FROM passkey_credentials WHERE id = $1")
+            .bind(cred_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(before.0, 0);
+    assert!(before.1.is_none());
+
+    // Login
+    let _ = login_passkey_ceremony(&app, &pool, user_id, &mut authenticator).await;
+
+    // After login: sign_count > 0, last_used_at set
+    let after: (i64, Option<chrono::DateTime<chrono::Utc>>) =
+        sqlx::query_as("SELECT sign_count, last_used_at FROM passkey_credentials WHERE id = $1")
+            .bind(cred_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        after.0 > before.0,
+        "sign_count should increase: before={}, after={}",
+        before.0,
+        after.0
+    );
+    assert!(after.1.is_some(), "last_used_at should be set after login");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn login_creates_audit_entry(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
+    let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
+
+    let mut authenticator = SoftPasskey::new(true);
+    let _cred_id = register_passkey_ceremony(&app, &admin_token, &mut authenticator).await;
+
+    let _ = login_passkey_ceremony(&app, &pool, user_id, &mut authenticator).await;
+
+    // Verify audit log
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT action, resource FROM audit_log WHERE actor_id = $1 AND action = 'auth.passkey_login' ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    let (action, resource) = row.expect("passkey login audit entry should exist");
+    assert_eq!(action, "auth.passkey_login");
+    assert_eq!(resource, "session");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn login_clone_detection_rejects(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
+    let user_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
+
+    let mut authenticator = SoftPasskey::new(true);
+    let cred_id = register_passkey_ceremony(&app, &admin_token, &mut authenticator).await;
+
+    // First login succeeds
+    let _ = login_passkey_ceremony(&app, &pool, user_id, &mut authenticator).await;
+
+    // Artificially inflate the stored sign_count to simulate a cloned key
+    // (the authenticator's counter is ~1 after first login, but we set DB to 9999)
+    sqlx::query("UPDATE passkey_credentials SET sign_count = 9999 WHERE id = $1")
+        .bind(cred_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Second login: authenticator counter (~2) < stored counter (9999) → clone detected
+    let (status, body) = helpers::post_json(
+        &app,
+        "",
+        "/api/auth/passkey/login/begin",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let challenge_id = body["challenge_id"].as_str().unwrap().to_string();
+
+    let mut rcr: RequestChallengeResponse =
+        serde_json::from_value(body["challenge"].clone()).expect("parse RequestChallengeResponse");
+
+    let cred_bytes: Vec<u8> = sqlx::query_scalar(
+        "SELECT credential_id FROM passkey_credentials WHERE user_id = $1 LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    rcr.public_key.allow_credentials = vec![AllowCredentials {
+        type_: "public-key".to_string(),
+        id: Base64UrlSafeData::from(cred_bytes),
+        transports: None,
+    }];
+
+    let origin = Url::parse("http://localhost:8080").unwrap();
+    let auth_response = authenticator
+        .perform_auth(origin, rcr.public_key, 60000)
+        .expect("SoftPasskey perform_auth");
+
+    let (status, _) = helpers::post_json(
+        &app,
+        "",
+        "/api/auth/passkey/login/complete",
+        serde_json::json!({
+            "challenge_id": challenge_id,
+            "credential": auth_response,
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "clone detection should reject login"
+    );
 }

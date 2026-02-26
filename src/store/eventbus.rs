@@ -490,4 +490,172 @@ mod tests {
         let json: serde_json::Value = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "ImageBuilt");
     }
+
+    #[test]
+    fn all_event_types_have_correct_tag() {
+        let cases = vec![
+            (
+                PlatformEvent::ImageBuilt {
+                    project_id: Uuid::nil(),
+                    environment: "prod".into(),
+                    image_ref: "img:v1".into(),
+                    pipeline_id: Uuid::nil(),
+                    triggered_by: None,
+                },
+                "ImageBuilt",
+            ),
+            (
+                PlatformEvent::OpsRepoUpdated {
+                    project_id: Uuid::nil(),
+                    ops_repo_id: Uuid::nil(),
+                    environment: "prod".into(),
+                    commit_sha: "abc".into(),
+                    image_ref: "img:v1".into(),
+                },
+                "OpsRepoUpdated",
+            ),
+            (
+                PlatformEvent::DeployRequested {
+                    project_id: Uuid::nil(),
+                    environment: "prod".into(),
+                    image_ref: "img:v1".into(),
+                    requested_by: None,
+                },
+                "DeployRequested",
+            ),
+            (
+                PlatformEvent::RollbackRequested {
+                    project_id: Uuid::nil(),
+                    environment: "prod".into(),
+                    requested_by: None,
+                },
+                "RollbackRequested",
+            ),
+        ];
+
+        for (event, expected_type) in cases {
+            let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+            assert_eq!(
+                json["type"], expected_type,
+                "wrong type tag for {expected_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_json_rejected_by_handle_event() {
+        // handle_event is async, so we use a mini runtime
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            // We can't construct a full AppState in unit tests, but we CAN test
+            // that invalid JSON is rejected before it tries to access state.
+            let result: Result<PlatformEvent, _> = serde_json::from_str("not valid json");
+            assert!(result.is_err());
+
+            let result: Result<PlatformEvent, _> = serde_json::from_str("{}");
+            assert!(result.is_err(), "missing 'type' field should fail");
+
+            let result: Result<PlatformEvent, _> =
+                serde_json::from_str(r#"{"type":"UnknownEvent"}"#);
+            assert!(result.is_err(), "unknown event type should fail");
+        });
+    }
+
+    #[test]
+    fn event_deserialization_with_all_fields() {
+        let json = r#"{
+            "type": "ImageBuilt",
+            "project_id": "00000000-0000-0000-0000-000000000001",
+            "environment": "staging",
+            "image_ref": "registry.io/app:abc123",
+            "pipeline_id": "00000000-0000-0000-0000-000000000002",
+            "triggered_by": "00000000-0000-0000-0000-000000000003"
+        }"#;
+        let event: PlatformEvent = serde_json::from_str(json).unwrap();
+        match event {
+            PlatformEvent::ImageBuilt {
+                project_id,
+                environment,
+                image_ref,
+                pipeline_id,
+                triggered_by,
+            } => {
+                assert_ne!(project_id, Uuid::nil());
+                assert_eq!(environment, "staging");
+                assert_eq!(image_ref, "registry.io/app:abc123");
+                assert_ne!(pipeline_id, Uuid::nil());
+                assert!(triggered_by.is_some());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn ops_repo_updated_deserialization() {
+        let json = r#"{
+            "type": "OpsRepoUpdated",
+            "project_id": "00000000-0000-0000-0000-000000000001",
+            "ops_repo_id": "00000000-0000-0000-0000-000000000002",
+            "environment": "production",
+            "commit_sha": "abc123def456",
+            "image_ref": "registry/app:v2"
+        }"#;
+        let event: PlatformEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, PlatformEvent::OpsRepoUpdated { .. }));
+    }
+
+    #[test]
+    fn rollback_requested_with_optional_fields() {
+        // triggered_by is optional (None case)
+        let json = r#"{
+            "type": "RollbackRequested",
+            "project_id": "00000000-0000-0000-0000-000000000001",
+            "environment": "production",
+            "requested_by": null
+        }"#;
+        let event: PlatformEvent = serde_json::from_str(json).unwrap();
+        match event {
+            PlatformEvent::RollbackRequested { requested_by, .. } => {
+                assert!(requested_by.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn deploy_requested_roundtrip() {
+        let event = PlatformEvent::DeployRequested {
+            project_id: Uuid::new_v4(),
+            environment: "staging".into(),
+            image_ref: "registry/app:v3".into(),
+            requested_by: Some(Uuid::new_v4()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: PlatformEvent = serde_json::from_str(&json).unwrap();
+        match (event, parsed) {
+            (
+                PlatformEvent::DeployRequested {
+                    project_id: a_pid,
+                    environment: a_env,
+                    image_ref: a_img,
+                    requested_by: a_by,
+                },
+                PlatformEvent::DeployRequested {
+                    project_id: b_pid,
+                    environment: b_env,
+                    image_ref: b_img,
+                    requested_by: b_by,
+                },
+            ) => {
+                assert_eq!(a_pid, b_pid);
+                assert_eq!(a_env, b_env);
+                assert_eq!(a_img, b_img);
+                assert_eq!(a_by, b_by);
+            }
+            _ => panic!("wrong variants"),
+        }
+    }
 }

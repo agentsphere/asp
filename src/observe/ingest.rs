@@ -527,6 +527,7 @@ async fn drain_metrics(
 mod tests {
     use super::*;
     use crate::observe::proto;
+    use uuid::Uuid;
 
     // ── number_point_to_record ──────────────────────────────────────
 
@@ -660,5 +661,155 @@ mod tests {
         let env = empty_envelope();
         let rec = number_point_to_record(&dp, "temp", "gauge", None, &env).unwrap();
         assert_eq!(rec.metric_type, "gauge");
+    }
+
+    // ── number_point_to_record edge cases ────────────────────────────
+
+    #[test]
+    fn number_point_counter_type() {
+        let dp = proto::NumberDataPoint {
+            value: Some(proto::number_data_point::Value::AsInt(42)),
+            time_unix_nano: 1_700_000_000_000_000_000,
+            attributes: vec![],
+            ..Default::default()
+        };
+        let env = empty_envelope();
+        let rec = number_point_to_record(&dp, "requests_total", "counter", None, &env).unwrap();
+        assert_eq!(rec.metric_type, "counter");
+        assert!((rec.value - 42.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn number_point_with_unit() {
+        let dp = proto::NumberDataPoint {
+            value: Some(proto::number_data_point::Value::AsDouble(99.5)),
+            time_unix_nano: 1_700_000_000_000_000_000,
+            attributes: vec![],
+            ..Default::default()
+        };
+        let env = empty_envelope();
+        let rec = number_point_to_record(&dp, "mem", "gauge", Some("bytes"), &env).unwrap();
+        assert_eq!(rec.unit.as_deref(), Some("bytes"));
+    }
+
+    #[test]
+    fn number_point_with_attributes() {
+        let dp = proto::NumberDataPoint {
+            value: Some(proto::number_data_point::Value::AsDouble(1.0)),
+            time_unix_nano: 1_700_000_000_000_000_000,
+            attributes: vec![proto::KeyValue {
+                key: "method".into(),
+                value: Some(proto::AnyValue {
+                    value: Some(proto::any_value::Value::StringValue("GET".into())),
+                }),
+            }],
+            ..Default::default()
+        };
+        let env = empty_envelope();
+        let rec = number_point_to_record(&dp, "http_requests", "counter", None, &env).unwrap();
+        assert_eq!(rec.labels["method"], "GET");
+    }
+
+    #[test]
+    fn number_point_i64_max_precision() {
+        let dp = proto::NumberDataPoint {
+            value: Some(proto::number_data_point::Value::AsInt(i64::MAX)),
+            time_unix_nano: 1_700_000_000_000_000_000,
+            attributes: vec![],
+            ..Default::default()
+        };
+        let env = empty_envelope();
+        let rec = number_point_to_record(&dp, "big", "gauge", None, &env).unwrap();
+        assert!(rec.value > 0.0);
+    }
+
+    #[test]
+    fn number_point_negative_double() {
+        let dp = proto::NumberDataPoint {
+            value: Some(proto::number_data_point::Value::AsDouble(-42.5)),
+            time_unix_nano: 1_700_000_000_000_000_000,
+            attributes: vec![],
+            ..Default::default()
+        };
+        let env = empty_envelope();
+        let rec = number_point_to_record(&dp, "temp", "gauge", None, &env).unwrap();
+        assert!((rec.value - (-42.5)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn number_point_zero_value() {
+        let dp = proto::NumberDataPoint {
+            value: Some(proto::number_data_point::Value::AsDouble(0.0)),
+            time_unix_nano: 1_700_000_000_000_000_000,
+            attributes: vec![],
+            ..Default::default()
+        };
+        let env = empty_envelope();
+        let rec = number_point_to_record(&dp, "idle", "gauge", None, &env).unwrap();
+        assert!(rec.value.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn number_point_envelope_project_propagated() {
+        let dp = proto::NumberDataPoint {
+            value: Some(proto::number_data_point::Value::AsDouble(1.0)),
+            time_unix_nano: 1_700_000_000_000_000_000,
+            attributes: vec![],
+            ..Default::default()
+        };
+        let env = correlation::CorrelationEnvelope {
+            project_id: Some(Uuid::nil()),
+            session_id: None,
+            user_id: None,
+            trace_id: None,
+            span_id: None,
+            service: "svc".into(),
+        };
+        let rec = number_point_to_record(&dp, "m", "gauge", None, &env).unwrap();
+        assert_eq!(rec.project_id, Some(Uuid::nil()));
+    }
+
+    // ── json_opt edge cases ──────────────────────────────────────────
+
+    #[test]
+    fn json_opt_multiple_attrs() {
+        let attrs = vec![
+            proto::KeyValue {
+                key: "a".into(),
+                value: Some(proto::AnyValue {
+                    value: Some(proto::any_value::Value::StringValue("1".into())),
+                }),
+            },
+            proto::KeyValue {
+                key: "b".into(),
+                value: Some(proto::AnyValue {
+                    value: Some(proto::any_value::Value::IntValue(2)),
+                }),
+            },
+        ];
+        let result = json_opt(&attrs).unwrap();
+        assert_eq!(result["a"], "1");
+        assert_eq!(result["b"], 2);
+    }
+
+    // ── events_to_json edge cases ────────────────────────────────────
+
+    #[test]
+    fn events_to_json_with_attributes() {
+        let events = vec![proto::SpanEvent {
+            time_unix_nano: 1_700_000_000_000_000_000,
+            name: "exception".into(),
+            attributes: vec![proto::KeyValue {
+                key: "exception.type".into(),
+                value: Some(proto::AnyValue {
+                    value: Some(proto::any_value::Value::StringValue("RuntimeError".into())),
+                }),
+            }],
+            ..Default::default()
+        }];
+        let json = events_to_json(&events).unwrap();
+        let event = &json.as_array().unwrap()[0];
+        assert_eq!(event["name"], "exception");
+        assert!(event["attributes"].is_object());
     }
 }

@@ -29,37 +29,35 @@ describe("platform-admin", () => {
     assert.ok(names.includes("create_role"), "missing create_role");
     assert.ok(names.includes("assign_role"), "missing assign_role");
     assert.ok(names.includes("remove_role"), "missing remove_role");
-    assert.ok(names.includes("list_permissions"), "missing list_permissions");
     assert.ok(names.includes("list_delegations"), "missing list_delegations");
     assert.ok(names.includes("create_delegation"), "missing create_delegation");
     assert.ok(names.includes("revoke_delegation"), "missing revoke_delegation");
-    assert.ok(names.includes("create_token_for_user"), "missing create_token_for_user");
   });
 
-  it("list_users sends GET /api/admin/users", async () => {
+  it("list_users sends GET /api/users/list", async () => {
     api.setResponse(200, { items: [], total: 0 });
     await client.callTool("list_users", {});
     const req = api.lastRequest();
     assert.equal(req.method, "GET");
-    assert.ok(req.path.startsWith("/api/admin/users"));
+    assert.ok(req.path.startsWith("/api/users/list"));
   });
 
-  it("create_user sends POST /api/admin/users", async () => {
+  it("create_user sends POST /api/users", async () => {
     api.setResponse(201, { id: "user-id", name: "alice" });
     await client.callTool("create_user", { name: "alice", email: "a@b.com", password: "secret123" });
     const req = api.lastRequest();
     assert.equal(req.method, "POST");
-    assert.ok(req.path.startsWith("/api/admin/users"));
+    assert.ok(req.path.startsWith("/api/users"));
     assert.equal(req.body.name, "alice");
   });
 
-  it("deactivate_user sends POST /api/admin/users/:id/deactivate", async () => {
+  it("deactivate_user sends DELETE /api/users/:id", async () => {
     const uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     api.setResponse(200, {});
     await client.callTool("deactivate_user", { user_id: uid });
     const req = api.lastRequest();
-    assert.equal(req.method, "POST");
-    assert.ok(req.path.includes(`/users/${uid}/deactivate`));
+    assert.equal(req.method, "DELETE");
+    assert.ok(req.path.includes(`/users/${uid}`));
   });
 
   it("handles error responses", async () => {

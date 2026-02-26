@@ -146,12 +146,6 @@ const TOOLS = [
       required: ["user_id", "role_assignment_id"],
     },
   },
-  {
-    name: "list_permissions",
-    description:
-      "List all available permissions in the system. Useful for understanding what permissions can be assigned to roles.",
-    inputSchema: { type: "object", properties: {} },
-  },
   // --- Delegations ---
   {
     name: "list_delegations",
@@ -194,29 +188,6 @@ const TOOLS = [
       required: ["delegation_id"],
     },
   },
-  // --- Tokens ---
-  {
-    name: "create_token_for_user",
-    description:
-      "Create an API token for a specific user. The raw token is shown once — it cannot be retrieved later. Useful for creating service account tokens.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        user_id: { type: "string", description: "User UUID (required)" },
-        name: { type: "string", description: "Token name (required)" },
-        scopes: {
-          type: "array",
-          items: { type: "string" },
-          description: "Token scopes (e.g., ['project:read', 'project:write'])",
-        },
-        expires_days: {
-          type: "number",
-          description: "Token lifetime in days (1-365, default 90)",
-        },
-      },
-      required: ["user_id", "name"],
-    },
-  },
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
@@ -228,17 +199,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       // --- Users ---
       case "list_users": {
-        const data = await apiGet("/api/admin/users", {
+        const data = await apiGet("/api/users/list", {
           query: { limit: args.limit, offset: args.offset, search: args.search },
         });
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       case "get_user": {
-        const data = await apiGet(`/api/admin/users/${args.user_id}`);
+        const data = await apiGet(`/api/users/${args.user_id}`);
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       case "create_user": {
-        const data = await apiPost("/api/admin/users", {
+        const data = await apiPost("/api/users", {
           body: {
             name: args.name,
             email: args.email,
@@ -253,11 +224,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const body = {};
         if (args.display_name !== undefined) body.display_name = args.display_name;
         if (args.email !== undefined) body.email = args.email;
-        const data = await apiPatch(`/api/admin/users/${args.user_id}`, { body });
+        const data = await apiPatch(`/api/users/${args.user_id}`, { body });
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       case "deactivate_user": {
-        const data = await apiPost(`/api/admin/users/${args.user_id}/deactivate`);
+        const data = await apiDelete(`/api/users/${args.user_id}`);
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       // --- Roles ---
@@ -289,10 +260,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         );
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
-      case "list_permissions": {
-        const data = await apiGet("/api/admin/permissions");
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-      }
       // --- Delegations ---
       case "list_delegations": {
         const data = await apiGet("/api/admin/delegations", {
@@ -314,13 +281,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       case "revoke_delegation": {
         const data = await apiDelete(`/api/admin/delegations/${args.delegation_id}`);
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-      }
-      // --- Tokens ---
-      case "create_token_for_user": {
-        const data = await apiPost(`/api/admin/users/${args.user_id}/tokens`, {
-          body: { name: args.name, scopes: args.scopes, expires_days: args.expires_days },
-        });
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       default:

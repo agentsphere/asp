@@ -25,8 +25,10 @@ COPY --from=ui-builder /ui/dist ./ui/dist
 ENV SQLX_OFFLINE=true
 RUN cargo build --release
 
-# Stage 4: Runtime
-FROM gcr.io/distroless/cc-debian12:nonroot
+# Stage 4: Runtime — needs git for repo init, smart HTTP, MR merge, ops-repo, etc.
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/platform /platform
 EXPOSE 8080
 ENTRYPOINT ["/platform"]

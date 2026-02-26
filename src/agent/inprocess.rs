@@ -10,21 +10,42 @@ use crate::audit::{AuditEntry, write_audit};
 use crate::store::AppState;
 
 const BROADCAST_CAPACITY: usize = 256;
-const MAX_TOOL_ROUNDS: usize = 5;
+const MAX_TOOL_ROUNDS: usize = 10;
 
-const CREATE_APP_SYSTEM_PROMPT: &str = r#"You are an app-creation assistant for the Platform developer tool. Your job is to help users go from an idea to a running project in two phases.
+const CREATE_APP_SYSTEM_PROMPT: &str = r#"You are an app-creation assistant for the Platform developer tool. Your job is to help users go from an idea to a fully deployed, monitored application in two phases.
 
 == PHASE 1: CLARIFY ==
 Ask 1-2 concise clarifying questions about the tech stack, framework, database, and deployment needs. When the user confirms the plan, move to Phase 2. Do NOT call any tools during this phase.
 
 == PHASE 2: EXECUTE ==
-Once the user confirms, execute these steps using your tools:
+Once the user confirms, execute these steps IN ORDER using your tools:
 
 1. Call `create_project` with a slug-style name (lowercase, hyphens, e.g. "my-blog-api").
 2. Call `create_ops_repo` with the project_id from step 1.
-3. Call `spawn_coding_agent` with the project_id and a detailed prompt summarizing every requirement the user confirmed (language, framework, database, features, structure).
+3. Call `seed_ops_repo` with the ops_repo_id and project name — this writes the Kubernetes deploy template and initial values.
+4. Call `create_deployment` with the project_id, ops_repo_id, and environment "production" — this wires the project to the deployment pipeline.
+5. Call `spawn_coding_agent` with the project_id and a DETAILED prompt. The prompt MUST instruct the coding agent to:
+   - Create the application source code with a GET /healthz endpoint returning 200 on port 8080
+   - Create a multi-stage Dockerfile that builds and runs the app, EXPOSEing port 8080
+   - Create a `.platform.yaml` file at the repo root with a kaniko build step:
+     ```yaml
+     steps:
+       - name: build
+         image: gcr.io/kaniko-project/executor:latest
+         commands:
+           - /kaniko/executor --context=dir:///workspace --dockerfile=/workspace/Dockerfile --destination=$REGISTRY/$PROJECT:$COMMIT_SHA --cache=true
+     ```
+     (The env vars $REGISTRY, $PROJECT, $COMMIT_SHA are injected by the pipeline executor)
+   - Add OpenTelemetry SDK instrumentation that reads OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_SERVICE_NAME env vars to send traces, logs, and metrics
+   - Commit ALL files and push to the `main` branch (not a feature branch)
 
-After all tools succeed, reply with a short confirmation and tell the user their project is being set up.
+After all tools succeed, tell the user:
+"Your project is being set up! Here's what happens next:
+1. A coding agent is writing your application code, Dockerfile, and pipeline config.
+2. When it pushes to main, the CI pipeline will automatically build a container image.
+3. The image will be deployed to your production environment.
+4. Once running, telemetry (traces, logs, metrics) will appear in the Observe dashboard.
+You can track progress in the Sessions and Pipelines pages."
 
 Keep all responses concise. Never ask more than two questions at a time."#;
 
@@ -37,6 +58,8 @@ pub struct InProcessHandle {
     pub api_key: String,
     pub model: Option<String>,
     pub user_id: Uuid,
+    /// Override the Anthropic API URL (for testing with mock servers).
+    pub api_url: Option<String>,
 }
 
 impl InProcessHandle {
@@ -48,6 +71,7 @@ impl InProcessHandle {
             api_key,
             model,
             user_id,
+            api_url: None,
         }
     }
 
@@ -104,6 +128,46 @@ pub fn create_app_tools() -> Vec<serde_json::Value> {
             }
         }),
         serde_json::json!({
+            "name": "seed_ops_repo",
+            "description": "Seed the ops repo with a Kubernetes deploy template and initial values file. Must be called after create_ops_repo.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "ops_repo_id": {
+                        "type": "string",
+                        "description": "UUID of the ops repo to seed"
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": "Project name (used in K8s resource names and labels)"
+                    }
+                },
+                "required": ["ops_repo_id", "project_name"]
+            }
+        }),
+        serde_json::json!({
+            "name": "create_deployment",
+            "description": "Create a deployment record linking a project to its ops repo. This enables automatic deployment when images are built.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project_id": {
+                        "type": "string",
+                        "description": "UUID of the project"
+                    },
+                    "ops_repo_id": {
+                        "type": "string",
+                        "description": "UUID of the ops repo"
+                    },
+                    "environment": {
+                        "type": "string",
+                        "description": "Deployment environment (e.g. 'production', 'staging')"
+                    }
+                },
+                "required": ["project_id", "ops_repo_id", "environment"]
+            }
+        }),
+        serde_json::json!({
             "name": "spawn_coding_agent",
             "description": "Spawn a coding agent session to scaffold and write code for the project.",
             "input_schema": {
@@ -128,13 +192,35 @@ pub fn create_app_tools() -> Vec<serde_json::Value> {
 // Session lifecycle
 // ---------------------------------------------------------------------------
 
+/// Run a conversation turn for an existing in-process session.
+///
+/// Wraps the private `run_turn` so integration tests can exercise the full
+/// `run_turn` → `execute_tool` → save pipeline without reimplementing it.
+/// Only called from `tests/inprocess_integration.rs`.
+#[allow(dead_code)]
+pub async fn run_turn_for_session(state: &AppState, session_id: Uuid) -> Result<(), anyhow::Error> {
+    let handle = {
+        state
+            .inprocess_sessions
+            .read()
+            .unwrap()
+            .get(&session_id)
+            .cloned()
+    }
+    .ok_or_else(|| anyhow::anyhow!("session not found"))?;
+    run_turn(state, session_id, &handle).await
+}
+
 /// Create an in-process session: resolve API key, store handle, set status to running,
 /// and spawn the first conversation turn as a background task.
+///
+/// `api_url` overrides the Anthropic API endpoint (used by tests with a mock server).
 pub async fn create_inprocess_session(
     state: &AppState,
     user_id: Uuid,
     description: &str,
     provider_name: &str,
+    api_url: Option<&str>,
 ) -> Result<Uuid, AgentError> {
     let _ = super::service::get_provider(provider_name)?;
 
@@ -159,7 +245,8 @@ pub async fn create_inprocess_session(
     .await?;
 
     // Create handle
-    let handle = InProcessHandle::new(api_key, None, user_id);
+    let mut handle = InProcessHandle::new(api_key, None, user_id);
+    handle.api_url = api_url.map(String::from);
 
     // Store in AppState
     {
@@ -252,6 +339,7 @@ async fn run_turn(
             CREATE_APP_SYSTEM_PROMPT,
             &tools,
             &handle.tx,
+            handle.api_url.as_deref(),
         )
         .await?;
 
@@ -348,6 +436,12 @@ async fn execute_tool(
             .await
             .map_err(|e| e.to_string()),
         "create_ops_repo" => execute_create_ops_repo(state, handle, &tc.input)
+            .await
+            .map_err(|e| e.to_string()),
+        "seed_ops_repo" => execute_seed_ops_repo(state, &tc.input)
+            .await
+            .map_err(|e| e.to_string()),
+        "create_deployment" => execute_create_deployment(state, handle, &tc.input)
             .await
             .map_err(|e| e.to_string()),
         "spawn_coding_agent" => execute_spawn_agent(state, handle, &tc.input)
@@ -478,11 +572,10 @@ async fn execute_create_ops_repo(
     let repo_path_str = repo_path.to_string_lossy().to_string();
 
     sqlx::query(
-        "INSERT INTO ops_repos (id, project_id, name, repo_path, default_branch) \
-         VALUES ($1, $2, $3, $4, 'main')",
+        "INSERT INTO ops_repos (id, name, repo_path, branch) \
+         VALUES ($1, $2, $3, 'main')",
     )
     .bind(ops_repo_id)
-    .bind(project_id)
     .bind(&ops_name)
     .bind(&repo_path_str)
     .execute(&state.pool)
@@ -515,6 +608,227 @@ async fn execute_create_ops_repo(
     }))
 }
 
+/// Seed an ops repo with a deploy template and initial values.
+async fn execute_seed_ops_repo(
+    state: &AppState,
+    input: &serde_json::Value,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let ops_repo_id = parse_uuid_field(input, "ops_repo_id")?;
+    let project_name = input
+        .get("project_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing required field: project_name"))?;
+
+    // Look up the ops repo path
+    let repo_path_str: String = sqlx::query_scalar("SELECT repo_path FROM ops_repos WHERE id = $1")
+        .bind(ops_repo_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("ops repo not found"))?;
+
+    let repo_path = std::path::PathBuf::from(&repo_path_str);
+
+    // Create a worktree to write files into the bare repo
+    let worktree_dir = repo_path.join(format!("_seed_worktree_{}", Uuid::new_v4()));
+
+    // Use --orphan to create the initial branch (bare repo has no commits yet)
+    let output = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo_path)
+        .args(["worktree", "add", "--orphan", "-b", "main"])
+        .arg(&worktree_dir)
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("git worktree add failed: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!("git worktree add failed: {stderr}"));
+    }
+
+    let result = write_seed_files(&worktree_dir, project_name).await;
+
+    // Always clean up worktree
+    let _ = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo_path)
+        .args(["worktree", "remove", "--force"])
+        .arg(&worktree_dir)
+        .output()
+        .await;
+    let _ = tokio::fs::remove_dir_all(&worktree_dir).await;
+
+    result?;
+
+    Ok(serde_json::json!({
+        "ops_repo_id": ops_repo_id.to_string(),
+        "seeded": true,
+    }))
+}
+
+/// Write deploy template + values and commit inside a worktree.
+async fn write_seed_files(
+    worktree_dir: &std::path::Path,
+    project_name: &str,
+) -> Result<(), anyhow::Error> {
+    // Write deploy.yaml (Jinja template for the renderer)
+    let deploy_template = format!(
+        r#"apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {project_name}
+  labels:
+    app: {project_name}
+spec:
+  replicas: {{{{ values.replicas | default(1) }}}}
+  selector:
+    matchLabels:
+      app: {project_name}
+  template:
+    metadata:
+      labels:
+        app: {project_name}
+    spec:
+      containers:
+        - name: app
+          image: {{{{ image_ref }}}}
+          ports:
+            - containerPort: 8080
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://platform.platform-system.svc.cluster.local:8080"
+            - name: OTEL_SERVICE_NAME
+              value: "{project_name}"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {project_name}
+spec:
+  selector:
+    app: {project_name}
+  ports:
+    - port: 80
+      targetPort: 8080
+  type: ClusterIP
+"#
+    );
+
+    tokio::fs::write(worktree_dir.join("deploy.yaml"), &deploy_template).await?;
+
+    // Write values/production.yaml
+    let values_dir = worktree_dir.join("values");
+    tokio::fs::create_dir_all(&values_dir).await?;
+
+    let values_content = format!(
+        "image_ref: \"placeholder:latest\"\nproject_name: \"{project_name}\"\nreplicas: 1\n"
+    );
+    tokio::fs::write(values_dir.join("production.yaml"), &values_content).await?;
+
+    // Stage all files
+    let add_output = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(worktree_dir)
+        .args(["add", "."])
+        .output()
+        .await?;
+
+    if !add_output.status.success() {
+        let stderr = String::from_utf8_lossy(&add_output.stderr);
+        return Err(anyhow::anyhow!("git add failed: {stderr}"));
+    }
+
+    // Commit
+    let commit_output = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(worktree_dir)
+        .env("GIT_AUTHOR_NAME", "Platform")
+        .env("GIT_AUTHOR_EMAIL", "platform@localhost")
+        .env("GIT_COMMITTER_NAME", "Platform")
+        .env("GIT_COMMITTER_EMAIL", "platform@localhost")
+        .args(["commit", "-m", "chore: seed deploy template and values"])
+        .output()
+        .await?;
+
+    if !commit_output.status.success() {
+        let stderr = String::from_utf8_lossy(&commit_output.stderr);
+        return Err(anyhow::anyhow!("git commit failed: {stderr}"));
+    }
+
+    Ok(())
+}
+
+/// Create a deployment record linking project to ops repo.
+async fn execute_create_deployment(
+    state: &AppState,
+    handle: &InProcessHandle,
+    input: &serde_json::Value,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let project_id = parse_uuid_field(input, "project_id")?;
+    let ops_repo_id = parse_uuid_field(input, "ops_repo_id")?;
+    let environment = input
+        .get("environment")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing required field: environment"))?;
+
+    let deployment_id = Uuid::new_v4();
+
+    // Upsert deployment — idempotent on (project_id, environment)
+    sqlx::query(
+        "INSERT INTO deployments (id, project_id, ops_repo_id, environment, manifest_path, current_status) \
+         VALUES ($1, $2, $3, $4, 'deploy.yaml', 'healthy') \
+         ON CONFLICT (project_id, environment) DO UPDATE SET ops_repo_id = $3, manifest_path = 'deploy.yaml', updated_at = now()",
+    )
+    .bind(deployment_id)
+    .bind(project_id)
+    .bind(ops_repo_id)
+    .bind(environment)
+    .execute(&state.pool)
+    .await?;
+
+    // Audit
+    let owner_name: String = sqlx::query_scalar("SELECT name FROM users WHERE id = $1")
+        .bind(handle.user_id)
+        .fetch_one(&state.pool)
+        .await?;
+
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: handle.user_id,
+            actor_name: &owner_name,
+            action: "deployment.create",
+            resource: "deployment",
+            resource_id: Some(deployment_id),
+            project_id: Some(project_id),
+            detail: Some(serde_json::json!({
+                "environment": environment,
+                "ops_repo_id": ops_repo_id.to_string(),
+                "source": "create-app-agent",
+            })),
+            ip_addr: None,
+        },
+    )
+    .await;
+
+    Ok(serde_json::json!({
+        "deployment_id": deployment_id.to_string(),
+        "environment": environment,
+    }))
+}
+
 /// Spawn a K8s coding agent session for the project.
 async fn execute_spawn_agent(
     state: &AppState,
@@ -533,7 +847,7 @@ async fn execute_spawn_agent(
         project_id,
         prompt,
         "claude-code",
-        None,
+        Some("main"),
         None,
         super::AgentRoleName::Dev,
     )
@@ -676,19 +990,24 @@ mod tests {
     #[test]
     fn system_prompt_mentions_tools() {
         assert!(CREATE_APP_SYSTEM_PROMPT.contains("create_project"));
+        assert!(CREATE_APP_SYSTEM_PROMPT.contains("create_ops_repo"));
+        assert!(CREATE_APP_SYSTEM_PROMPT.contains("seed_ops_repo"));
+        assert!(CREATE_APP_SYSTEM_PROMPT.contains("create_deployment"));
         assert!(CREATE_APP_SYSTEM_PROMPT.contains("spawn_coding_agent"));
     }
 
     #[test]
-    fn create_app_tools_returns_three_tools() {
+    fn create_app_tools_returns_five_tools() {
         let tools = create_app_tools();
-        assert_eq!(tools.len(), 3);
+        assert_eq!(tools.len(), 5);
         let names: Vec<&str> = tools
             .iter()
             .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
             .collect();
         assert!(names.contains(&"create_project"));
         assert!(names.contains(&"create_ops_repo"));
+        assert!(names.contains(&"seed_ops_repo"));
+        assert!(names.contains(&"create_deployment"));
         assert!(names.contains(&"spawn_coding_agent"));
     }
 
@@ -744,7 +1063,10 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_mentions_create_ops_repo() {
-        assert!(CREATE_APP_SYSTEM_PROMPT.contains("create_ops_repo"));
+    fn system_prompt_mentions_lifecycle_flow() {
+        assert!(CREATE_APP_SYSTEM_PROMPT.contains("Dockerfile"));
+        assert!(CREATE_APP_SYSTEM_PROMPT.contains(".platform.yaml"));
+        assert!(CREATE_APP_SYSTEM_PROMPT.contains("healthz"));
+        assert!(CREATE_APP_SYSTEM_PROMPT.contains("OTEL_EXPORTER_OTLP_ENDPOINT"));
     }
 }

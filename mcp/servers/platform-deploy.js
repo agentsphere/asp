@@ -1,7 +1,7 @@
 /**
  * Platform Deploy MCP Server
  *
- * Provides deployment management tools: list, get, create, update,
+ * Provides deployment management tools: list, get, update,
  * rollback deployments, view history, and manage preview environments.
  * Loaded for: ops, admin roles.
  */
@@ -55,43 +55,6 @@ const TOOLS = [
         },
       },
       required: ["environment"],
-    },
-  },
-  {
-    name: "create_deployment",
-    description:
-      "Create a new deployment to an environment. Requires the target environment and container image reference.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        environment: {
-          type: "string",
-          description: "Target environment (e.g. 'staging', 'production')",
-        },
-        image_ref: {
-          type: "string",
-          description:
-            "Container image reference (e.g. 'registry.example.com/app:v1.2.3')",
-        },
-        ops_repo_id: {
-          type: "string",
-          description: "UUID of the ops repository for GitOps manifests",
-        },
-        manifest_path: {
-          type: "string",
-          description:
-            "Path to the manifest file within the ops repo (e.g. 'k8s/production/deployment.yaml')",
-        },
-        values_override: {
-          type: "object",
-          description: "Key-value overrides for deployment values/config",
-        },
-        project_id: {
-          type: "string",
-          description: "Project UUID (defaults to current project)",
-        },
-      },
-      required: ["environment", "image_ref"],
     },
   },
   {
@@ -223,17 +186,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const data = await apiGet(
           `/api/projects/${p}/deployments/${encodeURIComponent(args.environment)}`,
         );
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-      }
-      case "create_deployment": {
-        const body = {
-          environment: args.environment,
-          image_ref: args.image_ref,
-        };
-        if (args.ops_repo_id) body.ops_repo_id = args.ops_repo_id;
-        if (args.manifest_path) body.manifest_path = args.manifest_path;
-        if (args.values_override) body.values_override = args.values_override;
-        const data = await apiPost(`/api/projects/${p}/deployments`, { body });
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       case "update_deployment": {

@@ -140,4 +140,66 @@ mod tests {
             Some(id.parse().unwrap())
         );
     }
+
+    #[test]
+    fn project_id_from_sessions_path() {
+        let id = "550e8400-e29b-41d4-a716-446655440000";
+        let req = req_with_path(&format!("/api/projects/{id}/sessions/abc/ws"));
+        assert_eq!(
+            extract_project_id_from_path(&req),
+            Some(id.parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn project_id_from_webhooks_path() {
+        let id = "550e8400-e29b-41d4-a716-446655440000";
+        let req = req_with_path(&format!("/api/projects/{id}/webhooks"));
+        assert_eq!(
+            extract_project_id_from_path(&req),
+            Some(id.parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn project_id_empty_path() {
+        let req = req_with_path("/");
+        assert_eq!(extract_project_id_from_path(&req), None);
+    }
+
+    #[test]
+    fn project_id_projects_without_id() {
+        let req = req_with_path("/api/projects");
+        assert_eq!(extract_project_id_from_path(&req), None);
+    }
+
+    #[test]
+    fn project_id_partial_uuid_rejected() {
+        let req = req_with_path("/api/projects/550e8400-e29b/issues");
+        assert_eq!(extract_project_id_from_path(&req), None);
+    }
+
+    #[test]
+    fn project_id_with_query_string() {
+        let id = "550e8400-e29b-41d4-a716-446655440000";
+        let req = req_with_path(&format!("/api/projects/{id}/issues?limit=10&offset=0"));
+        assert_eq!(
+            extract_project_id_from_path(&req),
+            Some(id.parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn project_id_numeric_segment_not_uuid() {
+        let req = req_with_path("/api/projects/12345/issues");
+        assert_eq!(extract_project_id_from_path(&req), None);
+    }
+
+    #[test]
+    fn require_permission_returns_closure() {
+        // Verify that require_permission compiles and returns a callable closure
+        let _middleware = require_permission(Permission::ProjectRead);
+        // This test verifies the type signature is correct. The actual permission
+        // check requires AppState + DB which we test in integration tests.
+    }
 }

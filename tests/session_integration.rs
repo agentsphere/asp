@@ -728,3 +728,392 @@ async fn stop_session_non_owner_forbidden(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+// ---------------------------------------------------------------------------
+// Nonexistent session (404 paths)
+// ---------------------------------------------------------------------------
+
+#[sqlx::test(migrations = "./migrations")]
+async fn get_session_nonexistent_returns_404(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let project_id = create_project(&app, &admin_token, "sess-noexist", "private").await;
+    let fake_session = Uuid::new_v4();
+
+    let (status, _) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/sessions/{fake_session}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn stop_session_nonexistent_returns_404(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let project_id = create_project(&app, &admin_token, "stop-noexist", "private").await;
+    let fake_session = Uuid::new_v4();
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/sessions/{fake_session}/stop"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn send_message_project_scoped_nonexistent_session(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let project_id = create_project(&app, &admin_token, "msg-noexist", "private").await;
+    let fake_session = Uuid::new_v4();
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/sessions/{fake_session}/message"),
+        serde_json::json!({ "content": "hello" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// Create App (project-less session) tests
+// ---------------------------------------------------------------------------
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_app_project_scoped_token_forbidden(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let project_id = create_project(&app, &admin_token, "create-app-scope", "private").await;
+
+    // Create a project-scoped API token
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/tokens",
+        serde_json::json!({
+            "name": "project-scoped",
+            "project_id": project_id,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let scoped_token = body["token"].as_str().unwrap();
+
+    // Project-scoped token cannot create project-less sessions
+    let (status, _) = helpers::post_json(
+        &app,
+        scoped_token,
+        "/api/create-app",
+        serde_json::json!({ "description": "my app" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_app_empty_description_rejected(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/create-app",
+        serde_json::json!({ "description": "" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_app_without_agent_run_permission(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    // Create a user with only project:read — no project:write or agent:run
+    let (_uid, user_token) = create_user(&app, &admin_token, "no-agent", "noagent@test.com").await;
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &user_token,
+        "/api/create-app",
+        serde_json::json!({ "description": "my app" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+// ---------------------------------------------------------------------------
+// Update session edge cases
+// ---------------------------------------------------------------------------
+
+#[sqlx::test(migrations = "./migrations")]
+async fn update_session_nonexistent_returns_404(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let fake_session = Uuid::new_v4();
+    let (status, _) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/sessions/{fake_session}"),
+        serde_json::json!({ "project_id": Uuid::new_v4() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn update_session_empty_body_is_noop(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_id = get_admin_id(&app, &admin_token).await;
+
+    // Create a project-less session
+    let session_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO agent_sessions (id, user_id, prompt, status, provider)
+         VALUES ($1, $2, 'noop test', 'running', 'claude-code')",
+    )
+    .bind(session_id)
+    .bind(admin_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // PATCH with no project_id — should be a noop
+    let (status, body) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/sessions/{session_id}"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["project_id"].is_null());
+}
+
+// ---------------------------------------------------------------------------
+// Spawn child edge cases
+// ---------------------------------------------------------------------------
+
+#[sqlx::test(migrations = "./migrations")]
+async fn spawn_child_empty_prompt_rejected(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_id = get_admin_id(&app, &admin_token).await;
+
+    let project_id = create_project(&app, &admin_token, "spawn-empty", "private").await;
+    let parent_id = insert_session(&pool, project_id, admin_id, "parent", "running").await;
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/sessions/{parent_id}/spawn"),
+        serde_json::json!({ "prompt": "" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn spawn_child_parent_nonexistent_returns_404(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let project_id = create_project(&app, &admin_token, "spawn-nop", "private").await;
+    let fake_parent = Uuid::new_v4();
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/sessions/{fake_parent}/spawn"),
+        serde_json::json!({ "prompt": "child task" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn spawn_child_no_agent_spawn_permission(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_id = get_admin_id(&app, &admin_token).await;
+
+    let project_id = create_project(&app, &admin_token, "spawn-noperm", "public").await;
+    let parent_id = insert_session(&pool, project_id, admin_id, "parent", "running").await;
+
+    // Create a user with no agent:spawn permission
+    let (_uid, user_token) = create_user(&app, &admin_token, "no-spawn", "nospawn@test.com").await;
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &user_token,
+        &format!("/api/projects/{project_id}/sessions/{parent_id}/spawn"),
+        serde_json::json!({ "prompt": "child task" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+// ---------------------------------------------------------------------------
+// Send message global edge cases
+// ---------------------------------------------------------------------------
+
+#[sqlx::test(migrations = "./migrations")]
+async fn send_message_global_empty_content_rejected(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_id = get_admin_id(&app, &admin_token).await;
+
+    let project_id = create_project(&app, &admin_token, "msg-global-empty", "private").await;
+    let session_id =
+        insert_session(&pool, project_id, admin_id, "empty content test", "running").await;
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/sessions/{session_id}/message"),
+        serde_json::json!({ "content": "" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ---------------------------------------------------------------------------
+// List children with data
+// ---------------------------------------------------------------------------
+
+#[sqlx::test(migrations = "./migrations")]
+async fn list_children_with_children(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_id = get_admin_id(&app, &admin_token).await;
+
+    let project_id = create_project(&app, &admin_token, "children-data", "private").await;
+    let parent_id = insert_session(&pool, project_id, admin_id, "parent", "running").await;
+
+    // Insert two child sessions directly
+    for i in 0..2 {
+        let child_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO agent_sessions (id, project_id, user_id, prompt, status, provider, parent_session_id, spawn_depth)
+             VALUES ($1, $2, $3, $4, 'pending', 'claude-code', $5, 1)",
+        )
+        .bind(child_id)
+        .bind(project_id)
+        .bind(admin_id)
+        .bind(format!("child {i}"))
+        .bind(parent_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/sessions/{parent_id}/children"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.as_array().unwrap().len(), 2);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn list_children_nonexistent_parent_returns_empty(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let project_id = create_project(&app, &admin_token, "children-nop", "private").await;
+    let fake_parent = Uuid::new_v4();
+
+    // list_children doesn't 404 for nonexistent parent — just returns empty
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/sessions/{fake_parent}/children"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.as_array().unwrap().len(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Validate provider config edge cases
+// ---------------------------------------------------------------------------
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_session_invalid_agent_role(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let project_id = create_project(&app, &admin_token, "sess-bad-role", "private").await;
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/sessions"),
+        serde_json::json!({
+            "prompt": "test",
+            "role": "nonexistent_role",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "response: {body}");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_session_config_invalid_role(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let project_id = create_project(&app, &admin_token, "sess-cfg-role", "private").await;
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/sessions"),
+        serde_json::json!({
+            "prompt": "test config role",
+            "config": { "role": "hacker" }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_session_browser_test_role_ok(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let project_id = create_project(&app, &admin_token, "sess-browser-test", "private").await;
+
+    // Browser + role "test" should be accepted (validation passes, K8s may fail)
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/sessions"),
+        serde_json::json!({
+            "prompt": "test browser config",
+            "config": {
+                "browser": { "allowed_origins": ["http://localhost:3000"] },
+                "role": "test"
+            }
+        }),
+    )
+    .await;
+    // This either succeeds (CREATED) or fails with 500 at K8s pod creation —
+    // but NOT 400, because the config validation passes.
+    assert_ne!(status, StatusCode::BAD_REQUEST);
+}

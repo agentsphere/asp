@@ -1574,4 +1574,312 @@ mod tests {
             build_env_vars_core(Uuid::nil(), Uuid::nil(), "proj", "main", None, "test", None);
         assert!(find_env(&vars, "DOCKER_CONFIG").is_none());
     }
+
+    // -- build_volumes_and_mounts --
+
+    #[test]
+    fn volumes_without_secret_has_two() {
+        let (volumes, mounts) = build_volumes_and_mounts("/data/repos/test.git", None);
+        assert_eq!(volumes.len(), 2);
+        assert_eq!(volumes[0].name, "workspace");
+        assert_eq!(volumes[1].name, "repos");
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].name, "workspace");
+        assert_eq!(mounts[0].mount_path, "/workspace");
+    }
+
+    #[test]
+    fn volumes_with_secret_has_three() {
+        let (volumes, mounts) = build_volumes_and_mounts("/data/repos/test.git", Some("my-secret"));
+        assert_eq!(volumes.len(), 3);
+        assert_eq!(volumes[2].name, "docker-config");
+        let secret_vol = volumes[2].secret.as_ref().unwrap();
+        assert_eq!(secret_vol.secret_name.as_deref(), Some("my-secret"));
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[1].name, "docker-config");
+        assert_eq!(mounts[1].mount_path, "/kaniko/.docker");
+        assert_eq!(mounts[1].read_only, Some(true));
+    }
+
+    #[test]
+    fn volumes_repos_host_path() {
+        let repo_path = "/tmp/platform-e2e/repos/owner/repo.git";
+        let (volumes, _) = build_volumes_and_mounts(repo_path, None);
+        let host_path = volumes[1].host_path.as_ref().unwrap();
+        assert_eq!(host_path.path, repo_path);
+        assert_eq!(host_path.type_.as_deref(), Some("Directory"));
+    }
+
+    // -- env_var helper --
+
+    #[test]
+    fn env_var_sets_name_and_value() {
+        let e = env_var("FOO", "bar");
+        assert_eq!(e.name, "FOO");
+        assert_eq!(e.value, Some("bar".into()));
+    }
+
+    #[test]
+    fn env_var_empty_value() {
+        let e = env_var("EMPTY", "");
+        assert_eq!(e.name, "EMPTY");
+        assert_eq!(e.value, Some(String::new()));
+    }
+
+    // -- extract_exit_code additional cases --
+
+    #[test]
+    fn exit_code_zero_success() {
+        let status = PodStatus {
+            container_statuses: Some(vec![ContainerStatus {
+                name: "step".into(),
+                ready: false,
+                restart_count: 0,
+                image: String::new(),
+                image_id: String::new(),
+                state: Some(ContainerState {
+                    terminated: Some(ContainerStateTerminated {
+                        exit_code: 0,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(extract_exit_code(&status), Some(0));
+    }
+
+    #[test]
+    fn exit_code_137_oom_killed() {
+        let status = PodStatus {
+            container_statuses: Some(vec![ContainerStatus {
+                name: "step".into(),
+                ready: false,
+                restart_count: 0,
+                image: String::new(),
+                image_id: String::new(),
+                state: Some(ContainerState {
+                    terminated: Some(ContainerStateTerminated {
+                        exit_code: 137,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(extract_exit_code(&status), Some(137));
+    }
+
+    #[test]
+    fn exit_code_only_first_container() {
+        // When multiple containers exist, only the first is checked
+        let status = PodStatus {
+            container_statuses: Some(vec![
+                ContainerStatus {
+                    name: "step".into(),
+                    ready: false,
+                    restart_count: 0,
+                    image: String::new(),
+                    image_id: String::new(),
+                    state: Some(ContainerState {
+                        terminated: Some(ContainerStateTerminated {
+                            exit_code: 1,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                ContainerStatus {
+                    name: "sidecar".into(),
+                    ready: false,
+                    restart_count: 0,
+                    image: String::new(),
+                    image_id: String::new(),
+                    state: Some(ContainerState {
+                        terminated: Some(ContainerStateTerminated {
+                            exit_code: 0,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(extract_exit_code(&status), Some(1));
+    }
+
+    #[test]
+    fn exit_code_waiting_state_returns_none() {
+        let status = PodStatus {
+            container_statuses: Some(vec![ContainerStatus {
+                name: "step".into(),
+                ready: false,
+                restart_count: 0,
+                image: String::new(),
+                image_id: String::new(),
+                state: Some(ContainerState {
+                    waiting: Some(Default::default()),
+                    terminated: None,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(extract_exit_code(&status), None);
+    }
+
+    // -- pod spec additional edge cases --
+
+    #[test]
+    fn build_pod_spec_multiple_commands_joined() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["echo a".into(), "echo b".into(), "echo c".into()],
+            env_vars: &[],
+            repo_path: "/repos/test.git",
+            git_ref: "main",
+            registry_secret: None,
+        });
+
+        let container = &pod.spec.unwrap().containers[0];
+        let script = &container.args.as_ref().unwrap()[0];
+        assert_eq!(script, "echo a && echo b && echo c");
+    }
+
+    #[test]
+    fn build_pod_spec_single_command() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["cargo test".into()],
+            env_vars: &[],
+            repo_path: "/repos/test.git",
+            git_ref: "main",
+            registry_secret: None,
+        });
+
+        let container = &pod.spec.unwrap().containers[0];
+        let script = &container.args.as_ref().unwrap()[0];
+        assert_eq!(script, "cargo test");
+    }
+
+    #[test]
+    fn build_pod_spec_init_container_has_repos_mount() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["true".into()],
+            env_vars: &[],
+            repo_path: "/data/repos/owner/repo.git",
+            git_ref: "main",
+            registry_secret: None,
+        });
+
+        let init = &pod.spec.unwrap().init_containers.unwrap()[0];
+        let mounts = init.volume_mounts.as_ref().unwrap();
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[0].name, "workspace");
+        assert_eq!(mounts[1].name, "repos");
+        assert_eq!(mounts[1].mount_path, "/data/repos/owner/repo.git");
+        assert_eq!(mounts[1].read_only, Some(true));
+    }
+
+    #[test]
+    fn build_pod_spec_with_env_vars() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["echo $FOO".into()],
+            env_vars: &[env_var("FOO", "bar"), env_var("BAZ", "qux")],
+            repo_path: "/repos/test.git",
+            git_ref: "main",
+            registry_secret: None,
+        });
+
+        let container = &pod.spec.unwrap().containers[0];
+        let env = container.env.as_ref().unwrap();
+        assert_eq!(env.len(), 2);
+        assert_eq!(env[0].name, "FOO");
+        assert_eq!(env[0].value, Some("bar".into()));
+    }
+
+    // -- env_vars_core more edge cases --
+
+    #[test]
+    fn env_vars_refs_tags_stripped_for_branch() {
+        let vars = build_env_vars_core(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "refs/tags/v1.0.0",
+            None,
+            "test",
+            None,
+        );
+        // refs/tags/ is NOT stripped by the branch logic — only refs/heads/ is
+        assert_eq!(
+            find_env(&vars, "COMMIT_BRANCH"),
+            Some("refs/tags/v1.0.0".into())
+        );
+        assert_eq!(
+            find_env(&vars, "COMMIT_REF"),
+            Some("refs/tags/v1.0.0".into())
+        );
+    }
+
+    #[test]
+    fn env_vars_project_name_preserved_exactly() {
+        let vars = build_env_vars_core(
+            Uuid::nil(),
+            Uuid::nil(),
+            "My-App-v2",
+            "main",
+            None,
+            "build",
+            None,
+        );
+        assert_eq!(find_env(&vars, "PROJECT"), Some("My-App-v2".into()));
+        assert_eq!(
+            find_env(&vars, "PLATFORM_PROJECT_NAME"),
+            Some("My-App-v2".into())
+        );
+    }
+
+    #[test]
+    fn env_vars_step_name_preserved() {
+        let vars = build_env_vars_core(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "main",
+            None,
+            "deploy-production",
+            None,
+        );
+        assert_eq!(
+            find_env(&vars, "STEP_NAME"),
+            Some("deploy-production".into())
+        );
+    }
 }

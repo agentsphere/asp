@@ -7,6 +7,7 @@
 
 # Node / UI
 ui/node_modules/
+mcp/node_modules/
 ui/dist/
 ui/test-results/
 

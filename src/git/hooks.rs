@@ -200,4 +200,103 @@ cccccccccccccccccccccccccccccccccccccccc ddddddddddddddddddddddddddddddddddddddd
         // SHA too short
         assert!(parse_ref_updates("short short refs/heads/main").is_empty());
     }
+
+    #[test]
+    fn parse_mixed_valid_and_invalid() {
+        let input = "\
+invalid line
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/main
+too few parts
+cccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddd refs/heads/feature
+";
+        let updates = parse_ref_updates(input);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].refname, "refs/heads/main");
+        assert_eq!(updates[1].refname, "refs/heads/feature");
+    }
+
+    #[test]
+    fn parse_tag_ref() {
+        let input = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/tags/v1.0.0\n";
+        let updates = parse_ref_updates(input);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].refname, "refs/tags/v1.0.0");
+    }
+
+    #[test]
+    fn parse_whitespace_trimmed() {
+        let input = "  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/main  \n";
+        let updates = parse_ref_updates(input);
+        assert_eq!(updates.len(), 1);
+    }
+
+    #[test]
+    fn parse_refname_with_slashes() {
+        let input = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/feature/deep/nested/branch\n";
+        let updates = parse_ref_updates(input);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].refname, "refs/heads/feature/deep/nested/branch");
+    }
+
+    #[test]
+    fn parse_exactly_40_char_sha() {
+        // Exactly 40 chars should pass
+        let sha = "a".repeat(40);
+        let input = format!("{sha} {sha} refs/heads/main\n");
+        let updates = parse_ref_updates(&input);
+        assert_eq!(updates.len(), 1);
+    }
+
+    #[test]
+    fn parse_39_char_sha_rejected() {
+        let sha = "a".repeat(39);
+        let input = format!("{sha} {sha} refs/heads/main\n");
+        let updates = parse_ref_updates(&input);
+        assert_eq!(updates.len(), 0);
+    }
+
+    #[test]
+    fn parse_longer_sha_accepted() {
+        // 64 chars should pass (SHA-256 format)
+        let sha = "a".repeat(64);
+        let input = format!("{sha} {sha} refs/heads/main\n");
+        let updates = parse_ref_updates(&input);
+        assert_eq!(updates.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_branch_sha_nonexistent_repo() {
+        let result = get_branch_sha(Path::new("/nonexistent/repo.git"), "main").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn check_file_exists_nonexistent_repo() {
+        let result =
+            check_file_exists(Path::new("/nonexistent/repo.git"), "HEAD", "README.md").await;
+        assert!(!result);
+    }
+
+    #[test]
+    fn ref_update_struct_equality() {
+        let a = RefUpdate {
+            old_sha: "a".repeat(40),
+            new_sha: "b".repeat(40),
+            refname: "refs/heads/main".into(),
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn ref_update_struct_debug() {
+        let update = RefUpdate {
+            old_sha: "a".repeat(40),
+            new_sha: "b".repeat(40),
+            refname: "refs/heads/main".into(),
+        };
+        let debug = format!("{update:?}");
+        assert!(debug.contains("RefUpdate"));
+        assert!(debug.contains("refs/heads/main"));
+    }
 }

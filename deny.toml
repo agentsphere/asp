@@ -33,8 +33,8 @@ deny = [
     # webauthn-rs 0.5.x unconditionally depends on openssl for crypto ops.
     # v6.0 will switch to pure-Rust RustCrypto crates (in progress upstream).
     # TODO: restore unconditional ban once webauthn-rs 6.0 is released.
-    { name = "openssl", wrappers = ["webauthn-rs-core", "webauthn-attestation-ca"] },
-    { name = "openssl-sys", wrappers = ["openssl", "webauthn-rs-core", "webauthn-attestation-ca"] },
+    { name = "openssl", wrappers = ["webauthn-rs-core", "webauthn-attestation-ca", "webauthn-authenticator-rs"] },
+    { name = "openssl-sys", wrappers = ["openssl", "webauthn-rs-core", "webauthn-attestation-ca", "webauthn-authenticator-rs"] },
 ]
 
 [sources]

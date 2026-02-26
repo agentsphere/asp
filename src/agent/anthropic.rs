@@ -96,6 +96,7 @@ pub async fn stream_turn_with_tools(
     system: &str,
     tools: &[serde_json::Value],
     tx: &tokio::sync::broadcast::Sender<ProgressEvent>,
+    api_url: Option<&str>,
 ) -> Result<TurnResult, anyhow::Error> {
     let model = model.unwrap_or(DEFAULT_MODEL);
 
@@ -108,7 +109,7 @@ pub async fn stream_turn_with_tools(
         "tools": tools,
     });
 
-    let response = send_anthropic_request(api_key, &body, tx).await?;
+    let response = send_anthropic_request(api_key, &body, tx, api_url).await?;
 
     let mut stream = response.bytes_stream();
     let mut buf = String::new();
@@ -333,10 +334,12 @@ async fn send_anthropic_request(
     api_key: &str,
     body: &serde_json::Value,
     tx: &tokio::sync::broadcast::Sender<ProgressEvent>,
+    api_url: Option<&str>,
 ) -> Result<reqwest::Response, anyhow::Error> {
+    let url = api_url.unwrap_or(ANTHROPIC_API_URL);
     let client = reqwest::Client::new();
     let response = client
-        .post(api_url())
+        .post(url)
         .header("x-api-key", api_key)
         .header("anthropic-version", ANTHROPIC_VERSION)
         .header("content-type", "application/json")
@@ -357,14 +360,6 @@ async fn send_anthropic_request(
     }
 
     Ok(response)
-}
-
-/// Get the Anthropic API URL. Configurable via `ANTHROPIC_API_URL` env var for testing.
-fn api_url() -> &'static str {
-    static URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    URL.get_or_init(|| {
-        std::env::var("ANTHROPIC_API_URL").unwrap_or_else(|_| ANTHROPIC_API_URL.to_owned())
-    })
 }
 
 #[cfg(test)]

@@ -598,3 +598,238 @@ async fn test_webhook_not_found(pool: PgPool) {
 
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ---------------------------------------------------------------------------
+// Additional coverage: edge-case paths
+// ---------------------------------------------------------------------------
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_webhook_ssrf_file_scheme(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-ssrf-file", "public").await;
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks"),
+        serde_json::json!({
+            "url": "file:///etc/passwd",
+            "events": ["push"],
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_webhook_too_many_events(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-too-many", "public").await;
+
+    // 21 events exceed the max of 20
+    let events: Vec<String> = (0..21).map(|_| "push".to_string()).collect();
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks"),
+        serde_json::json!({
+            "url": "https://example.com/hook",
+            "events": events,
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let msg = body["error"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("max 20"),
+        "expected max events error, got: {msg}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn update_webhook_reactivate(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-reactivate", "public").await;
+
+    let (_, create_body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks"),
+        serde_json::json!({
+            "url": "https://example.com/hook",
+            "events": ["push"],
+        }),
+    )
+    .await;
+    let wh_id = create_body["id"].as_str().unwrap();
+
+    // Deactivate
+    let (status, body) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks/{wh_id}"),
+        serde_json::json!({ "active": false }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["active"], false);
+
+    // Reactivate
+    let (status, body) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks/{wh_id}"),
+        serde_json::json!({ "active": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["active"], true);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn update_webhook_url_only(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-url-only", "public").await;
+
+    let (_, create_body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks"),
+        serde_json::json!({
+            "url": "https://example.com/original",
+            "events": ["push", "mr"],
+        }),
+    )
+    .await;
+    let wh_id = create_body["id"].as_str().unwrap();
+
+    // Update URL only (events should remain unchanged)
+    let (status, body) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks/{wh_id}"),
+        serde_json::json!({ "url": "https://example.com/new-url" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["url"], "https://example.com/new-url");
+    let events = body["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2, "events should be preserved");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn update_webhook_not_found(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-upd-404", "public").await;
+    let fake_id = Uuid::new_v4();
+
+    let (status, _) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks/{fake_id}"),
+        serde_json::json!({ "url": "https://example.com/nope" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn update_webhook_too_many_events(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-upd-toomany", "public").await;
+
+    let (_, create_body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks"),
+        serde_json::json!({
+            "url": "https://example.com/hook",
+            "events": ["push"],
+        }),
+    )
+    .await;
+    let wh_id = create_body["id"].as_str().unwrap();
+
+    let events: Vec<String> = (0..21).map(|_| "push".to_string()).collect();
+    let (status, _) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks/{wh_id}"),
+        serde_json::json!({ "events": events }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_webhook_with_secret(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-with-secret", "public").await;
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks"),
+        serde_json::json!({
+            "url": "https://example.com/signed-hook",
+            "events": ["push", "deploy"],
+            "secret": "my-webhook-secret",
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    // Secret should NOT be returned in response
+    assert!(body.get("secret").is_none() || body["secret"].is_null());
+    assert_eq!(body["url"], "https://example.com/signed-hook");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn update_webhook_ssrf_url_rejected(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-upd-ssrf", "public").await;
+
+    let (_, create_body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks"),
+        serde_json::json!({
+            "url": "https://example.com/hook",
+            "events": ["push"],
+        }),
+    )
+    .await;
+    let wh_id = create_body["id"].as_str().unwrap();
+
+    // Try to update URL to a private IP → should be blocked
+    let (status, _) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks/{wh_id}"),
+        serde_json::json!({ "url": "http://10.0.0.1/evil" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

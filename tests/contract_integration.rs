@@ -990,3 +990,532 @@ async fn contract_branches_list(pool: PgPool) {
         assert!(body.is_array(), "branches should be array");
     }
 }
+
+// =========================================================================
+// MCP Contract Tests — verify response shapes for endpoints called by
+// MCP servers (mcp/servers/*.js) that aren't already covered above.
+// =========================================================================
+
+// -- platform-admin MCP: user management via /api/users/* --
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_admin_get_user(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let (user_id, _) = create_user(&app, &admin_token, "mcp-get-user", "mcp-get@test.com").await;
+
+    let (status, body) =
+        helpers::get_json(&app, &admin_token, &format!("/api/users/{user_id}")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_uuid(&body["id"], "user.id");
+    assert!(body["name"].is_string(), "missing name");
+    assert!(body["email"].is_string(), "missing email");
+    assert!(body["is_active"].is_boolean(), "missing is_active");
+    assert!(body["user_type"].is_string(), "missing user_type");
+    assert_timestamp(&body["created_at"], "user.created_at");
+    assert_timestamp(&body["updated_at"], "user.updated_at");
+    // display_name nullable
+    assert!(
+        body["display_name"].is_string() || body["display_name"].is_null(),
+        "display_name should be string or null"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_admin_update_user(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let (user_id, _) = create_user(&app, &admin_token, "mcp-upd-user", "mcp-upd@test.com").await;
+
+    let (status, body) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/users/{user_id}"),
+        serde_json::json!({"display_name": "Updated Name"}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_uuid(&body["id"], "user.id");
+    assert_eq!(body["display_name"], "Updated Name");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_admin_deactivate_user(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let (user_id, _) =
+        create_user(&app, &admin_token, "mcp-deact-user", "mcp-deact@test.com").await;
+
+    let (status, body) =
+        helpers::delete_json(&app, &admin_token, &format!("/api/users/{user_id}")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["ok"].is_boolean(), "missing ok field");
+}
+
+// -- platform-admin MCP: role management --
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_admin_create_role(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/admin/roles",
+        serde_json::json!({"name": "mcp-test-role", "description": "A test role"}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED, "create role failed: {body}");
+    assert_uuid(&body["id"], "role.id");
+    assert_eq!(body["name"], "mcp-test-role");
+    assert!(body["is_system"].is_boolean(), "missing is_system");
+    assert_timestamp(&body["created_at"], "role.created_at");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_admin_assign_role(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let (user_id, _) = create_user(&app, &admin_token, "mcp-role-user", "mcp-role@test.com").await;
+
+    // Get a role to assign
+    let (_, roles_body) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;
+    let viewer_role = roles_body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "viewer")
+        .expect("viewer role should exist");
+    let role_id = viewer_role["id"].as_str().unwrap();
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/admin/users/{user_id}/roles"),
+        serde_json::json!({"role_id": role_id}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED, "assign role failed: {body}");
+    assert!(body["ok"].is_boolean(), "missing ok field");
+}
+
+// -- platform-admin MCP: delegation management --
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_admin_list_delegations(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let (status, body) = helpers::get_json(&app, &admin_token, "/api/admin/delegations").await;
+
+    assert_eq!(status, StatusCode::OK);
+    // Returns a Vec<Delegation> (array, not ListResponse)
+    assert!(body.is_array(), "delegations should be array");
+}
+
+// -- platform-issues MCP: issue update --
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_issue_update(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+    let proj_id = create_project(&app, &admin_token, "mcp-iss-proj", "private").await;
+
+    // Create an issue first
+    let (_, issue) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{proj_id}/issues"),
+        serde_json::json!({"title": "Original title", "labels": ["bug"]}),
+    )
+    .await;
+    let num = issue["number"].as_i64().unwrap();
+
+    // Update it
+    let (status, body) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{proj_id}/issues/{num}"),
+        serde_json::json!({"title": "Updated title", "status": "closed", "labels": ["bug", "fixed"]}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_uuid(&body["id"], "issue.id");
+    assert_eq!(body["title"], "Updated title");
+    assert_eq!(body["status"], "closed");
+    assert!(body["labels"].is_array(), "labels should be array");
+    assert_eq!(body["labels"].as_array().unwrap().len(), 2);
+    assert_number(&body["number"], "issue.number");
+    assert_uuid(&body["author_id"], "issue.author_id");
+    assert_timestamp(&body["updated_at"], "issue.updated_at");
+}
+
+// -- platform-issues MCP: merge request CRUD --
+// Note: MR creation requires real git branches, so we insert MRs directly
+// into the DB (like issue_mr_integration.rs does) and test the GET/PATCH/comment shapes.
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_mr_get_shape(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let proj_id = create_project(&app, &admin_token, "mcp-mr-get", "private").await;
+
+    // Get admin user ID
+    let admin_id: (Uuid,) = sqlx::query_as("SELECT id FROM users WHERE name = 'admin'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // Insert MR directly (bypasses branch validation)
+    let mr_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO merge_requests (id, project_id, number, author_id, source_branch, target_branch, title, body, status)
+         VALUES ($1, $2, 1, $3, 'feat/test', 'main', 'Test MR', 'MR body text', 'open')",
+    )
+    .bind(mr_id)
+    .bind(proj_id)
+    .bind(admin_id.0)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE projects SET next_mr_number = 2 WHERE id = $1")
+        .bind(proj_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // GET MR
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{proj_id}/merge-requests/1"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_uuid(&body["id"], "mr.id");
+    assert_uuid(&body["project_id"], "mr.project_id");
+    assert_number(&body["number"], "mr.number");
+    assert_eq!(body["title"], "Test MR");
+    assert_eq!(body["source_branch"], "feat/test");
+    assert_eq!(body["target_branch"], "main");
+    assert!(body["status"].is_string(), "missing mr status");
+    assert_uuid(&body["author_id"], "mr.author_id");
+    assert_timestamp(&body["created_at"], "mr.created_at");
+    assert_timestamp(&body["updated_at"], "mr.updated_at");
+    // merged_by/merged_at should be null for open MR
+    assert!(body["merged_by"].is_null(), "merged_by should be null");
+    assert!(body["merged_at"].is_null(), "merged_at should be null");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_mr_update(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let proj_id = create_project(&app, &admin_token, "mcp-mr-upd", "private").await;
+
+    let admin_id: (Uuid,) = sqlx::query_as("SELECT id FROM users WHERE name = 'admin'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let mr_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO merge_requests (id, project_id, number, author_id, source_branch, target_branch, title, status)
+         VALUES ($1, $2, 1, $3, 'feat/upd', 'main', 'Original MR', 'open')",
+    )
+    .bind(mr_id)
+    .bind(proj_id)
+    .bind(admin_id.0)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE projects SET next_mr_number = 2 WHERE id = $1")
+        .bind(proj_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (status, body) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{proj_id}/merge-requests/1"),
+        serde_json::json!({"title": "Updated MR"}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["title"], "Updated MR");
+    assert_uuid(&body["id"], "mr.id");
+    assert_timestamp(&body["updated_at"], "mr.updated_at");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_mr_comment(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let proj_id = create_project(&app, &admin_token, "mcp-mr-cmt", "private").await;
+
+    let admin_id: (Uuid,) = sqlx::query_as("SELECT id FROM users WHERE name = 'admin'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let mr_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO merge_requests (id, project_id, number, author_id, source_branch, target_branch, title, status)
+         VALUES ($1, $2, 1, $3, 'feat/cmt', 'main', 'MR for comments', 'open')",
+    )
+    .bind(mr_id)
+    .bind(proj_id)
+    .bind(admin_id.0)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE projects SET next_mr_number = 2 WHERE id = $1")
+        .bind(proj_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{proj_id}/merge-requests/1/comments"),
+        serde_json::json!({"body": "LGTM!"}),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "create MR comment failed: {body}"
+    );
+    assert_uuid(&body["id"], "comment.id");
+    assert!(body["body"].is_string(), "missing comment body");
+    assert_uuid(&body["author_id"], "comment.author_id");
+    assert_timestamp(&body["created_at"], "comment.created_at");
+    assert_timestamp(&body["updated_at"], "comment.updated_at");
+}
+
+// -- platform-deploy MCP: deployment detail + history --
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_deployment_get(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let proj_id = create_project(&app, &admin_token, "mcp-dep-get", "private").await;
+
+    // Insert deployment directly
+    let dep_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO deployments (id, project_id, environment, image_ref, desired_status, current_status)
+         VALUES ($1, $2, 'production', 'myapp:v2', 'active', 'healthy')",
+    )
+    .bind(dep_id)
+    .bind(proj_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{proj_id}/deployments/production"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_uuid(&body["id"], "deployment.id");
+    assert_uuid(&body["project_id"], "deployment.project_id");
+    assert_eq!(body["environment"], "production");
+    assert_eq!(body["image_ref"], "myapp:v2");
+    assert!(body["desired_status"].is_string(), "missing desired_status");
+    assert!(body["current_status"].is_string(), "missing current_status");
+    assert_timestamp(&body["created_at"], "deployment.created_at");
+    assert_timestamp(&body["updated_at"], "deployment.updated_at");
+    // Nullable fields
+    assert!(
+        body["ops_repo_id"].is_string() || body["ops_repo_id"].is_null(),
+        "ops_repo_id should be string or null"
+    );
+    assert!(
+        body["deployed_by"].is_string() || body["deployed_by"].is_null(),
+        "deployed_by should be string or null"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_deployment_history(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let proj_id = create_project(&app, &admin_token, "mcp-dep-hist", "private").await;
+
+    // Insert deployment + history
+    let dep_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO deployments (id, project_id, environment, image_ref, desired_status, current_status)
+         VALUES ($1, $2, 'staging', 'app:v1', 'active', 'healthy')",
+    )
+    .bind(dep_id)
+    .bind(proj_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO deployment_history (id, deployment_id, image_ref, action, status)
+         VALUES ($1, $2, 'app:v1', 'deploy', 'success')",
+    )
+    .bind(Uuid::new_v4())
+    .bind(dep_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{proj_id}/deployments/staging/history?limit=10"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let items = assert_list_response(&body, "deployment-history");
+    assert!(!items.is_empty());
+
+    let entry = &items[0];
+    assert_uuid(&entry["id"], "history.id");
+    assert_uuid(&entry["deployment_id"], "history.deployment_id");
+    assert!(entry["image_ref"].is_string(), "missing image_ref");
+    assert!(entry["action"].is_string(), "missing action");
+    assert!(entry["status"].is_string(), "missing status");
+    assert_timestamp(&entry["created_at"], "history.created_at");
+}
+
+// -- platform-observe MCP: metrics + metric names --
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_observe_metrics(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        "/api/observe/metrics?name=http_requests&time_range=1h",
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    // Returns Vec<MetricSeries> (array)
+    assert!(body.is_array(), "metrics should be array");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_observe_metric_names(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let (status, body) = helpers::get_json(&app, &admin_token, "/api/observe/metrics/names").await;
+
+    assert_eq!(status, StatusCode::OK);
+    // Returns Vec<MetricNameResponse> (array)
+    assert!(body.is_array(), "metric names should be array");
+}
+
+// -- platform-observe MCP: alert detail --
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_observe_alert_get(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    // Create an alert rule first
+    let (_, alert) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/observe/alerts",
+        serde_json::json!({
+            "name": "mcp-alert-get",
+            "query": "metric:http_errors",
+            "condition": "gt",
+            "threshold": 50.0,
+            "window_seconds": 60,
+            "channels": ["webhook"],
+        }),
+    )
+    .await;
+    let alert_id = alert["id"].as_str().unwrap();
+
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/observe/alerts/{alert_id}"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_uuid(&body["id"], "alert.id");
+    assert_eq!(body["name"], "mcp-alert-get");
+    assert!(body["query"].is_string(), "missing query");
+    assert!(body["condition"].is_string(), "missing condition");
+    assert!(body["enabled"].is_boolean(), "missing enabled");
+    assert_number(&body["window_seconds"], "alert.window_seconds");
+    assert!(body["channels"].is_array(), "missing channels");
+    assert_timestamp(&body["created_at"], "alert.created_at");
+}
+
+// -- platform-core MCP: session detail --
+
+#[sqlx::test(migrations = "./migrations")]
+async fn contract_mcp_session_detail(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let proj_id = create_project(&app, &admin_token, "mcp-sess-proj", "private").await;
+
+    // Insert a session directly
+    let admin_id: (Uuid,) = sqlx::query_as("SELECT id FROM users WHERE name = 'admin'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let session_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO agent_sessions (id, project_id, user_id, prompt, status, provider)
+         VALUES ($1, $2, $3, 'test prompt', 'running', 'anthropic')",
+    )
+    .bind(session_id)
+    .bind(proj_id)
+    .bind(admin_id.0)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{proj_id}/sessions/{session_id}"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_uuid(&body["id"], "session.id");
+    assert!(body["status"].is_string(), "missing status");
+    assert!(body["prompt"].is_string(), "missing prompt");
+    assert!(body["provider"].is_string(), "missing provider");
+    assert_uuid(&body["user_id"], "session.user_id");
+    assert_timestamp(&body["created_at"], "session.created_at");
+    // messages should be an array (from SessionDetailResponse flatten)
+    assert!(body["messages"].is_array(), "missing messages array");
+}

@@ -481,7 +481,8 @@ pub async fn create_global_session(
     provider_name: &str,
 ) -> Result<AgentSession, AgentError> {
     let session_id =
-        super::inprocess::create_inprocess_session(state, user_id, prompt, provider_name).await?;
+        super::inprocess::create_inprocess_session(state, user_id, prompt, provider_name, None)
+            .await?;
 
     fetch_session(&state.pool, session_id).await
 }
@@ -517,7 +518,7 @@ async fn fire_agent_webhook(pool: &PgPool, project_id: Uuid, session_id: Uuid, s
 
 /// Try to resolve the user's Anthropic API key from `user_provider_keys`.
 /// Returns `None` if the user hasn't set one or if the secrets engine isn't configured.
-async fn resolve_user_api_key(state: &AppState, user_id: Uuid) -> Option<String> {
+pub(crate) async fn resolve_user_api_key(state: &AppState, user_id: Uuid) -> Option<String> {
     let master_key_hex = state.config.master_key.as_deref()?;
     let master_key = crate::secrets::engine::parse_master_key(master_key_hex).ok()?;
     match user_keys::get_user_key(&state.pool, &master_key, user_id, "anthropic").await {
@@ -525,6 +526,64 @@ async fn resolve_user_api_key(state: &AppState, user_id: Uuid) -> Option<String>
         Err(e) => {
             tracing::warn!(error = %e, %user_id, "failed to resolve user API key, falling back to global");
             None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_provider_claude_code_succeeds() {
+        let provider = get_provider("claude-code");
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn get_provider_unknown_returns_error() {
+        let result = get_provider("unknown-provider");
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        match err {
+            AgentError::InvalidProvider(msg) => {
+                assert!(msg.contains("unknown"), "expected 'unknown' in: {msg}");
+            }
+            other => panic!("expected InvalidProvider, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_provider_empty_string_returns_error() {
+        let result = get_provider("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_provider_case_sensitive() {
+        // "Claude-Code" should fail — only exact "claude-code" works
+        assert!(get_provider("Claude-Code").is_err());
+        assert!(get_provider("CLAUDE-CODE").is_err());
+    }
+
+    #[test]
+    fn get_provider_similar_names_rejected() {
+        assert!(get_provider("claude").is_err());
+        assert!(get_provider("claude-code-v2").is_err());
+        assert!(get_provider("openai").is_err());
+    }
+
+    #[test]
+    fn get_provider_error_includes_provider_name() {
+        match get_provider("my-custom-provider") {
+            Err(AgentError::InvalidProvider(msg)) => {
+                assert!(
+                    msg.contains("my-custom-provider"),
+                    "error should include the attempted name: {msg}"
+                );
+            }
+            Err(other) => panic!("expected InvalidProvider, got: {other}"),
+            Ok(_) => panic!("expected error for unknown provider"),
         }
     }
 }

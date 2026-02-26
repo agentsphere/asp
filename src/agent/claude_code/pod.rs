@@ -222,7 +222,7 @@ fn build_git_clone_container(repo_clone_url: &str, branch: &str) -> Container {
         command: Some(vec!["sh".into(), "-c".into()]),
         args: Some(vec![format!(
             "set -eu; git clone {repo_clone_url} /workspace; cd /workspace; \
-             git checkout -b {branch}; \
+             git checkout {branch} 2>/dev/null || git checkout -b {branch}; \
              git config user.name 'platform-agent'; \
              git config user.email 'agent@platform.local'",
         )]),
@@ -589,7 +589,11 @@ mod tests {
         assert_eq!(init.name, "git-clone");
         let args = init.args.as_ref().unwrap();
         assert!(args[0].contains("git clone file:///data/repos/myproject /workspace"));
-        assert!(args[0].contains("git checkout -b agent/12345678"));
+        assert!(
+            args[0].contains(
+                "git checkout agent/12345678 2>/dev/null || git checkout -b agent/12345678"
+            )
+        );
     }
 
     #[test]

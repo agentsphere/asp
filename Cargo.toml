@@ -122,6 +122,7 @@ proptest = "1"
 rstest = "0.25"
 wiremock = "0.6"
 tempfile = "3"
+webauthn-authenticator-rs = { version = "0.5", features = ["softpasskey"] }
 
 [lints.rust]
 unsafe_code = "forbid"

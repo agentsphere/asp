@@ -22,7 +22,6 @@ describe("platform-deploy", () => {
     const names = tools.map((t) => t.name);
     assert.ok(names.includes("list_deployments"), "missing list_deployments");
     assert.ok(names.includes("get_deployment"), "missing get_deployment");
-    assert.ok(names.includes("create_deployment"), "missing create_deployment");
     assert.ok(names.includes("update_deployment"), "missing update_deployment");
     assert.ok(names.includes("rollback_deployment"), "missing rollback_deployment");
     assert.ok(names.includes("get_deployment_history"), "missing get_deployment_history");
@@ -36,17 +35,6 @@ describe("platform-deploy", () => {
     const req = api.lastRequest();
     assert.equal(req.method, "GET");
     assert.ok(req.path.includes(`/api/projects/${projectId}/deployments`));
-  });
-
-  it("create_deployment sends POST /api/projects/:id/deployments", async () => {
-    api.setResponse(201, { environment: "staging", status: "pending" });
-    await client.callTool("create_deployment", {
-      environment: "staging",
-      image: "myapp:v1",
-    });
-    const req = api.lastRequest();
-    assert.equal(req.method, "POST");
-    assert.ok(req.path.includes("/deployments"));
   });
 
   it("rollback_deployment sends POST .../deployments/:env/rollback", async () => {

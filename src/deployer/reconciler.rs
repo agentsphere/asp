@@ -575,4 +575,122 @@ mod tests {
         // Verify it's still valid YAML
         let _: serde_yaml::Value = serde_yaml::from_str(&manifest).unwrap();
     }
+
+    #[test]
+    fn basic_manifest_different_environments() {
+        for env in &["production", "staging", "development", "preview-feat-123"] {
+            let mut d = sample_deployment();
+            d.environment = (*env).to_string();
+            let manifest = generate_basic_manifest(&d);
+            let expected_name = format!("name: my-app-{env}");
+            assert!(
+                manifest.contains(&expected_name),
+                "manifest should contain '{expected_name}', got: {manifest}"
+            );
+            // Must be valid YAML
+            let _: serde_yaml::Value = serde_yaml::from_str(&manifest).unwrap();
+        }
+    }
+
+    #[test]
+    fn basic_manifest_different_images() {
+        for image in &[
+            "nginx:latest",
+            "registry.io/app:v1.0.0-rc1",
+            "ghcr.io/org/repo:sha-abc123",
+        ] {
+            let mut d = sample_deployment();
+            d.image_ref = (*image).to_string();
+            let manifest = generate_basic_manifest(&d);
+            assert!(manifest.contains(&format!("image: {image}")));
+        }
+    }
+
+    #[test]
+    fn copy_deployment_fields_independent_of_original() {
+        let original = sample_deployment();
+        let mut copy = copy_deployment_fields(&original);
+        copy.image_ref = "modified:v2".into();
+        copy.environment = "staging".into();
+        // Original should be unchanged
+        assert_eq!(original.image_ref, "registry.example.com/myapp:v1.2.3");
+        assert_eq!(original.environment, "production");
+    }
+
+    #[test]
+    fn pending_deployment_with_ops_repo() {
+        let d = PendingDeployment {
+            id: Uuid::new_v4(),
+            project_id: Uuid::new_v4(),
+            environment: "production".into(),
+            ops_repo_id: Some(Uuid::new_v4()),
+            manifest_path: Some("deploy.yaml".into()),
+            image_ref: "registry/app:v1".into(),
+            values_override: Some(serde_json::json!({"replicas": 3})),
+            desired_status: "active".into(),
+            deployed_by: Some(Uuid::new_v4()),
+            project_name: "my-project".into(),
+        };
+
+        assert!(d.ops_repo_id.is_some());
+        assert!(d.manifest_path.is_some());
+        assert!(d.values_override.is_some());
+        assert!(d.deployed_by.is_some());
+    }
+
+    #[test]
+    fn pending_deployment_minimal() {
+        let d = PendingDeployment {
+            id: Uuid::new_v4(),
+            project_id: Uuid::new_v4(),
+            environment: "production".into(),
+            ops_repo_id: None,
+            manifest_path: None,
+            image_ref: "app:latest".into(),
+            values_override: None,
+            desired_status: "active".into(),
+            deployed_by: None,
+            project_name: "app".into(),
+        };
+
+        assert!(d.ops_repo_id.is_none());
+        assert!(d.manifest_path.is_none());
+        assert!(d.values_override.is_none());
+        assert!(d.deployed_by.is_none());
+    }
+
+    #[test]
+    fn basic_manifest_container_name_is_app() {
+        let d = sample_deployment();
+        let manifest = generate_basic_manifest(&d);
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&manifest).unwrap();
+        let container_name = &parsed["spec"]["template"]["spec"]["containers"][0]["name"];
+        assert_eq!(container_name, "app");
+    }
+
+    #[test]
+    fn copy_deployment_preserves_ops_repo_id() {
+        let mut d = sample_deployment();
+        d.ops_repo_id = Some(Uuid::new_v4());
+        d.manifest_path = Some("custom/deploy.yaml".into());
+        d.values_override = Some(serde_json::json!({"key": "value"}));
+        let copy = copy_deployment_fields(&d);
+        assert_eq!(d.ops_repo_id, copy.ops_repo_id);
+        assert_eq!(d.manifest_path, copy.manifest_path);
+        assert_eq!(d.values_override, copy.values_override);
+    }
+
+    #[test]
+    fn basic_manifest_labels_consistent() {
+        let d = sample_deployment();
+        let manifest = generate_basic_manifest(&d);
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&manifest).unwrap();
+
+        // selector.matchLabels.app must equal template.metadata.labels.app
+        let selector = &parsed["spec"]["selector"]["matchLabels"]["app"];
+        let template = &parsed["spec"]["template"]["metadata"]["labels"]["app"];
+        let metadata_name = &parsed["metadata"]["name"];
+        assert_eq!(selector, template);
+        assert_eq!(selector.as_str(), metadata_name.as_str());
+    }
 }

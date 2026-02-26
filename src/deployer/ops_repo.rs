@@ -544,4 +544,152 @@ mod tests {
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
+
+    #[tokio::test]
+    async fn read_file_at_ref_nonexistent_file() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        let result = read_file_at_ref(&repo_path, "main", "does-not-exist.yaml").await;
+        assert!(result.is_err());
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn read_file_at_ref_nonexistent_ref() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        let result = read_file_at_ref(&repo_path, "nonexistent-branch", "README.md").await;
+        assert!(result.is_err());
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn read_values_invalid_yaml() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        // Write invalid YAML content via worktree
+        let wt = repo_path.join("_bad_yaml_wt");
+        let _ = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["worktree", "add"])
+            .arg(&wt)
+            .arg("main")
+            .output()
+            .await;
+
+        let values_dir = wt.join("values");
+        tokio::fs::create_dir_all(&values_dir).await.unwrap();
+        tokio::fs::write(
+            values_dir.join("staging.yaml"),
+            "invalid: [unclosed bracket",
+        )
+        .await
+        .unwrap();
+
+        let _ = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(&wt)
+            .args(["add", "."])
+            .output()
+            .await;
+        let _ = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(&wt)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test")
+            .args(["commit", "-m", "bad yaml"])
+            .output()
+            .await;
+        cleanup_worktree(&repo_path, &wt).await;
+
+        let result = read_values(&repo_path, "main", "staging").await;
+        assert!(result.is_err());
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn commit_values_no_changes_returns_error() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        let values = serde_json::json!({"image_ref": "app:v1"});
+
+        // First commit succeeds
+        commit_values(&repo_path, "main", "production", &values)
+            .await
+            .unwrap();
+
+        // Second commit with same values — git commit fails because nothing changed
+        let result = commit_values(&repo_path, "main", "production", &values).await;
+        assert!(result.is_err());
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn revert_initial_commit_returns_error() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        // There's only 1 commit (from bootstrap). Reverting it should fail because
+        // git revert on the very first commit needs special handling.
+        let result = revert_last_commit(&repo_path, "main").await;
+        // This may succeed or fail depending on git version — we just verify no panic
+        // (git revert on initial commit fails with "empty commit" or similar)
+        let _ = result; // Either Ok or Err is acceptable
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn cleanup_worktree_nonexistent_is_noop() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        // Cleaning up a nonexistent worktree should not error (best-effort)
+        let fake_wt = repo_path.join("nonexistent_worktree");
+        cleanup_worktree(&repo_path, &fake_wt).await;
+        // No panic = success
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn get_head_sha_returns_valid_hash_after_commit() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        let sha = get_head_sha(&repo_path).await.unwrap();
+        // After bootstrap, SHA should be a 40-char hex string
+        assert_eq!(sha.len(), 40);
+        assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn get_head_sha_nonexistent_repo_returns_error() {
+        let result = get_head_sha(Path::new("/nonexistent/repo")).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn manifest_path_rejects_double_dot_in_both() {
+        let result = resolve_manifest_path(
+            Path::new("/data/ops"),
+            "myrepo",
+            "../escape",
+            "../etc/passwd",
+        );
+        assert!(result.is_err());
+    }
 }

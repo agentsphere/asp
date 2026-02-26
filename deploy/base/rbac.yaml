@@ -1,0 +1,67 @@
+# Namespaces for agent pods and pipeline pods
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform-agents
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform-pipelines
+---
+# ServiceAccount for the platform deployment
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform
+  namespace: platform
+---
+# Role: manage pods in platform-agents namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: platform-agent-manager
+  namespace: platform-agents
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/attach", "pods/exec"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-agent-manager
+  namespace: platform-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: platform-agent-manager
+subjects:
+  - kind: ServiceAccount
+    name: platform
+    namespace: platform
+---
+# Role: manage pods in platform-pipelines namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: platform-pipeline-manager
+  namespace: platform-pipelines
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/attach", "pods/exec"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-pipeline-manager
+  namespace: platform-pipelines
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: platform-pipeline-manager
+subjects:
+  - kind: ServiceAccount
+    name: platform
+    namespace: platform

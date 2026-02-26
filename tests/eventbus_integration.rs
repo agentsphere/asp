@@ -270,3 +270,166 @@ async fn image_built_upserts_on_conflict(pool: PgPool) {
 
     assert_eq!(image_ref, "app:v2");
 }
+
+/// ImageBuilt then OpsRepoUpdated sequence → both handlers execute in order.
+#[sqlx::test(migrations = "./migrations")]
+async fn image_built_then_ops_repo_updated(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state.clone());
+    let project_id = helpers::create_project(&app, &admin_token, "eb-seq", "public").await;
+
+    // Step 1: ImageBuilt creates deployment
+    let event1 = serde_json::json!({
+        "type": "ImageBuilt",
+        "project_id": project_id,
+        "environment": "staging",
+        "image_ref": "app:v1",
+        "pipeline_id": Uuid::nil(),
+        "triggered_by": null,
+    });
+    platform::store::eventbus::handle_event(&state, &event1.to_string())
+        .await
+        .unwrap();
+
+    // Step 2: OpsRepoUpdated updates the deployment
+    let event2 = serde_json::json!({
+        "type": "OpsRepoUpdated",
+        "project_id": project_id,
+        "ops_repo_id": Uuid::new_v4(),
+        "environment": "staging",
+        "commit_sha": "def456",
+        "image_ref": "app:v2",
+    });
+    platform::store::eventbus::handle_event(&state, &event2.to_string())
+        .await
+        .unwrap();
+
+    let (image_ref, sha): (String, Option<String>) = sqlx::query_as(
+        "SELECT image_ref, current_sha FROM deployments WHERE project_id = $1 AND environment = 'staging'",
+    )
+    .bind(project_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(image_ref, "app:v2");
+    assert_eq!(sha.as_deref(), Some("def456"));
+}
+
+/// Multiple environments for the same project are independent.
+#[sqlx::test(migrations = "./migrations")]
+async fn different_environments_independent(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state.clone());
+    let project_id = helpers::create_project(&app, &admin_token, "eb-multi-env", "public").await;
+
+    // Deploy to staging
+    let staging = serde_json::json!({
+        "type": "ImageBuilt",
+        "project_id": project_id,
+        "environment": "staging",
+        "image_ref": "app:staging-v1",
+        "pipeline_id": Uuid::nil(),
+        "triggered_by": null,
+    });
+    platform::store::eventbus::handle_event(&state, &staging.to_string())
+        .await
+        .unwrap();
+
+    // Deploy to production
+    let prod = serde_json::json!({
+        "type": "ImageBuilt",
+        "project_id": project_id,
+        "environment": "production",
+        "image_ref": "app:prod-v1",
+        "pipeline_id": Uuid::nil(),
+        "triggered_by": null,
+    });
+    platform::store::eventbus::handle_event(&state, &prod.to_string())
+        .await
+        .unwrap();
+
+    // Verify both exist with different image refs
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM deployments WHERE project_id = $1")
+        .bind(project_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
+
+    let (staging_img,): (String,) = sqlx::query_as(
+        "SELECT image_ref FROM deployments WHERE project_id = $1 AND environment = 'staging'",
+    )
+    .bind(project_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(staging_img, "app:staging-v1");
+
+    let (prod_img,): (String,) = sqlx::query_as(
+        "SELECT image_ref FROM deployments WHERE project_id = $1 AND environment = 'production'",
+    )
+    .bind(project_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(prod_img, "app:prod-v1");
+}
+
+/// Empty JSON object should fail deserialization (missing 'type' field).
+#[sqlx::test(migrations = "./migrations")]
+async fn handle_event_empty_json_object(pool: PgPool) {
+    let (state, _admin_token) = helpers::test_state(pool).await;
+    let result = platform::store::eventbus::handle_event(&state, "{}").await;
+    assert!(result.is_err());
+}
+
+/// JSON with wrong type value should fail.
+#[sqlx::test(migrations = "./migrations")]
+async fn handle_event_wrong_type_value(pool: PgPool) {
+    let (state, _admin_token) = helpers::test_state(pool).await;
+    let json = r#"{"type":"NotAValidEvent","project_id":"00000000-0000-0000-0000-000000000000"}"#;
+    let result = platform::store::eventbus::handle_event(&state, json).await;
+    assert!(result.is_err());
+}
+
+/// DeployRequested with existing deployment → upserts (not duplicates).
+#[sqlx::test(migrations = "./migrations")]
+async fn deploy_requested_upserts_existing(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state.clone());
+    let project_id = helpers::create_project(&app, &admin_token, "eb-dr-ups", "public").await;
+
+    // Insert existing deployment
+    sqlx::query(
+        "INSERT INTO deployments (project_id, environment, image_ref, desired_status, current_status) \
+         VALUES ($1, 'production', 'old:v1', 'active', 'healthy')",
+    )
+    .bind(project_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let event = serde_json::json!({
+        "type": "DeployRequested",
+        "project_id": project_id,
+        "environment": "production",
+        "image_ref": "new:v3",
+        "requested_by": null,
+    });
+
+    platform::store::eventbus::handle_event(&state, &event.to_string())
+        .await
+        .unwrap();
+
+    let (image_ref, status): (String, String) = sqlx::query_as(
+        "SELECT image_ref, current_status FROM deployments WHERE project_id = $1 AND environment = 'production'",
+    )
+    .bind(project_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(image_ref, "new:v3");
+    assert_eq!(status, "pending");
+}

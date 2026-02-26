@@ -1114,4 +1114,185 @@ mod tests {
     fn truncate_prompt_exact_length() {
         assert_eq!(truncate_prompt("exact", 5), "exact");
     }
+
+    #[test]
+    fn truncate_prompt_empty() {
+        assert_eq!(truncate_prompt("", 10), "");
+    }
+
+    #[test]
+    fn truncate_prompt_one_char_over() {
+        assert_eq!(truncate_prompt("abcdef", 5), "abcde...");
+    }
+
+    #[test]
+    fn truncate_prompt_zero_max() {
+        assert_eq!(truncate_prompt("hello", 0), "...");
+    }
+
+    #[test]
+    fn validate_provider_config_unparseable_json_ok() {
+        // Config that doesn't match ProviderConfig struct → parse fails → returns Ok(())
+        let config = serde_json::json!({ "unknown_field_only": 42 });
+        // This should not error — unparseable configs are silently accepted
+        assert!(validate_provider_config(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_provider_config_invalid_role() {
+        let config = serde_json::json!({ "role": "nonexistent-role" });
+        assert!(validate_provider_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_provider_config_valid_roles() {
+        for role in &["dev", "ops", "test", "review", "manager", "ui"] {
+            let config = serde_json::json!({ "role": role });
+            assert!(
+                validate_provider_config(&config).is_ok(),
+                "role '{role}' should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_provider_config_browser_with_manager_role_rejected() {
+        let config = serde_json::json!({
+            "browser": { "allowed_origins": ["http://localhost:3000"] },
+            "role": "manager"
+        });
+        assert!(validate_provider_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_provider_config_browser_with_ops_role_rejected() {
+        let config = serde_json::json!({
+            "browser": { "allowed_origins": ["http://localhost:3000"] },
+            "role": "ops"
+        });
+        assert!(validate_provider_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_provider_config_browser_no_role_defaults_to_dev_rejected() {
+        // When no role is specified, defaults to "dev", which is NOT in [ui, test]
+        let config = serde_json::json!({
+            "browser": { "allowed_origins": ["http://localhost:3000"] }
+        });
+        assert!(validate_provider_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_provider_config_setup_commands_ok() {
+        let config = serde_json::json!({
+            "setup_commands": ["apt-get update", "pip install -r requirements.txt"]
+        });
+        assert!(validate_provider_config(&config).is_ok());
+    }
+
+    #[test]
+    fn session_to_response_no_truncation() {
+        let session = crate::agent::provider::AgentSession {
+            id: uuid::Uuid::new_v4(),
+            project_id: None,
+            user_id: uuid::Uuid::new_v4(),
+            agent_user_id: None,
+            prompt: "Hello world".to_owned(),
+            status: "running".to_owned(),
+            branch: Some("agent/test".to_owned()),
+            pod_name: Some("agent-pod".to_owned()),
+            provider: "claude-code".to_owned(),
+            provider_config: None,
+            cost_tokens: Some(1000),
+            created_at: chrono::Utc::now(),
+            finished_at: None,
+            parent_session_id: None,
+            spawn_depth: 0,
+            allowed_child_roles: None,
+        };
+
+        let response = session_to_response(&session, false);
+        assert_eq!(response.prompt, "Hello world");
+        assert_eq!(response.status, "running");
+        assert!(!response.browser_enabled);
+    }
+
+    #[test]
+    fn session_to_response_with_truncation() {
+        let long_prompt = "a".repeat(300);
+        let session = crate::agent::provider::AgentSession {
+            id: uuid::Uuid::new_v4(),
+            project_id: None,
+            user_id: uuid::Uuid::new_v4(),
+            agent_user_id: None,
+            prompt: long_prompt,
+            status: "completed".to_owned(),
+            branch: None,
+            pod_name: None,
+            provider: "claude-code".to_owned(),
+            provider_config: None,
+            cost_tokens: None,
+            created_at: chrono::Utc::now(),
+            finished_at: Some(chrono::Utc::now()),
+            parent_session_id: None,
+            spawn_depth: 0,
+            allowed_child_roles: None,
+        };
+
+        let response = session_to_response(&session, true);
+        assert!(response.prompt.len() <= 203); // 200 + "..."
+        assert!(response.prompt.ends_with("..."));
+    }
+
+    #[test]
+    fn session_to_response_browser_enabled_from_config() {
+        let session = crate::agent::provider::AgentSession {
+            id: uuid::Uuid::new_v4(),
+            project_id: None,
+            user_id: uuid::Uuid::new_v4(),
+            agent_user_id: None,
+            prompt: "test".to_owned(),
+            status: "running".to_owned(),
+            branch: None,
+            pod_name: None,
+            provider: "claude-code".to_owned(),
+            provider_config: Some(serde_json::json!({
+                "browser": {"allowed_origins": ["http://localhost:3000"]}
+            })),
+            cost_tokens: None,
+            created_at: chrono::Utc::now(),
+            finished_at: None,
+            parent_session_id: None,
+            spawn_depth: 0,
+            allowed_child_roles: None,
+        };
+
+        let response = session_to_response(&session, false);
+        assert!(response.browser_enabled);
+    }
+
+    #[test]
+    fn session_to_response_browser_disabled_without_config() {
+        let session = crate::agent::provider::AgentSession {
+            id: uuid::Uuid::new_v4(),
+            project_id: None,
+            user_id: uuid::Uuid::new_v4(),
+            agent_user_id: None,
+            prompt: "test".to_owned(),
+            status: "running".to_owned(),
+            branch: None,
+            pod_name: None,
+            provider: "claude-code".to_owned(),
+            provider_config: Some(serde_json::json!({"role": "dev"})),
+            cost_tokens: None,
+            created_at: chrono::Utc::now(),
+            finished_at: None,
+            parent_session_id: None,
+            spawn_depth: 0,
+            allowed_child_roles: None,
+        };
+
+        let response = session_to_response(&session, false);
+        assert!(!response.browser_enabled);
+    }
 }

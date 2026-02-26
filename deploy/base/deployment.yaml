@@ -14,7 +14,7 @@ spec:
       labels:
         app: platform
     spec:
-      serviceAccountName: default
+      serviceAccountName: platform
       containers:
         - name: platform
           image: platform:dev
@@ -42,3 +42,9 @@ spec:
               port: http
             initialDelaySeconds: 2
             periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}

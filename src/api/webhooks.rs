@@ -507,3 +507,171 @@ pub(crate) async fn dispatch_single(url: &str, secret: Option<&str>, payload: &s
 }
 
 // SSRF and IP validation tests moved to src/validation.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- validate_webhook_url tests --
+
+    #[test]
+    fn valid_https_url() {
+        assert!(validate_webhook_url("https://example.com/webhook").is_ok());
+    }
+
+    #[test]
+    fn valid_http_url() {
+        assert!(validate_webhook_url("http://example.com/webhook").is_ok());
+    }
+
+    #[test]
+    fn rejects_ftp_scheme() {
+        assert!(validate_webhook_url("ftp://example.com/file").is_err());
+    }
+
+    #[test]
+    fn rejects_file_scheme() {
+        assert!(validate_webhook_url("file:///etc/passwd").is_err());
+    }
+
+    #[test]
+    fn rejects_javascript_scheme() {
+        assert!(validate_webhook_url("javascript:alert(1)").is_err());
+    }
+
+    #[test]
+    fn rejects_localhost() {
+        assert!(validate_webhook_url("http://localhost/webhook").is_err());
+    }
+
+    #[test]
+    fn rejects_metadata_endpoint() {
+        assert!(validate_webhook_url("http://169.254.169.254/latest/meta-data").is_err());
+    }
+
+    #[test]
+    fn rejects_google_metadata() {
+        assert!(
+            validate_webhook_url("http://metadata.google.internal/computeMetadata/v1/").is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_ipv6_loopback() {
+        assert!(validate_webhook_url("http://[::1]/webhook").is_err());
+    }
+
+    #[test]
+    fn rejects_private_ip_10() {
+        assert!(validate_webhook_url("http://10.0.0.1/webhook").is_err());
+    }
+
+    #[test]
+    fn rejects_private_ip_172() {
+        assert!(validate_webhook_url("http://172.16.0.1/webhook").is_err());
+    }
+
+    #[test]
+    fn rejects_private_ip_192() {
+        assert!(validate_webhook_url("http://192.168.1.1/webhook").is_err());
+    }
+
+    #[test]
+    fn rejects_loopback_127() {
+        assert!(validate_webhook_url("http://127.0.0.1/webhook").is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_url() {
+        assert!(validate_webhook_url("not a url").is_err());
+    }
+
+    #[test]
+    fn rejects_empty_url() {
+        assert!(validate_webhook_url("").is_err());
+    }
+
+    #[test]
+    fn allows_public_ip() {
+        assert!(validate_webhook_url("http://8.8.8.8/webhook").is_ok());
+    }
+
+    #[test]
+    fn allows_public_domain() {
+        assert!(validate_webhook_url("https://hooks.slack.com/services/T00000000").is_ok());
+    }
+
+    #[test]
+    fn localhost_case_insensitive() {
+        assert!(validate_webhook_url("http://LOCALHOST/webhook").is_err());
+        assert!(validate_webhook_url("http://Localhost/webhook").is_err());
+    }
+
+    // -- HMAC-SHA256 signing tests --
+
+    #[test]
+    fn hmac_signature_is_deterministic() {
+        let secret = "my-webhook-secret";
+        let payload = r#"{"event":"test"}"#;
+
+        let mut mac1 = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac1.update(payload.as_bytes());
+        let sig1 = hex::encode(mac1.finalize().into_bytes());
+
+        let mut mac2 = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac2.update(payload.as_bytes());
+        let sig2 = hex::encode(mac2.finalize().into_bytes());
+
+        assert_eq!(sig1, sig2);
+        assert!(sig1.starts_with(|c: char| c.is_ascii_hexdigit()));
+        assert_eq!(sig1.len(), 64); // SHA-256 = 32 bytes = 64 hex chars
+    }
+
+    #[test]
+    fn hmac_different_secrets_produce_different_signatures() {
+        let payload = r#"{"event":"test"}"#;
+
+        let mut mac1 = Hmac::<Sha256>::new_from_slice(b"secret-1").unwrap();
+        mac1.update(payload.as_bytes());
+        let sig1 = hex::encode(mac1.finalize().into_bytes());
+
+        let mut mac2 = Hmac::<Sha256>::new_from_slice(b"secret-2").unwrap();
+        mac2.update(payload.as_bytes());
+        let sig2 = hex::encode(mac2.finalize().into_bytes());
+
+        assert_ne!(sig1, sig2);
+    }
+
+    #[test]
+    fn hmac_different_payloads_produce_different_signatures() {
+        let secret = b"my-secret";
+
+        let mut mac1 = Hmac::<Sha256>::new_from_slice(secret).unwrap();
+        mac1.update(b"payload-1");
+        let sig1 = hex::encode(mac1.finalize().into_bytes());
+
+        let mut mac2 = Hmac::<Sha256>::new_from_slice(secret).unwrap();
+        mac2.update(b"payload-2");
+        let sig2 = hex::encode(mac2.finalize().into_bytes());
+
+        assert_ne!(sig1, sig2);
+    }
+
+    // -- webhook_client + semaphore config --
+
+    #[test]
+    fn webhook_semaphore_is_initialized() {
+        // Verify the semaphore is accessible (LazyLock is initialized)
+        // We can't test exact capacity since it's shared across tests,
+        // but we verify it exists and can be used.
+        let permit = WEBHOOK_SEMAPHORE.try_acquire();
+        assert!(permit.is_ok(), "semaphore should have available permits");
+        // Drop permit to release it for other tests
+    }
+
+    #[test]
+    fn webhook_client_is_initialized() {
+        // Verify the client LazyLock initializes without panic
+        let _client = &*WEBHOOK_CLIENT;
+    }
+}
