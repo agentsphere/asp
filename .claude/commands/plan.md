@@ -350,7 +350,7 @@ After completing this skill's primary work, check if any triggers apply:
 
 | Target | When | What |
 |---|---|---|
-| `.claude/skills/plan.md` | Missing step or ambiguous instruction | Add/clarify |
+| `.claude/commands/plan.md` | Missing step or ambiguous instruction | Add/clarify |
 | `CLAUDE.md` | New convention, gotcha, or architecture rule | Add to relevant section |
 | `docs/*.md` | Architecture/testing docs don't match reality | Update affected section |
 | `README.md` | Significant capability change | Update description |

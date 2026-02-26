@@ -361,8 +361,8 @@ After completing this skill's primary work, check if any triggers apply:
 
 | Target | When | What |
 |---|---|---|
-| `.claude/skills/planReview.md` | Missing agent checklist item or ambiguous instruction | Add/clarify |
-| `.claude/skills/plan.md` | Plan skill should have caught something earlier | Add missing check to Phase 5 |
+| `.claude/commands/planReview.md` | Missing agent checklist item or ambiguous instruction | Add/clarify |
+| `.claude/commands/plan.md` | Plan skill should have caught something earlier | Add missing check to Phase 5 |
 | `CLAUDE.md` | New convention, gotcha, or architecture rule | Add to relevant section |
 | `docs/*.md` | Architecture/testing docs don't match reality | Update affected section |
 

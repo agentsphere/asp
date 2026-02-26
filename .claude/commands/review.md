@@ -481,9 +481,9 @@ After completing this skill's primary work, check if any triggers apply:
 
 | Target | When | What |
 |---|---|---|
-| `.claude/skills/review.md` | Missing checklist item or ambiguous instruction | Add/clarify |
-| `.claude/skills/dev.md` | Dev should have caught something before review | Add to Step 7 sanity check |
-| `.claude/skills/finalize.md` | Review file format needs adjustment | Update format spec |
+| `.claude/commands/review.md` | Missing checklist item or ambiguous instruction | Add/clarify |
+| `.claude/commands/dev.md` | Dev should have caught something before review | Add to Step 7 sanity check |
+| `.claude/commands/finalize.md` | Review file format needs adjustment | Update format spec |
 | `CLAUDE.md` | New convention, gotcha, or architecture rule | Add to relevant section |
 | `docs/*.md` | Architecture/testing docs don't match reality | Update affected section |
 

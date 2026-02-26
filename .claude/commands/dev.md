@@ -412,7 +412,6 @@ After the review report is ready, **use the `finalize` skill** to:
 2. Implement accepted fixes
 3. Verify 100% coverage on touched lines
 4. Re-run full test suite
-5. Commit to a feature branch, push, and create a PR
 
 **For trivial changes** (typo fixes, one-liner bug fixes), you may skip the formal review/finalize cycle and commit directly after the quality gate passes. Use judgment — if the change touches auth, permissions, or money, always review.
 
@@ -449,10 +448,10 @@ After completing this skill's primary work, check if any triggers apply:
 
 | Target | When | What |
 |---|---|---|
-| `.claude/skills/dev.md` | Missing step or ambiguous instruction | Add/clarify |
-| `.claude/skills/plan.md` | Plan skill missed something that caused confusion | Add to Phase 5 checklist |
-| `.claude/skills/planReview.md` | Test strategy was incomplete | Add to Agent 4 checklist |
-| `.claude/skills/review.md` | Review should check for something dev discovered | Add to agent checklist |
+| `.claude/commands/dev.md` | Missing step or ambiguous instruction | Add/clarify |
+| `.claude/commands/plan.md` | Plan skill missed something that caused confusion | Add to Phase 5 checklist |
+| `.claude/commands/planReview.md` | Test strategy was incomplete | Add to Agent 4 checklist |
+| `.claude/commands/review.md` | Review should check for something dev discovered | Add to agent checklist |
 | `CLAUDE.md` | New convention, gotcha, or architecture rule | Add to relevant section |
 | `docs/*.md` | Architecture/testing docs don't match reality | Update affected section |
 | `README.md` | Significant capability change | Update description |

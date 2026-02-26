@@ -342,7 +342,7 @@ git add src/api/handler.rs src/validation.rs tests/handler_integration.rs
 - MCP server changes (`mcp/servers/*.js`)
 - Plan file updates (`plans/<name>.md`) — progress checkboxes, deviations
 - Review file (`plans/<name>_review.md`)
-- Skill file updates (`.claude/skills/*.md`) if reflection made changes
+- Skill file updates (`.claude/commands/*.md`) if reflection made changes
 - `CLAUDE.md` / `docs/*.md` updates if reflection made changes
 
 **Must exclude:**
@@ -501,9 +501,9 @@ After completing this skill's primary work, check if any triggers apply:
 
 | Target | When | What |
 |---|---|---|
-| `.claude/skills/finalize.md` | Missing step or ambiguous instruction | Add/clarify |
-| `.claude/skills/review.md` | Review file format needs adjustment | Update Phase 3.5 spec |
-| `.claude/skills/dev.md` | Dev should have caught something before review | Add to Step 7 checklist |
+| `.claude/commands/finalize.md` | Missing step or ambiguous instruction | Add/clarify |
+| `.claude/commands/review.md` | Review file format needs adjustment | Update Phase 3.5 spec |
+| `.claude/commands/dev.md` | Dev should have caught something before review | Add to Step 7 checklist |
 | `CLAUDE.md` | New convention, gotcha, or architecture rule | Add to relevant section |
 | `docs/*.md` | Architecture/testing docs don't match reality | Update affected section |
 

@@ -87,13 +87,6 @@ bash hack/test-in-cluster.sh --filter '*_integration' --threads 8
 
 # Single test file
 bash hack/test-in-cluster.sh --filter 'auth_integration'
-
-# Direct cargo nextest (if you have services running on known ports)
-DATABASE_URL="postgres://platform:dev@127.0.0.1:5432/platform_dev" \
-  VALKEY_URL="redis://127.0.0.1:6379" \
-  MINIO_ENDPOINT="http://127.0.0.1:9000" \
-  SQLX_OFFLINE=true \
-  cargo nextest run --test auth_integration
 ```
 
 ### Key pattern — `#[sqlx::test]`
@@ -449,10 +442,10 @@ The CI workflow runs all three test tiers plus linting and build:
 | `fmt` | `cargo fmt --check` | None |
 | `lint` | `cargo clippy -- -D warnings` | None |
 | `test-unit` | `cargo nextest run --lib` | None |
-| `test-integration` | `cargo nextest run --test '*_integration'` | Postgres, Valkey, MinIO (container sidecars) |
+| `test-integration` | `hack/test-in-cluster.sh --filter '*_integration'` | Kind cluster with ephemeral services |
 | `test-e2e` | `hack/test-in-cluster.sh --type e2e` | Kind cluster with ephemeral services |
 | `deny` | `cargo deny check` | None |
-| `coverage` | Unit + integration coverage → Codecov | Postgres, Valkey, MinIO |
+| `coverage` | Unit + integration coverage → Codecov | Kind cluster with ephemeral services |
 | `build` | `cargo build --release` (amd64 + arm64) | None (depends on all test jobs) |
 
 The build job gates on all test tiers — a failing E2E test blocks the release build.
@@ -510,7 +503,7 @@ Under the hood, `just cov-total` runs `hack/test-in-cluster.sh --type total` whi
 
 ### CI coverage
 
-The `coverage` job in `.github/workflows/ci.yaml` runs after unit tests pass, generates unit and integration lcov reports (with Postgres, Valkey, and MinIO service containers), and uploads them to Codecov with separate flags (`unit`, `integration`). E2E coverage runs locally via `just cov-total`.
+The `coverage` job in `.github/workflows/ci.yaml` runs after unit tests pass, generates unit and integration lcov reports (unit tests run directly, integration coverage uses `hack/test-in-cluster.sh` with ephemeral Kind services), and uploads them to Codecov with separate flags (`unit`, `integration`). E2E coverage runs locally via `just cov-total`.
 
 Codecov configuration is in `codecov.yml`:
 - **Unit coverage**: gated — target is auto-ratcheting, new code (patch) must have 70% coverage

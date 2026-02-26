@@ -2,7 +2,7 @@
 
 ## Context
 
-The unified platform (`plans/unified-platform.md`) replaces 8+ off-the-shelf services with a single Rust binary (~13K LOC Rust + ~2.7K LOC TypeScript). Implementation details from the original Go prototype are preserved in `plans/mgr-reference.md`. This plan defines the development toolchain, workflow, and CI/CD pipeline so that the dev setup is efficient from day one.
+The unified platform (`plans/unified-platform.md`) replaces 8+ off-the-shelf services with a single Rust binary (~13K LOC Rust + ~2.7K LOC TypeScript). This plan defines the development toolchain, workflow, and CI/CD pipeline so that the dev setup is efficient from day one.
 
 The platform lives in its own GitHub repository (open source), not as a subfolder of the infra repo. Development happens on macOS (Apple Silicon). CI runs on GitHub Actions with GitHub Enterprise runners. Container images are pushed to GitHub Container Registry (ghcr.io). Local dev uses a kind cluster for Kubernetes integration — no external cluster dependencies. Single developer + Claude Code.
 
@@ -16,7 +16,6 @@ The platform lives in its own GitHub repository (open source), not as a subfolde
 |---|---|
 | GitHub repository | Created at `github.com/agentsphere/platform` (or org of choice), public, MIT/Apache-2.0 license |
 | `plans/unified-platform.md` | Architectural blueprint — module structure, crate decisions, data model |
-| `plans/mgr-reference.md` | Implementation reference from original Go prototype — pod specs, K8s attach patterns, progress tracker, runner image |
 
 ### Local tooling (one-time install)
 
@@ -95,7 +94,7 @@ platform/                        # repo root
     kind-config.yaml             # kind cluster config
     kind-up.sh                   # create cluster + install deps (Postgres, Valkey)
     kind-down.sh                 # tear down cluster
-    port-forward.sh              # forward Postgres + Valkey to localhost
+    test-in-cluster.sh           # ephemeral test services in Kind + cargo nextest
   deploy/                        # k8s manifests for the platform itself
     base/                        # kustomize base
       kustomization.yaml
@@ -439,19 +438,6 @@ echo "  export KUBECONFIG=${HOME}/.kube/kind-platform"
 #!/usr/bin/env bash
 kind delete cluster --name platform
 rm -f "${HOME}/.kube/kind-platform"
-```
-
-### `hack/port-forward.sh`
-
-Alternative to NodePort if port conflicts occur:
-
-```bash
-#!/usr/bin/env bash
-export KUBECONFIG="${HOME}/.kube/kind-platform"
-kubectl port-forward -n platform svc/platform-db-rw 5432:5432 &
-kubectl port-forward -n platform svc/valkey-external 6379:6379 &
-echo "Port-forwarding active. Ctrl-C to stop."
-wait
 ```
 
 ---
@@ -1010,7 +996,7 @@ When implementation starts, create these files in order:
 12. `hack/kind-config.yaml` — kind cluster definition
 13. `hack/kind-up.sh` — cluster bootstrap script
 14. `hack/kind-down.sh` — cluster teardown
-15. `hack/port-forward.sh` — alternative port forwarding
+15. `hack/test-in-cluster.sh` — ephemeral test services in Kind
 16. `deploy/base/` — kustomize base manifests
 17. `deploy/dev/` — kind overlay
 18. `docker/Dockerfile` — multi-stage with cargo-chef
