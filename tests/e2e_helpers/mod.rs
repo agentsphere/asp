@@ -160,6 +160,8 @@ pub async fn e2e_state(pool: PgPool) -> (AppState, String) {
         webauthn_rp_origin: "http://localhost:8080".into(),
         permission_cache_ttl_secs: 300,
         webauthn_rp_name: "Test Platform".into(),
+        ssh_listen: None,
+        ssh_host_key_path: "/tmp/test_ssh_host_key".into(),
     };
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");

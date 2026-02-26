@@ -34,6 +34,10 @@ pub struct Config {
     pub webauthn_rp_origin: String,
     /// `WebAuthn` Relying Party display name.
     pub webauthn_rp_name: String,
+    /// SSH server listen address (e.g. "0.0.0.0:2222"). `None` disables SSH.
+    pub ssh_listen: Option<String>,
+    /// Path to ED25519 host key (auto-generated if absent).
+    pub ssh_host_key_path: String,
 }
 
 fn parse_cors_origins(s: &str) -> Vec<String> {
@@ -95,6 +99,9 @@ impl Config {
             webauthn_rp_origin: env::var("WEBAUTHN_RP_ORIGIN")
                 .unwrap_or_else(|_| "http://localhost:8080".into()),
             webauthn_rp_name: env::var("WEBAUTHN_RP_NAME").unwrap_or_else(|_| "Platform".into()),
+            ssh_listen: env::var("PLATFORM_SSH_LISTEN").ok(),
+            ssh_host_key_path: env::var("PLATFORM_SSH_HOST_KEY_PATH")
+                .unwrap_or_else(|_| "/data/ssh_host_ed25519_key".into()),
         }
     }
 }
@@ -131,6 +138,8 @@ impl Config {
             webauthn_rp_id: "localhost".into(),
             webauthn_rp_origin: "http://localhost:8080".into(),
             webauthn_rp_name: "Test Platform".into(),
+            ssh_listen: None,
+            ssh_host_key_path: "/tmp/test_ssh_host_key".into(),
         }
     }
 }
@@ -219,6 +228,21 @@ mod tests {
             config.master_key.is_none(),
             "test_default should have no master key"
         );
+    }
+
+    #[test]
+    fn test_default_ssh_listen_none() {
+        let config = Config::test_default();
+        assert!(
+            config.ssh_listen.is_none(),
+            "test_default should have SSH disabled"
+        );
+    }
+
+    #[test]
+    fn test_default_ssh_host_key_path() {
+        let config = Config::test_default();
+        assert_eq!(config.ssh_host_key_path, "/tmp/test_ssh_host_key");
     }
 
     #[test]

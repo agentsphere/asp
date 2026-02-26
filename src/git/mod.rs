@@ -1,8 +1,12 @@
 pub mod browser;
+pub mod gpg_keys;
 pub mod hooks;
 pub mod lfs;
 pub mod repo;
+pub mod signature;
 pub mod smart_http;
+pub mod ssh_keys;
+pub mod ssh_server;
 
 use axum::Router;
 

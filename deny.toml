@@ -6,6 +6,9 @@ ignore = [
     "RUSTSEC-2024-0370",
     # paste is unmaintained — transitive dep from parquet. No alternative yet.
     "RUSTSEC-2024-0436",
+    # rsa timing side-channel (Marvin Attack) — transitive dep from russh/ssh-key.
+    # No safe upgrade available; only relevant for network-facing RSA decryption.
+    "RUSTSEC-2023-0071",
 ]
 
 [licenses]

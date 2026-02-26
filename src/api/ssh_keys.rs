@@ -1,0 +1,250 @@
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::{Json, Router};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use ts_rs::TS;
+
+use crate::audit::{AuditEntry, write_audit};
+use crate::auth::middleware::AuthUser;
+use crate::error::ApiError;
+use crate::git::ssh_keys;
+use crate::rbac::{Permission, resolver};
+use crate::store::AppState;
+use crate::validation;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct AddSshKeyRequest {
+    pub name: String,
+    pub public_key: String,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct SshKeyResponse {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub name: String,
+    pub algorithm: String,
+    pub fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+async fn require_admin(state: &AppState, auth: &AuthUser) -> Result<(), ApiError> {
+    let allowed = resolver::has_permission_scoped(
+        &state.pool,
+        &state.valkey,
+        auth.user_id,
+        None,
+        Permission::AdminUsers,
+        auth.token_scopes.as_deref(),
+    )
+    .await
+    .map_err(ApiError::Internal)?;
+
+    if !allowed {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/users/me/ssh-keys",
+            get(list_ssh_keys).post(add_ssh_key),
+        )
+        .route(
+            "/api/users/me/ssh-keys/{id}",
+            axum::routing::delete(delete_ssh_key),
+        )
+        .route(
+            "/api/admin/users/{user_id}/ssh-keys",
+            get(admin_list_ssh_keys),
+        )
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+/// POST /api/users/me/ssh-keys
+async fn add_ssh_key(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<AddSshKeyRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    validation::check_length("name", &body.name, 1, 255)?;
+    validation::check_length("public_key", &body.public_key, 20, 16384)?;
+
+    crate::auth::rate_limit::check_rate(
+        &state.valkey,
+        "ssh_key_add",
+        &auth.user_id.to_string(),
+        20,
+        300,
+    )
+    .await?;
+
+    let parsed = ssh_keys::parse_ssh_public_key(&body.public_key)?;
+
+    // Enforce max 50 keys per user
+    let count: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) as "count!: i64" FROM user_ssh_keys WHERE user_id = $1"#,
+        auth.user_id,
+    )
+    .fetch_one(&state.pool)
+    .await?;
+
+    if count >= 50 {
+        return Err(ApiError::BadRequest(
+            "maximum of 50 SSH keys per user".into(),
+        ));
+    }
+
+    let id = Uuid::new_v4();
+    let now = Utc::now();
+
+    // Insert — fingerprint UNIQUE constraint will catch duplicates (→ 409 via sqlx error mapping)
+    sqlx::query!(
+        r#"INSERT INTO user_ssh_keys (id, user_id, name, algorithm, fingerprint, public_key_openssh, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+        id,
+        auth.user_id,
+        body.name,
+        parsed.algorithm,
+        parsed.fingerprint,
+        parsed.public_key_openssh,
+        now,
+    )
+    .execute(&state.pool)
+    .await?;
+
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "ssh_key.add",
+            resource: "ssh_key",
+            resource_id: Some(id),
+            project_id: None,
+            detail: Some(serde_json::json!({
+                "name": body.name,
+                "algorithm": parsed.algorithm,
+                "fingerprint": parsed.fingerprint,
+            })),
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
+
+    let resp = SshKeyResponse {
+        id,
+        user_id: auth.user_id,
+        name: body.name,
+        algorithm: parsed.algorithm,
+        fingerprint: parsed.fingerprint,
+        last_used_at: None,
+        created_at: now,
+    };
+
+    Ok((StatusCode::CREATED, Json(resp)))
+}
+
+/// GET /api/users/me/ssh-keys
+async fn list_ssh_keys(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<Vec<SshKeyResponse>>, ApiError> {
+    let keys = sqlx::query_as!(
+        SshKeyResponse,
+        r#"SELECT id, user_id, name, algorithm, fingerprint,
+                  last_used_at, created_at
+           FROM user_ssh_keys
+           WHERE user_id = $1
+           ORDER BY created_at DESC"#,
+        auth.user_id,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(keys))
+}
+
+/// DELETE /api/users/me/ssh-keys/{id}
+async fn delete_ssh_key(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let result = sqlx::query!(
+        "DELETE FROM user_ssh_keys WHERE id = $1 AND user_id = $2 RETURNING fingerprint",
+        id,
+        auth.user_id,
+    )
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let row = result.ok_or_else(|| ApiError::NotFound("ssh key".into()))?;
+
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "ssh_key.delete",
+            resource: "ssh_key",
+            resource_id: Some(id),
+            project_id: None,
+            detail: Some(serde_json::json!({
+                "fingerprint": row.fingerprint,
+            })),
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
+
+    Ok(StatusCode::OK)
+}
+
+/// GET /api/admin/users/{user_id}/ssh-keys
+async fn admin_list_ssh_keys(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<Vec<SshKeyResponse>>, ApiError> {
+    require_admin(&state, &auth).await?;
+
+    let keys = sqlx::query_as!(
+        SshKeyResponse,
+        r#"SELECT id, user_id, name, algorithm, fingerprint,
+                  last_used_at, created_at
+           FROM user_ssh_keys
+           WHERE user_id = $1
+           ORDER BY created_at DESC"#,
+        user_id,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(keys))
+}
