@@ -45,9 +45,10 @@ kubectl wait -n "${NS}" --for=condition=Available deploy/minio --timeout=60s
 # ── Post-deploy: CREATEDB + MinIO buckets ──────────────────────────
 echo "==> Post-deploy setup"
 
-# Grant CREATEDB (required by #[sqlx::test] macro which creates per-test DBs)
+# Verify CREATEDB privilege (required by #[sqlx::test] macro).
+# POSTGRES_USER=platform is the superuser, so it already has CREATEDB.
 kubectl exec -n "${NS}" deploy/postgres -- \
-  psql -U postgres -c "ALTER USER platform CREATEDB;" -q
+  psql -U platform -d platform_dev -c "SELECT 1;" -q
 
 # Create MinIO buckets
 sleep 2
@@ -56,14 +57,36 @@ kubectl exec -n "${NS}" deploy/minio -- sh -c \
    mc mb local/platform --ignore-existing; \
    mc mb local/platform-e2e --ignore-existing'
 
-# ── Claude Code credentials ────────────────────────────────────────
+# ── Git SSH key ────────────────────────────────────────────────────
+if ! kubectl get secret git-ssh-key -n "${NS}" &>/dev/null; then
+  echo ""
+  echo "==> Git SSH key setup"
+  echo "  Path to SSH private key (default: ~/.ssh/id_rsa, empty to skip):"
+  read -r KEY_PATH
+  if [[ -n "${KEY_PATH:-}" || -f "$HOME/.ssh/id_rsa" ]]; then
+    KEY_PATH="${KEY_PATH:-$HOME/.ssh/id_rsa}"
+    kubectl create secret generic git-ssh-key -n "${NS}" \
+      --from-file=id_rsa="${KEY_PATH}" \
+      --from-file=id_rsa.pub="${KEY_PATH}.pub" \
+      --from-file=known_hosts=<(ssh-keyscan github.com 2>/dev/null)
+    echo "  Secret created."
+  else
+    echo "  Skipped (no key found)."
+  fi
+fi
+
+# ── Claude Code credentials (optional — skip if using Max login) ──
 if ! kubectl get secret claude-credentials -n "${NS}" &>/dev/null; then
   echo ""
-  echo "Enter your ANTHROPIC_API_KEY:"
+  echo "  ANTHROPIC_API_KEY (press Enter to skip if using Claude Max login):"
   read -rs API_KEY
-  kubectl create secret generic claude-credentials -n "${NS}" \
-    --from-literal=api-key="${API_KEY}"
-  echo "  Secret created."
+  if [[ -n "${API_KEY}" ]]; then
+    kubectl create secret generic claude-credentials -n "${NS}" \
+      --from-literal=api-key="${API_KEY}"
+    echo "  Secret created."
+  else
+    echo "  Skipped (use 'claude login' inside the pod for Max subscription)."
+  fi
 fi
 
 # ── Wait for dev pod ───────────────────────────────────────────────
@@ -83,4 +106,8 @@ echo "  cd platform"
 echo "  just test-unit        # sanity check (no infra needed)"
 echo "  just test-integration # uses ephemeral K8s namespaces"
 echo "  just ci-full          # full CI gate"
+echo ""
+echo "First-time setup:"
+echo "  claude login           # OAuth login (Max subscription)"
+echo "  ssh -T git@github.com  # verify SSH"
 echo "================================================================"

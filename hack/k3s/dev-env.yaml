@@ -6,7 +6,7 @@
 #
 # Post-deploy (run once per namespace):
 #   NS=platform-dev
-#   kubectl exec -n $NS deploy/postgres -- psql -U postgres -c "ALTER USER platform CREATEDB;"
+#   kubectl exec -n $NS deploy/postgres -- psql -U platform -d platform_dev -c "SELECT 1;"
 #   kubectl exec -n $NS deploy/minio -- sh -c \
 #     'mc alias set local http://localhost:9000 platform devdevdev 2>/dev/null; \
 #      mc mb local/platform --ignore-existing; mc mb local/platform-e2e --ignore-existing'
@@ -304,6 +304,21 @@ spec:
       storage: 100Gi
 
 ---
+# Persists /root: SSH keys, .claude.json (OAuth session), .gitconfig,
+# .bash_history, .claude/ cache.  Survives pod restarts so you don't
+# have to re-login to Claude or re-import SSH keys.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dev-home
+  namespace: platform-dev
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
 apiVersion: v1
 kind: Pod
 metadata:
@@ -353,18 +368,26 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.podIP
-        # Anthropic API key — from secret (created by setup.sh)
+        # Anthropic API key — optional; not needed when using Claude Max
+        # OAuth login (`claude login`).  Set via setup.sh if using API key.
         - name: ANTHROPIC_API_KEY
           valueFrom:
             secretKeyRef:
               name: claude-credentials
               key: api-key
+              optional: true
       volumeMounts:
+        - name: home
+          mountPath: /root
         - name: workspace
           mountPath: /workspace
         - name: e2e-shared
           mountPath: /tmp/platform-e2e
   volumes:
+    # Home directory — SSH keys, Claude session, git config, bash history
+    - name: home
+      persistentVolumeClaim:
+        claimName: dev-home
     # Source code, target/, node_modules — survives pod restarts
     - name: workspace
       persistentVolumeClaim:
