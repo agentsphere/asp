@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && make prefix=/usr/local -j"$(nproc)" NO_TCLTK=1 all \
     && make prefix=/usr/local NO_TCLTK=1 install \
     && cd / && rm -rf /tmp/git* \
-    && apt-get purge -y --auto-remove make gcc autoconf \
+    && apt-get purge -y --auto-remove autoconf \
     && rm -rf /var/lib/apt/lists/*
 
 # kubectl
