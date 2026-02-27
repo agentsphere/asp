@@ -175,6 +175,8 @@ pub async fn e2e_state_with_api_url(
             std::env::var("PLATFORM_API_URL")
                 .unwrap_or_else(|_| "http://platform.platform.svc.cluster.local:8080".into())
         }),
+        ssh_listen: None,
+        ssh_host_key_path: "/tmp/test_ssh_host_key".into(),
     };
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");

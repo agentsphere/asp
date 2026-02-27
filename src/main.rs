@@ -199,6 +199,9 @@ fn spawn_background_tasks(
     ));
     let observe_channels = observe::spawn_background_tasks(state.clone(), shutdown_tx.subscribe());
     tokio::spawn(registry::gc::run(state.clone(), shutdown_tx.subscribe()));
+    if state.config.ssh_listen.is_some() {
+        tokio::spawn(git::ssh_server::run(state.clone(), shutdown_tx.subscribe()));
+    }
     tokio::spawn(run_session_cleanup(pool.clone()));
     (shutdown_tx, observe_channels)
 }

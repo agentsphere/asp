@@ -443,23 +443,16 @@ async fn receive_pack(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Check access for a git operation. Returns the authenticated user (if any).
+/// Check RBAC access for an already-authenticated git user.
 ///
-/// For read operations on public repos, returns `Ok(None)` (no auth needed).
-/// For all other cases, authenticates and checks RBAC.
-async fn check_access(
+/// Enforces token scope (project + workspace), visibility rules, and permission checks.
+/// Returns `Ok(())` if allowed, `Err(NotFound)` if denied (to avoid leaking repo existence).
+pub async fn check_access_for_user(
     state: &AppState,
-    headers: &HeaderMap,
+    git_user: &GitUser,
     project: &ResolvedProject,
     is_read: bool,
-) -> Result<Option<GitUser>, ApiError> {
-    if is_read && project.visibility == "public" {
-        return Ok(None);
-    }
-
-    // Authenticate
-    let git_user = authenticate_basic(headers, &state.pool).await?;
-
+) -> Result<(), ApiError> {
     // Enforce hard project scope from API token
     if let Some(scope_pid) = git_user.scope_project_id
         && scope_pid != project.project_id
@@ -481,9 +474,9 @@ async fn check_access(
         }
     }
 
-    if is_read && project.visibility == "internal" {
-        // Any authenticated user can read internal projects
-        return Ok(Some(git_user));
+    // Public or internal repos: any authenticated user can read
+    if is_read && (project.visibility == "public" || project.visibility == "internal") {
+        return Ok(());
     }
 
     // Check project-scoped permission
@@ -507,6 +500,26 @@ async fn check_access(
         return Err(ApiError::NotFound("repository".into()));
     }
 
+    Ok(())
+}
+
+/// Check access for an HTTP git operation. Returns the authenticated user (if any).
+///
+/// For read operations on public repos, returns `Ok(None)` (no auth needed).
+/// For all other cases, authenticates and delegates to `check_access_for_user`.
+async fn check_access(
+    state: &AppState,
+    headers: &HeaderMap,
+    project: &ResolvedProject,
+    is_read: bool,
+) -> Result<Option<GitUser>, ApiError> {
+    // Public repos: allow unauthenticated reads
+    if is_read && project.visibility == "public" {
+        return Ok(None);
+    }
+
+    let git_user = authenticate_basic(headers, &state.pool).await?;
+    check_access_for_user(state, &git_user, project, is_read).await?;
     Ok(Some(git_user))
 }
 

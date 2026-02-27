@@ -70,6 +70,17 @@ sha2 = "0.10"
 hex = "0.4"
 base64 = "0.22"
 
+# SSH key parsing
+ssh-key = { version = "0.6", features = ["ed25519", "rsa", "ecdsa"] }
+
+# SSH server
+russh = "0.49"
+russh-keys = "0.49"
+async-trait = "0.1"
+
+# GPG key parsing
+pgp = "~0.15"
+
 # WebAuthn (passkeys)
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
 webauthn-rs-proto = "0.5"

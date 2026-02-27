@@ -14,6 +14,7 @@ use ts_rs::TS;
 
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
+use crate::git::signature::{self, SignatureInfo, SignatureStatus};
 use crate::rbac::{Permission, resolver};
 use crate::store::AppState;
 
@@ -61,6 +62,9 @@ pub struct CommitInfo {
     pub committer_name: String,
     pub committer_email: String,
     pub committed_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub signature: Option<SignatureInfo>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +87,8 @@ pub struct CommitsQuery {
     #[serde(rename = "ref", default = "default_ref")]
     pub git_ref: String,
     pub limit: Option<i64>,
+    #[serde(default)]
+    pub verify_signatures: bool,
 }
 
 fn default_ref() -> String {
@@ -99,6 +105,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/projects/{id}/blob", get(blob))
         .route("/api/projects/{id}/branches", get(branches))
         .route("/api/projects/{id}/commits", get(commits))
+        .route("/api/projects/{id}/commits/{sha}", get(commit_detail))
 }
 
 // ---------------------------------------------------------------------------
@@ -182,7 +189,7 @@ async fn check_project_read(
     .map_err(ApiError::Internal)?;
 
     if !allowed {
-        return Err(ApiError::Forbidden);
+        return Err(ApiError::NotFound("project".into()));
     }
     Ok(())
 }
@@ -385,8 +392,288 @@ async fn commits(
         )));
     }
 
-    let commits_list = parse_log(&String::from_utf8_lossy(&output.stdout));
+    let mut commits_list = parse_log(&String::from_utf8_lossy(&output.stdout));
+
+    if query.verify_signatures {
+        let (repo_path_clone, pool_clone, valkey_clone) =
+            (repo_path.clone(), state.pool.clone(), state.valkey.clone());
+        let shas: Vec<String> = commits_list.iter().map(|c| c.sha.clone()).collect();
+        let sigs =
+            verify_commits_batch(&repo_path_clone, &pool_clone, &valkey_clone, id, &shas).await;
+        for (commit, sig) in commits_list.iter_mut().zip(sigs) {
+            commit.signature = Some(sig);
+        }
+    }
+
     Ok(Json(commits_list))
+}
+
+/// `GET /api/projects/:id/commits/:sha`
+///
+/// Single commit detail with signature verification.
+#[tracing::instrument(skip(state), fields(%id, %sha), err)]
+async fn commit_detail(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, sha)): Path<(Uuid, String)>,
+) -> Result<Json<CommitInfo>, ApiError> {
+    check_project_read(&state, &auth, id).await?;
+
+    if !signature::validate_commit_sha(&sha) {
+        return Err(ApiError::BadRequest("invalid commit SHA".into()));
+    }
+
+    let (repo_path, _default_branch) = get_repo_path(&state.pool, &state.config, id).await?;
+
+    // Get the full commit info via git log -1
+    let output = tokio::time::timeout(GIT_TIMEOUT, {
+        tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .arg("log")
+            .arg("-n1")
+            .arg("--format=%H%x00%s%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI")
+            .arg(&sha)
+            .arg("--")
+            .output()
+    })
+    .await
+    .map_err(|_| ApiError::Internal(anyhow::anyhow!("git log timed out after 30s")))?
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to run git log: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("unknown revision")
+            || stderr.contains("bad default revision")
+            || stderr.contains("bad object")
+        {
+            return Err(ApiError::NotFound("commit".into()));
+        }
+        return Err(ApiError::Internal(anyhow::anyhow!(
+            "git log failed: {stderr}"
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut commits_list = parse_log(&stdout);
+    if commits_list.is_empty() {
+        return Err(ApiError::NotFound("commit".into()));
+    }
+
+    let mut commit = commits_list.remove(0);
+
+    // Always verify signature for single commit detail
+    commit.signature =
+        Some(verify_single_commit(&repo_path, &state.pool, &state.valkey, id, &commit.sha).await);
+
+    Ok(Json(commit))
+}
+
+// ---------------------------------------------------------------------------
+// Signature verification
+// ---------------------------------------------------------------------------
+
+/// Verify a single commit's signature.
+async fn verify_single_commit(
+    repo_path: &std::path::Path,
+    pool: &PgPool,
+    valkey: &fred::clients::Pool,
+    project_id: Uuid,
+    sha: &str,
+) -> SignatureInfo {
+    use fred::interfaces::KeysInterface;
+
+    // Check cache first
+    let cache_key = format!("gpg:sig:{project_id}:{sha}");
+    if let Ok(Some(cached_json)) = valkey.get::<Option<String>, _>(&cache_key).await
+        && let Ok(info) = serde_json::from_str::<SignatureInfo>(&cached_json)
+    {
+        return info;
+    }
+
+    let info = do_verify_commit(repo_path, pool, sha).await;
+
+    // Cache the result (5 min TTL — short to limit stale results after key deletion)
+    if let Ok(json) = serde_json::to_string(&info) {
+        let _: Result<(), _> = valkey
+            .set::<(), _, _>(&cache_key, json.as_str(), None, None, false)
+            .await;
+        let _: Result<(), _> = valkey.expire::<(), _>(&cache_key, 300, None).await;
+    }
+
+    info
+}
+
+/// Perform the actual signature verification against the git repo and database.
+async fn do_verify_commit(repo_path: &std::path::Path, pool: &PgPool, sha: &str) -> SignatureInfo {
+    let Some(raw_commit) = git_cat_file_commit(repo_path, sha).await else {
+        return no_signature();
+    };
+
+    let Some(parsed) = signature::parse_commit_gpgsig(&raw_commit) else {
+        return no_signature();
+    };
+
+    let Some(key_id) = signature::extract_signing_key_id(&parsed.signature_armor) else {
+        return bad_signature(None, None);
+    };
+
+    let Some(row) = lookup_gpg_key(pool, &key_id).await else {
+        return bad_signature(Some(key_id), None);
+    };
+
+    verify_against_key(&parsed, &raw_commit, &key_id, row).await
+}
+
+/// Run `git cat-file commit <sha>` and return the raw output.
+async fn git_cat_file_commit(repo_path: &std::path::Path, sha: &str) -> Option<Vec<u8>> {
+    let result = tokio::time::timeout(GIT_TIMEOUT, {
+        tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_path)
+            .arg("cat-file")
+            .arg("commit")
+            .arg(sha)
+            .output()
+    })
+    .await;
+
+    match result {
+        Ok(Ok(out)) if out.status.success() => Some(out.stdout),
+        _ => None,
+    }
+}
+
+/// Look up a GPG key in the database by key ID.
+async fn lookup_gpg_key(pool: &PgPool, key_id: &str) -> Option<GpgKeyRow> {
+    let result = sqlx::query!(
+        r#"SELECT public_key_bytes, fingerprint, emails
+           FROM user_gpg_keys
+           WHERE key_id = $1
+             AND can_sign = true
+             AND (expires_at IS NULL OR expires_at > now())"#,
+        key_id,
+    )
+    .fetch_optional(pool)
+    .await;
+
+    match result {
+        Ok(Some(row)) => Some(GpgKeyRow {
+            public_key_bytes: row.public_key_bytes,
+            fingerprint: row.fingerprint,
+            emails: row.emails,
+        }),
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!(error = %e, key_id = %key_id, "GPG key lookup failed");
+            None
+        }
+    }
+}
+
+struct GpgKeyRow {
+    public_key_bytes: Vec<u8>,
+    fingerprint: String,
+    emails: Vec<String>,
+}
+
+/// Verify the commit signature against a stored GPG key.
+async fn verify_against_key(
+    parsed: &signature::ParsedCommitSignature,
+    raw_commit: &[u8],
+    key_id: &str,
+    row: GpgKeyRow,
+) -> SignatureInfo {
+    use pgp::composed::{Deserializable, SignedPublicKey};
+
+    let Ok(public_key) = SignedPublicKey::from_bytes(std::io::Cursor::new(&row.public_key_bytes))
+    else {
+        return bad_signature(Some(key_id.to_owned()), Some(row.fingerprint));
+    };
+
+    let sig_armor = parsed.signature_armor.clone();
+    let signed_data = parsed.signed_data.clone();
+    let pk = public_key.clone();
+    let valid = tokio::task::spawn_blocking(move || {
+        signature::verify_signature(&sig_armor, &signed_data, &pk)
+    })
+    .await
+    .unwrap_or(false);
+
+    if !valid {
+        return bad_signature(Some(key_id.to_owned()), Some(row.fingerprint));
+    }
+
+    let signer_name = public_key
+        .details
+        .users
+        .first()
+        .map(|u| u.id.id().to_string());
+
+    let author_email = extract_author_email_from_commit(raw_commit);
+    let email_match = author_email
+        .as_ref()
+        .is_some_and(|email| row.emails.iter().any(|ke| ke.eq_ignore_ascii_case(email)));
+
+    let status = if email_match {
+        SignatureStatus::Verified
+    } else {
+        SignatureStatus::UnverifiedSigner
+    };
+
+    SignatureInfo {
+        status,
+        signer_key_id: Some(key_id.to_owned()),
+        signer_fingerprint: Some(row.fingerprint),
+        signer_name,
+    }
+}
+
+fn no_signature() -> SignatureInfo {
+    SignatureInfo {
+        status: SignatureStatus::NoSignature,
+        signer_key_id: None,
+        signer_fingerprint: None,
+        signer_name: None,
+    }
+}
+
+fn bad_signature(key_id: Option<String>, fingerprint: Option<String>) -> SignatureInfo {
+    SignatureInfo {
+        status: SignatureStatus::BadSignature,
+        signer_key_id: key_id,
+        signer_fingerprint: fingerprint,
+        signer_name: None,
+    }
+}
+
+/// Extract the author email from a raw commit object.
+pub fn extract_author_email_from_commit(raw: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(raw);
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("author ")
+            && let Some(start) = rest.find('<')
+            && let Some(end) = rest[start..].find('>')
+        {
+            return Some(rest[start + 1..start + end].to_owned());
+        }
+    }
+    None
+}
+
+/// Verify signatures for a batch of commits in parallel.
+async fn verify_commits_batch(
+    repo_path: &std::path::Path,
+    pool: &PgPool,
+    valkey: &fred::clients::Pool,
+    project_id: Uuid,
+    shas: &[String],
+) -> Vec<SignatureInfo> {
+    let futures: Vec<_> = shas
+        .iter()
+        .map(|sha| verify_single_commit(repo_path, pool, valkey, project_id, sha))
+        .collect();
+    futures_util::future::join_all(futures).await
 }
 
 // ---------------------------------------------------------------------------
@@ -458,6 +745,7 @@ fn parse_log(output: &str) -> Vec<CommitInfo> {
                 committer_name: parts[5].to_owned(),
                 committer_email: parts[6].to_owned(),
                 committed_at: parts[7].to_owned(),
+                signature: None,
             })
         })
         .collect()
@@ -538,10 +826,26 @@ mod tests {
         assert_eq!(commits_list[0].sha, "abc123");
         assert_eq!(commits_list[0].message, "Initial commit");
         assert_eq!(commits_list[0].author_name, "Alice");
+        assert!(commits_list[0].signature.is_none());
     }
 
     #[test]
     fn parse_log_empty() {
         assert!(parse_log("").is_empty());
+    }
+
+    #[test]
+    fn commits_query_verify_signatures_default_false() {
+        let query: CommitsQuery =
+            serde_json::from_value(serde_json::json!({"ref": "main", "limit": 10})).unwrap();
+        assert!(!query.verify_signatures);
+    }
+
+    #[test]
+    fn commits_query_verify_signatures_true() {
+        let query: CommitsQuery =
+            serde_json::from_value(serde_json::json!({"ref": "main", "verify_signatures": true}))
+                .unwrap();
+        assert!(query.verify_signatures);
     }
 }
