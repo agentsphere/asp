@@ -316,6 +316,7 @@ spec:
   containers:
     - name: dev
       image: platform-dev-pod:latest
+      imagePullPolicy: Never
       resources:
         requests:
           cpu: "1"
