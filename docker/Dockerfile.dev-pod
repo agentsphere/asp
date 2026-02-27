@@ -28,7 +28,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && make prefix=/usr/local NO_TCLTK=1 install \
     && cd / && rm -rf /tmp/git* \
     && apt-get purge -y --auto-remove make gcc autoconf \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --global init.defaultBranch main
 
 # kubectl
 RUN curl -fsSL "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
