@@ -110,9 +110,35 @@ The agent's workflow becomes: write code → push to branch → watch pipeline v
 
 ---
 
-## Phase 1: Fix the Broken Core (Week 1)
+## Phase 1: Fix the Broken Core (Week 1) — COMPLETED
 
 **Why**: Agents can't work reliably today. `file://` clone breaks across namespaces, duplicate project names surface raw SQL, no pod security.
+
+### Implementation Status
+
+- **Branch:** `feat/34-ai-devops-phase1`
+- **PR:** #7 (https://github.com/agentsphere/platform/pull/7)
+- **Status:** In Review
+
+- [x] **1A. HTTP git clone for agents + pipelines** — Replaced `file://` with HTTP clone using `GIT_ASKPASS` for both agents and pipelines. Added `platform_api_url` to Config. Removed `repos` hostPath volume from pipeline pods. Added short-lived project-scoped git auth tokens in executor.
+- [x] **1B. Friendly duplicate project error** — Catches 23505 unique constraint for duplicate project names, returns `ApiError::Conflict("A project named 'foo' already exists")` in both API handler and inprocess agent.
+- [x] **1C. Pod SecurityContext** — Added `PodSecurityContext` (runAsNonRoot, runAsUser:1000, fsGroup:1000) and container-level `SecurityContext` (drop ALL caps, no privilege escalation) to all agent containers (including browser sidecar) and pipeline pods.
+
+**Additional fixes discovered during implementation:**
+- Fixed `info_refs` handler passing `git-upload-pack` (from query string) to `git` as a subcommand instead of stripping the `git-` prefix → used `service.strip_prefix("git-")` to fix.
+- Added `WWW-Authenticate: Basic realm="platform"` header to 401 responses (per RFC 7235) so git clients know to use GIT_ASKPASS for authentication.
+- Added token-only auth fallback in `authenticate_basic()` for GIT_ASKPASS scenarios where the token is used as both username and password.
+- Added init container log capture to MinIO for pipeline debugging.
+- Updated E2E pipeline tests to use a real TCP server (`start_pipeline_server`) so Kind pods can reach the platform API.
+
+**Review fixes (finalize):**
+- R1/R2: Branch names passed as `GIT_BRANCH` env var (prevents shell injection)
+- R3: Pipeline git auth tokens scoped to `project_id` (limits blast radius)
+- R6: Browser sidecar SecurityContext hardened
+- R4/R5: Token-only auth integration tests added
+- R10: Tracing for token-only auth fallback path
+
+**Test results:** 897 unit, 658 integration, 49 E2E — all passing.
 
 ### 1A. HTTP git clone for agents
 

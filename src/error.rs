@@ -1,4 +1,4 @@
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 #[derive(Debug, thiserror::Error)]
@@ -67,7 +67,16 @@ impl IntoResponse for ApiError {
             }
         };
 
-        (status, axum::Json(body)).into_response()
+        let mut resp = (status, axum::Json(body)).into_response();
+        if status == StatusCode::UNAUTHORIZED {
+            resp.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                "Basic realm=\"platform\""
+                    .parse()
+                    .expect("valid header value"),
+            );
+        }
+        resp
     }
 }
 
@@ -124,9 +133,13 @@ mod tests {
     }
 
     #[test]
-    fn unauthorized_returns_401() {
+    fn unauthorized_returns_401_with_www_authenticate() {
         let resp = ApiError::Unauthorized.into_response();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            resp.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+            "Basic realm=\"platform\""
+        );
     }
 
     #[test]

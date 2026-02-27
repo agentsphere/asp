@@ -510,7 +510,13 @@ async fn execute_create_project(
     .bind(&repo_path_str)
     .bind(workspace_id)
     .execute(&state.pool)
-    .await?;
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db_err) if db_err.code().as_deref() == Some("23505") => {
+            anyhow::anyhow!("a project named '{name}' already exists")
+        }
+        _ => e.into(),
+    })?;
 
     // Link session to project
     sqlx::query("UPDATE agent_sessions SET project_id = $2 WHERE id = $1")

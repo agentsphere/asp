@@ -168,6 +168,71 @@ async fn authenticate_basic_nonexistent_user(pool: PgPool) {
 }
 
 // ---------------------------------------------------------------------------
+// Tests: Token-only auth (GIT_ASKPASS pattern)
+// ---------------------------------------------------------------------------
+
+/// Token-only auth: using the raw API token as both username and password
+/// succeeds when the user is active and the token is valid. This is the
+/// GIT_ASKPASS pattern where the token is echoed as the password.
+#[sqlx::test(migrations = "./migrations")]
+async fn authenticate_token_only_auth_succeeds(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = git_test_router(state);
+
+    create_project(&app, &admin_token, "tok-auth-proj", "internal").await;
+
+    // Create an API token for the admin user
+    let api_token = create_api_token(&app, &admin_token).await;
+
+    // Use the raw token as both username and password (GIT_ASKPASS pattern)
+    let auth = basic_auth(&api_token, &api_token);
+    let (status, _, _) = git_get(
+        &app,
+        "/admin/tok-auth-proj/info/refs?service=git-upload-pack",
+        Some(&auth),
+    )
+    .await;
+
+    // Should succeed — the token-only fallback finds the token and resolves the user
+    assert_eq!(status, StatusCode::OK, "token-only auth should succeed");
+}
+
+/// Token-only auth with an inactive user returns 401.
+#[sqlx::test(migrations = "./migrations")]
+async fn authenticate_token_only_inactive_user_returns_401(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = git_test_router(state);
+
+    let (user_id, session_token) =
+        create_user(&app, &admin_token, "tok-inact", "tokinact@test.com").await;
+    let api_token = create_api_token(&app, &session_token).await;
+
+    create_project(&app, &admin_token, "tok-inact-proj", "internal").await;
+
+    // Deactivate user
+    sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Use the raw token as both username and password
+    let auth = basic_auth(&api_token, &api_token);
+    let (status, _, _) = git_get(
+        &app,
+        "/admin/tok-inact-proj/info/refs?service=git-upload-pack",
+        Some(&auth),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "token-only auth with inactive user should return 401"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Tests: Project resolution
 // ---------------------------------------------------------------------------
 

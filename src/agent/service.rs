@@ -104,15 +104,15 @@ pub async fn create_session(
     .await?;
 
     // 3. Get repo clone URL and agent image for the project
+    let platform_api_url = &state.config.platform_api_url;
     let (repo_clone_url, project_agent_image) =
-        get_project_repo_info(&state.pool, project_id).await?;
+        get_project_repo_info(&state.pool, project_id, platform_api_url).await?;
 
     // 4. Look up user's provider key (if set)
     let user_api_key = resolve_user_api_key(state, user_id).await;
 
     // 5. Build and create the K8s pod
     let namespace = &state.config.agent_namespace;
-    let platform_api_url = format!("http://platform.{namespace}.svc.cluster.local:8080");
 
     let session_for_pod = AgentSession {
         id: session_id,
@@ -137,7 +137,7 @@ pub async fn create_session(
         session: &session_for_pod,
         config: &config,
         agent_api_token: &agent_identity.api_token,
-        platform_api_url: &platform_api_url,
+        platform_api_url,
         repo_clone_url: &repo_clone_url,
         namespace,
         project_agent_image: project_agent_image.as_deref(),
@@ -416,23 +416,35 @@ async fn reap_terminated_sessions(state: &AppState) -> Result<(), AgentError> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Look up a project's repo clone URL and optional custom agent image.
+/// Look up a project's HTTP clone URL and optional custom agent image.
+///
+/// Returns an HTTP URL in the format `{platform_api_url}/{owner}/{project}.git`
+/// so that agent and pipeline pods can clone via the platform's smart HTTP git
+/// server using a scoped API token.
 async fn get_project_repo_info(
     pool: &PgPool,
     project_id: Uuid,
+    platform_api_url: &str,
 ) -> Result<(String, Option<String>), AgentError> {
     let project = sqlx::query!(
-        "SELECT repo_path, agent_image FROM projects WHERE id = $1 AND is_active = true",
+        r#"SELECT p.name as "name!: String",
+                  u.name as "owner_name!: String",
+                  p.agent_image
+           FROM projects p
+           JOIN users u ON u.id = p.owner_id
+           WHERE p.id = $1 AND p.is_active = true"#,
         project_id,
     )
     .fetch_optional(pool)
     .await?
     .ok_or_else(|| AgentError::Other(anyhow::anyhow!("project not found")))?;
 
-    let repo_path = project
-        .repo_path
-        .ok_or_else(|| AgentError::Other(anyhow::anyhow!("project has no repo path")))?;
-    let repo_clone_url = format!("file://{repo_path}");
+    let repo_clone_url = format!(
+        "{}/{}/{}.git",
+        platform_api_url.trim_end_matches('/'),
+        project.owner_name,
+        project.name
+    );
     Ok((repo_clone_url, project.agent_image))
 }
 
