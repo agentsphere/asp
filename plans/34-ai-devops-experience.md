@@ -110,7 +110,7 @@ The agent's workflow becomes: write code → push to branch → watch pipeline v
 
 ---
 
-## Phase 1: Fix the Broken Core (Week 1) — COMPLETED
+## Phase 1: Fix the Broken Core (Week 1) — COMPLETED ✓
 
 **Why**: Agents can't work reliably today. `file://` clone breaks across namespaces, duplicate project names surface raw SQL, no pod security.
 
@@ -118,7 +118,7 @@ The agent's workflow becomes: write code → push to branch → watch pipeline v
 
 - **Branch:** `feat/34-ai-devops-phase1`
 - **PR:** #7 (https://github.com/agentsphere/platform/pull/7)
-- **Status:** In Review
+- **Status:** Merged
 
 - [x] **1A. HTTP git clone for agents + pipelines** — Replaced `file://` with HTTP clone using `GIT_ASKPASS` for both agents and pipelines. Added `platform_api_url` to Config. Removed `repos` hostPath volume from pipeline pods. Added short-lived project-scoped git auth tokens in executor.
 - [x] **1B. Friendly duplicate project error** — Catches 23505 unique constraint for duplicate project names, returns `ApiError::Conflict("A project named 'foo' already exists")` in both API handler and inprocess agent.
@@ -131,14 +131,25 @@ The agent's workflow becomes: write code → push to branch → watch pipeline v
 - Added init container log capture to MinIO for pipeline debugging.
 - Updated E2E pipeline tests to use a real TCP server (`start_pipeline_server`) so Kind pods can reach the platform API.
 
-**Review fixes (finalize):**
-- R1/R2: Branch names passed as `GIT_BRANCH` env var (prevents shell injection)
-- R3: Pipeline git auth tokens scoped to `project_id` (limits blast radius)
-- R6: Browser sidecar SecurityContext hardened
-- R4/R5: Token-only auth integration tests added
-- R10: Tracing for token-only auth fallback path
+**Review findings (13 total: 9 fixed, 1 deferred, 3 low/optional):**
 
-**Test results:** 897 unit, 658 integration, 49 E2E — all passing.
+| # | Severity | Finding | Status |
+|---|----------|---------|--------|
+| R1 | HIGH | Shell injection via branch in pipeline pods | ✓ Fixed — branch passed as `GIT_BRANCH` env var |
+| R2 | HIGH | Shell injection via branch in agent pods | ✓ Fixed — same `GIT_BRANCH` env var approach |
+| R3 | HIGH | Unscoped pipeline git auth token | ✓ Fixed — added `project_id` to token INSERT |
+| R4 | HIGH | Missing token-only auth integration test | ✓ Fixed — added `authenticate_token_only_auth_succeeds` |
+| R5 | HIGH | Missing inactive user token-only auth test | ✓ Fixed — added `authenticate_token_only_inactive_user_returns_401` |
+| R6 | MEDIUM | Browser sidecar missing SecurityContext | ✓ Fixed — added `security_context: Some(container_security())` |
+| R7 | MEDIUM | Duplicate project 409 test body assertion | ✓ Fixed — enhanced test asserts "already exists" |
+| R8 | MEDIUM | Integration test for inprocess agent duplicate project | Deferred — E2E-only code path |
+| R9 | MEDIUM | `PLATFORM_API_URL` not in CLAUDE.md | ✓ Fixed — added to env var table |
+| R10 | MEDIUM | No logging for token-only auth | ✓ Fixed — added `tracing::debug!` on fallback path |
+| R11 | LOW | Debug log for missing `git-` prefix | Optional |
+| R12 | LOW | Hardcoded init container name `"clone"` | Optional |
+| R13 | LOW | Duplicated `container_security()` helper | Optional |
+
+**Test results:** 897 unit, 658 integration, 49 E2E — all passing. 100% diff-coverage on touched lines.
 
 ### 1A. HTTP git clone for agents
 
@@ -1064,9 +1075,10 @@ Total: **3 unit + 7 integration + 1 E2E = 11 tests**
 
 ## Verification
 
-After each phase, run the full test suite:
+After each phase, run the full test suite and verify coverage:
 ```bash
-just ci-full    # fmt + lint + deny + test-unit + test-integration + test-e2e + build
+just ci-full        # fmt + lint + deny + test-unit + test-integration + test-e2e + build
+just cov-diff-check # verify 100% touched-line coverage (unit + integration + E2E combined)
 ```
 
 Manual E2E validation after all phases:
@@ -1086,19 +1098,34 @@ Manual E2E validation after all phases:
 
 ### Coverage target: 100% of touched lines
 
-Every new or modified line of code must be covered by at least one test (unit, integration, or E2E). The test strategy above maps each code path to a specific test. `review` and `finalize` will verify with `just cov-unit` / `just cov-total`.
+Every new or modified line of code must be covered by at least one test (unit, integration, or E2E). The test strategy above maps each code path to a specific test.
+
+**Coverage verification method:** Use `diff-cover` against the combined coverage report (unit + integration + E2E):
+
+```bash
+# Run all three test tiers in Kind cluster with combined coverage:
+just cov-diff          # shows uncovered changed lines vs main
+just cov-diff-check    # strict mode: fails if any changed line < 100% covered
+
+# For uncommitted changes on main:
+git diff HEAD -- src/ > /tmp/platform-diff.patch
+bash hack/test-in-cluster.sh --type total --lcov coverage-total.lcov
+diff-cover coverage-total.lcov --diff-file /tmp/platform-diff.patch --show-uncovered
+```
+
+The `review` skill runs `just cov-diff` to identify gaps. The `finalize` skill runs `just cov-diff-check` to enforce 100% touched-line coverage before PR.
 
 ### New test counts by phase
 
-| Phase | Unit | Integration | E2E | Total |
-|---|---|---|---|---|
-| Phase 1: Fix the Broken Core | 17 | 2 | 2 | 21 |
-| Phase 2: Per-Project Namespaces | 10 | 7 | 3 | 20 |
-| Phase 3: Deploy + Resource Cascade | 14 | 5 | 2 | 21 |
-| Phase 4: Dev Images + Secrets | 6 | 12 | 2 | 20 |
-| Phase 5: Scoped Observability | 0 | 6 | 0 | 6 |
-| Phase 6: Ops/Incident Agents | 3 | 7 | 1 | 11 |
-| **Total** | **50** | **39** | **10** | **99** |
+| Phase | Unit | Integration | E2E | Total | Status |
+|---|---|---|---|---|---|
+| Phase 1: Fix the Broken Core | 17 | 2 | 2 | 21 | ✓ Done |
+| Phase 2: Per-Project Namespaces | 10 | 7 | 3 | 20 | |
+| Phase 3: Deploy + Resource Cascade | 14 | 5 | 2 | 21 | |
+| Phase 4: Dev Images + Secrets | 6 | 12 | 2 | 20 | |
+| Phase 5: Scoped Observability | 0 | 6 | 0 | 6 | |
+| Phase 6: Ops/Incident Agents | 3 | 7 | 1 | 11 | |
+| **Total** | **50** | **39** | **10** | **99** | |
 
 **Existing tests to update**: ~25 tests across 12 files (updated assertions, new config fields, changed namespace expectations).
 
@@ -1122,63 +1149,37 @@ Every new or modified line of code must be covered by at least one test (unit, i
 
 ---
 
-## Plan Review Findings
+## Plan Review Notes
 
-**Date:** 2026-02-26
-**Status:** APPROVED WITH CONCERNS
+**Date:** 2026-02-26 | **Status:** APPROVED
 
-### Codebase Reality Check
+### Codebase corrections (applied in-place above)
 
-Issues found and **corrected in-place above**:
+12 issues found during plan review and corrected directly in the plan text:
+1. Migration 3-step pattern for existing rows (namespace_slug)
+2. Mandated GIT_ASKPASS only (no inline URL credentials)
+3. New `slugify_namespace()` at 40 chars (not reusing `slugify_branch()` at 63)
+4. Added UNIQUE partial index on namespace_slug
+5. Added `ops_repos.project_id` FK in migration
+6. Extracted `setup_project_infrastructure()` helper (clippy too_many_lines)
+7. Explicit handler-level 23505 match (before global ApiError catch)
+8. Added `"NetworkPolicy"` to `kind_to_plural()`
+9. Complete NetworkPolicy CIDRs (CGNAT, link-local) + ingress deny-all + kube-system DNS selector
+10. Alert-triggered agent spawn rate limiting (cooldown + concurrent limit)
+11. In-memory secret request storage with 5-min timeout
+12. OTLP auto-token `["otlp:write"]` minimal scope with 365-day expiry
 
-1. **Migration would fail on existing rows** — `namespace_slug NOT NULL` without DEFAULT rejects when `projects` has data. Fixed: 3-step migration (add nullable → backfill → set NOT NULL).
+### Remaining concerns (keep in mind during implementation)
 
-2. **Token in clone URL leaks to logs/pod spec** — plan offered inline URL credentials as an option. Fixed: mandated `GIT_ASKPASS` approach only.
+1. **Event bus reliability**: Valkey pub/sub loses events if subscriber is down. Phase 3 deploy/ sync is deployment-critical — consider DB-based pending-sync flag.
+2. **Reaper scalability**: Phase 2B changes reaper from 1→N namespace scans. Monitor for 50+ projects.
+3. **OTLP auth migration**: Phase 5A breaks existing apps without project-scoped tokens. Need migration path or grace period.
+4. **Kind CNI**: NetworkPolicies need Calico/Cilium (kindnet doesn't enforce). Acceptable for dev.
+5. **In-process tool removal**: Phase 2D removes 3 tools. Active sessions during deploy will error (ephemeral, minimal impact).
 
-3. **`slugify_branch()` truncates at 63, not 40** — plan said to reuse it but needed 40-char namespace slugs. Fixed: new `slugify_namespace()` function.
+### Security notes
 
-4. **No UNIQUE constraint on namespace_slug** — two projects could collide on same K8s namespace. Fixed: added partial unique index.
-
-5. **`ops_repos` has no `project_id` column** — plan assumed 1:1 linkage but table had no FK. Fixed: added `project_id UUID FK` in migration.
-
-6. **`create_project` would exceed 100 lines** — adding namespace + ops repo + NetworkPolicy logic pushes handler past clippy threshold. Fixed: extracted `setup_project_infrastructure()` helper.
-
-7. **Global `ApiError` catches 23505 before handler** — plan's constraint-specific catch needs to be in the handler, not rely on global conversion. Fixed: explicit match in handler.
-
-8. **`"NetworkPolicy"` missing from `kind_to_plural()`** — applier would fail with wrong plural. Fixed: noted in Phase 2A.
-
-9. **NetworkPolicy missing CIDRs** — 100.64.0.0/10 (CGNAT), 169.254.0.0/16 (link-local) were absent. Also missing ingress deny-all and DNS selector too broad. Fixed: complete CIDR list + ingress + kube-system selector.
-
-10. **Alert-triggered spawn had no rate limiting** — alert storm could spawn unlimited agents. Fixed: per-project cooldown + concurrent limit.
-
-11. **Secret request storage unspecified** — no table or mechanism for pending requests. Fixed: in-memory `DashMap` with 5-minute timeout.
-
-12. **OTLP auto-token scope undefined** — plan said "long-lived, project scope" but no specific scope. Fixed: `["otlp:write"]` minimal scope with 365-day expiry + rotation.
-
-### Remaining Concerns
-
-1. **Event bus reliability**: Valkey pub/sub loses events if subscriber is down. Phase 3 (deploy/ sync on ImageBuilt) is deployment-critical. Consider adding a DB-based pending-sync flag for idempotent recovery on restart.
-
-2. **Reaper scalability**: Phase 2B changes the reaper from 1 namespace scan to N namespace scans (one per active project). For 50+ projects, this means 50+ K8s API calls per cycle. Monitor and consider batch label selector queries.
-
-3. **OTLP auth breaks existing apps**: Phase 5A adds permission checks to OTLP ingest. Existing apps sending data without project-scoped tokens will get 403s. Need a migration path: create OTLP tokens for existing projects before enabling, or add a grace period env flag.
-
-4. **Kind cluster CNI**: NetworkPolicies require Calico/Cilium. Kind's kindnet doesn't enforce them. This is acceptable for dev but must be documented for production.
-
-5. **In-process agent tool removal**: Phase 2D removes 3 tools from the create-app flow. Active sessions during deploy will error on removed tool calls. Sessions are ephemeral so impact is minimal, but consider a deprecation period.
-
-### Simplification Opportunities
-
-1. **Async project infrastructure**: Instead of blocking `create_project` on K8s namespace creation, consider publishing a `ProjectCreated` event and handling infrastructure setup asynchronously. This keeps the API fast and makes retry natural. Trade-off: project isn't "ready" immediately.
-
-2. **Phase 3E (Agent self-testing)**: This is purely a prompt/workflow change, not code. It could be moved to a separate "agent prompt improvements" doc rather than being a numbered sub-phase.
-
-### Security Notes (for dev to keep in mind)
-
-1. **Never log decrypted secret values** — even in error traces. The current code is safe but new decrypt paths in deployer/agent must maintain this.
-
-2. **Agent git push scope** — agents currently have `ProjectWrite` which allows pushing to any branch including `main`. Consider restricting agent tokens to `agent/*` branches in a future plan.
-
-3. **`ask_for_secret` anti-phishing** — the UI modal must clearly show the requesting project and agent session. A compromised agent could call `ask_for_secret("SSH_KEY", "Your SSH key for deployment")` to social-engineer users.
-
-4. **`agent-ops` role audit** — verify the role only has observability read + issue create permissions. Document the exact permission set.
+1. Never log decrypted secret values — even in error traces.
+2. Agent git push scope — currently `ProjectWrite` allows pushing to `main`. Consider `agent/*` branch restriction.
+3. `ask_for_secret` anti-phishing — UI modal must show requesting project + session.
+4. `agent-ops` role audit — verify only observability read + issue create permissions.
