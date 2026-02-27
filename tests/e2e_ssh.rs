@@ -35,7 +35,7 @@ fn generate_test_ssh_key(dir: &Path) -> std::path::PathBuf {
 /// Build the `GIT_SSH_COMMAND` string for connecting to our test SSH server.
 fn git_ssh_command(key_path: &Path, port: u16) -> String {
     format!(
-        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {} -p {}",
+        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i {} -p {}",
         key_path.display(),
         port
     )
@@ -153,8 +153,17 @@ async fn setup_ssh_e2e(
         }
     });
 
-    // Small delay to let the server start accepting
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Wait for the SSH server to start accepting connections.
+    // Probe with a TCP connect to ensure the server is ready.
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if tokio::net::TcpStream::connect(format!("127.0.0.1:{ssh_port}"))
+            .await
+            .is_ok()
+        {
+            break;
+        }
+    }
 
     let dirs = vec![key_dir, host_key_dir];
     (
