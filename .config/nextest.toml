@@ -7,3 +7,5 @@ slow-timeout = { period = "120s", terminate-after = 2 }
 [profile.ci]
 retries = 1
 failure-output = "immediate"
+# Longer timeout for E2E tests (SSH operations take 60-70s)
+slow-timeout = { period = "180s", terminate-after = 2 }

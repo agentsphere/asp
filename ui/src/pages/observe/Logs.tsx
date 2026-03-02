@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
 import { api, qs, type ListResponse } from '../../lib/api';
-import type { LogEntry } from '../../lib/types';
+import type { LogEntry, Project } from '../../lib/types';
 import { FilterBar, type FilterDef } from '../../components/FilterBar';
 import { Pagination } from '../../components/Pagination';
 import { createWs, type ReconnectingWebSocket } from '../../lib/ws';
@@ -21,13 +21,6 @@ const LEVELS = [
   { value: 'trace', label: 'Trace' },
 ];
 
-const FILTERS: FilterDef[] = [
-  { key: 'time_range', label: 'Time range', type: 'select', options: TIME_RANGES },
-  { key: 'level', label: 'Level', type: 'select', options: LEVELS },
-  { key: 'service', label: 'Service', type: 'text', placeholder: 'All services' },
-  { key: 'query', label: 'Search', type: 'text', placeholder: 'Full-text search...' },
-];
-
 const LEVEL_CLASSES: Record<string, string> = {
   error: 'log-level-error',
   warn: 'log-level-warn',
@@ -40,15 +33,36 @@ export function Logs() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
-  const [filters, setFilters] = useState<Record<string, string>>({ time_range: '1h', level: '' });
+  const [filters, setFilters] = useState<Record<string, string>>({ time_range: '1h', level: '', project_id: '' });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [liveTail, setLiveTail] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [projects, setProjects] = useState<{ value: string; label: string }[]>([{ value: '', label: 'All projects' }]);
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
+
+  // Load projects for filter dropdown
+  useEffect(() => {
+    api.get<ListResponse<Project>>('/api/projects?limit=100')
+      .then(r => {
+        const opts = [{ value: '', label: 'All projects' }];
+        for (const p of r.items) opts.push({ value: p.id, label: p.display_name || p.name });
+        setProjects(opts);
+      })
+      .catch(() => {});
+  }, []);
+
+  const filterDefs: FilterDef[] = [
+    { key: 'project_id', label: 'Project', type: 'select', options: projects },
+    { key: 'time_range', label: 'Time range', type: 'select', options: TIME_RANGES },
+    { key: 'level', label: 'Level', type: 'select', options: LEVELS },
+    { key: 'service', label: 'Service', type: 'text', placeholder: 'All services' },
+    { key: 'query', label: 'Search', type: 'text', placeholder: 'Full-text search...' },
+  ];
 
   const load = () => {
     setLoading(true);
     const params: Record<string, string | number> = { limit: 50, offset };
+    if (filters.project_id) params.project_id = filters.project_id;
     if (filters.time_range) params.time_range = filters.time_range;
     if (filters.level) params.level = filters.level;
     if (filters.service) params.service = filters.service;
@@ -95,7 +109,7 @@ export function Logs() {
   return (
     <div>
       <h2 class="mb-md">Log Search</h2>
-      <FilterBar filters={FILTERS} values={filters} onChange={setFilters} onApply={() => { setOffset(0); load(); }} />
+      <FilterBar filters={filterDefs} values={filters} onChange={setFilters} onApply={() => { setOffset(0); load(); }} />
       <div class="flex gap-sm mb-md" style="align-items:center">
         <label class="flex gap-sm" style="align-items:center;cursor:pointer">
           <input type="checkbox" checked={liveTail}

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'preact/hooks';
-import { api, type ListResponse } from '../lib/api';
+import { api } from '../lib/api';
 import type { PipelineDetail as PipelineDetailType, PipelineStep, Artifact } from '../lib/types';
 import { timeAgo, duration } from '../lib/format';
 import { Badge } from '../components/Badge';
@@ -16,8 +16,8 @@ export function PipelineDetail({ id: projectId, pipelineId }: Props) {
     if (!projectId || !pipelineId) return;
     api.get<PipelineDetailType>(`/api/projects/${projectId}/pipelines/${pipelineId}`)
       .then(setPipeline).catch(() => {});
-    api.get<ListResponse<Artifact>>(`/api/projects/${projectId}/pipelines/${pipelineId}/artifacts`)
-      .then(r => setArtifacts(r.items)).catch(() => {});
+    api.get<Artifact[]>(`/api/projects/${projectId}/pipelines/${pipelineId}/artifacts`)
+      .then(setArtifacts).catch(() => {});
   }, [projectId, pipelineId]);
 
   const viewLogs = async (step: PipelineStep) => {
@@ -76,7 +76,7 @@ export function PipelineDetail({ id: projectId, pipelineId }: Props) {
         <table class="table">
           <thead><tr><th>#</th><th>Name</th><th>Image</th><th>Status</th><th>Duration</th><th></th></tr></thead>
           <tbody>
-            {pipeline.steps.map(s => (
+            {(pipeline.steps || []).map(s => (
               <tr key={s.id}>
                 <td class="text-muted">{s.step_order}</td>
                 <td>{s.name}</td>

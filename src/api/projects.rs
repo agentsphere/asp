@@ -225,12 +225,14 @@ pub async fn setup_project_infrastructure(
 
     // 3. Apply NetworkPolicy to -dev namespace (agents only run in -dev; -prod
     //    NetworkPolicy is intentionally omitted — deployer pods use their own RBAC).
-    if let Err(e) = crate::deployer::namespace::ensure_network_policy(
-        &state.kube,
-        namespace_slug,
-        &state.config.platform_namespace,
-    )
-    .await
+    //    Skip in dev mode — pods need unrestricted egress to reach the platform on the host.
+    if !state.config.dev_mode
+        && let Err(e) = crate::deployer::namespace::ensure_network_policy(
+            &state.kube,
+            namespace_slug,
+            &state.config.platform_namespace,
+        )
+        .await
     {
         tracing::warn!(error = %e, "failed to apply network policy (will retry)");
     }

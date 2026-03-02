@@ -681,9 +681,9 @@ fn build_pod_spec(p: &PodSpecParams<'_>) -> Pod {
         },
         spec: Some(PodSpec {
             restart_policy: Some("Never".into()),
+            // Note: no run_as_non_root/run_as_user — kaniko needs root to
+            // build container images.  fs_group ensures shared volume perms.
             security_context: Some(PodSecurityContext {
-                run_as_non_root: Some(true),
-                run_as_user: Some(1000),
                 fs_group: Some(1000),
                 ..Default::default()
             }),
@@ -718,7 +718,9 @@ fn build_pod_spec(p: &PodSpecParams<'_>) -> Pod {
                 working_dir: Some("/workspace".into()),
                 env: Some(p.env_vars.to_vec()),
                 volume_mounts: Some(step_mounts),
-                security_context: Some(container_security()),
+                // No restrictive security context on step containers — kaniko
+                // and other build tools need root + capabilities (CHOWN, etc.)
+                // to unpack base image layers and build containers.
                 resources: Some(k8s_openapi::api::core::v1::ResourceRequirements {
                     limits: Some(BTreeMap::from([
                         ("cpu".into(), Quantity("1".into())),
@@ -2188,13 +2190,16 @@ mod tests {
 
         let spec = pod.spec.unwrap();
         let psc = spec.security_context.unwrap();
-        assert_eq!(psc.run_as_non_root, Some(true));
-        assert_eq!(psc.run_as_user, Some(1000));
+        // No run_as_non_root/run_as_user — kaniko needs root to build images
+        assert_eq!(psc.run_as_non_root, None);
+        assert_eq!(psc.run_as_user, None);
         assert_eq!(psc.fs_group, Some(1000));
     }
 
     #[test]
-    fn pipeline_step_container_drops_all_capabilities() {
+    fn pipeline_step_container_has_no_security_context() {
+        // Step containers (e.g. kaniko) need root + capabilities to build
+        // images, so no restrictive security context is applied.
         let pod = build_pod_spec(&PodSpecParams {
             pod_name: "pl-test",
             pipeline_id: Uuid::nil(),
@@ -2211,10 +2216,10 @@ mod tests {
 
         let spec = pod.spec.unwrap();
         let container = &spec.containers[0];
-        let sc = container.security_context.as_ref().unwrap();
-        assert_eq!(sc.allow_privilege_escalation, Some(false));
-        let caps = sc.capabilities.as_ref().unwrap();
-        assert_eq!(caps.drop.as_ref().unwrap(), &vec!["ALL".to_string()]);
+        assert!(
+            container.security_context.is_none(),
+            "step container should not have a restrictive security context"
+        );
     }
 
     #[test]

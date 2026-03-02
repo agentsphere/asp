@@ -36,21 +36,31 @@ pub struct PodBuildParams<'a> {
     pub anthropic_api_key: Option<&'a str>,
     /// Extra env vars from project secrets (scope=agent/all), injected into the pod.
     pub extra_env_vars: &'a [(String, String)],
+    /// Container registry URL (e.g. `localhost:5001`). Prefixed to the default agent image.
+    pub registry_url: Option<&'a str>,
 }
 
 /// Resolves the container image for an agent pod.
 ///
-/// Priority: session config > project default > platform default
-fn resolve_image(config: &ProviderConfig, project_image: Option<&str>) -> String {
-    config
-        .image
-        .as_deref()
-        .or(project_image)
-        .unwrap_or("platform-claude-runner:latest")
-        .to_string()
+/// Priority: session config > project default > registry-prefixed default > bare default
+fn resolve_image(
+    config: &ProviderConfig,
+    project_image: Option<&str>,
+    registry_url: Option<&str>,
+) -> String {
+    if let Some(image) = config.image.as_deref().or(project_image) {
+        return image.to_string();
+    }
+    match registry_url {
+        Some(reg) => format!("{reg}/platform-claude-runner:latest"),
+        None => "platform-claude-runner:latest".to_string(),
+    }
 }
 
 /// Determines the image pull policy based on the image tag.
+///
+/// Uses `Always` for `:latest` tags to ensure the newest image is used.
+/// Uses `IfNotPresent` for specific tags (e.g. `v1.2.3`) to avoid unnecessary pulls.
 fn image_pull_policy(image: &str) -> String {
     if image.ends_with(":latest") || !image.contains(':') {
         "Always".to_string()
@@ -83,7 +93,11 @@ pub fn build_agent_pod(params: &PodBuildParams<'_>) -> Pod {
     let claude_args = build_claude_args(params, &branch);
     let env_vars = build_env_vars(params, session_id, &branch);
     let init_containers = build_init_containers(params, &branch);
-    let resolved_image = resolve_image(params.config, params.project_agent_image);
+    let resolved_image = resolve_image(
+        params.config,
+        params.project_agent_image,
+        params.registry_url,
+    );
     let pull_policy = image_pull_policy(&resolved_image);
     let main_container = build_main_container(claude_args, env_vars, &resolved_image, &pull_policy);
 
@@ -137,12 +151,11 @@ pub fn build_agent_pod(params: &PodBuildParams<'_>) -> Pod {
 
 fn build_claude_args(params: &PodBuildParams<'_>, _branch: &str) -> Vec<String> {
     let mut args = vec![
+        "--print".to_owned(),
         "--output-format".to_owned(),
         "stream-json".to_owned(),
-        "--permission-mode".to_owned(),
-        "auto-accept-only".to_owned(),
-        "--mcp-config".to_owned(),
-        "/tmp/mcp-config.json".to_owned(),
+        "--verbose".to_owned(),
+        "--dangerously-skip-permissions".to_owned(),
     ];
     if let Some(ref model) = params.config.model {
         args.push("--model".to_owned());
@@ -243,7 +256,11 @@ fn build_init_containers(params: &PodBuildParams<'_>, branch: &str) -> Vec<Conta
     if let Some(ref commands) = params.config.setup_commands
         && !commands.is_empty()
     {
-        let resolved_image = resolve_image(params.config, params.project_agent_image);
+        let resolved_image = resolve_image(
+            params.config,
+            params.project_agent_image,
+            params.registry_url,
+        );
         let joined = commands.join(" && ");
         containers.push(Container {
             name: "setup".into(),
@@ -279,11 +296,17 @@ fn build_git_clone_container(repo_clone_url: &str, branch: &str, api_token: &str
         image: Some("alpine/git:latest".into()),
         command: Some(vec!["sh".into(), "-c".into()]),
         args: Some(vec![format!(
-            "set -eu; \
+            "set -eu; export HOME=/tmp; \
              printf '#!/bin/sh\\necho \"$GIT_AUTH_TOKEN\"\\n' > /tmp/git-askpass.sh; \
              chmod +x /tmp/git-askpass.sh; \
-             GIT_ASKPASS=/tmp/git-askpass.sh git clone {repo_clone_url} /workspace; \
-             cd /workspace; \
+             git config --global --add safe.directory /workspace; \
+             if ! GIT_ASKPASS=/tmp/git-askpass.sh git clone {repo_clone_url} /workspace 2>/dev/null; then \
+               git init /workspace; \
+               cd /workspace; \
+               GIT_ASKPASS=/tmp/git-askpass.sh git remote add origin {repo_clone_url}; \
+             else \
+               cd /workspace; \
+             fi; \
              git checkout \"$GIT_BRANCH\" 2>/dev/null || git checkout -b \"$GIT_BRANCH\"; \
              git config user.name 'platform-agent'; \
              git config user.email 'agent@platform.local'",
@@ -320,7 +343,7 @@ fn build_main_container(
         image: Some(image.to_owned()),
         image_pull_policy: Some(pull_policy.to_owned()),
         args: Some(claude_args),
-        stdin: Some(true),
+        stdin: Some(false),
         tty: Some(false),
         working_dir: Some("/workspace".into()),
         env: Some(env_vars),
@@ -441,6 +464,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         assert_eq!(pod.metadata.name.as_deref(), Some("agent-12345678"));
         assert_eq!(pod.metadata.namespace.as_deref(), Some("platform-agents"));
@@ -459,6 +483,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let labels = pod.metadata.labels.unwrap();
         assert_eq!(labels["platform.io/component"], "agent-session");
@@ -470,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn main_container_has_stdin_enabled() {
+    fn main_container_has_stdin_disabled() {
         let session = test_session();
         let pod = build_agent_pod(&PodBuildParams {
             session: &session,
@@ -482,11 +507,12 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let claude_container = &spec.containers[0];
         assert_eq!(claude_container.name, "claude");
-        assert_eq!(claude_container.stdin, Some(true));
+        assert_eq!(claude_container.stdin, Some(false));
         assert_eq!(claude_container.tty, Some(false));
     }
 
@@ -503,6 +529,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -534,6 +561,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: Some("sk-ant-user-key-1234"),
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -556,6 +584,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -592,6 +621,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -603,7 +633,9 @@ mod tests {
     }
 
     #[test]
-    fn mcp_config_in_claude_args() {
+    fn no_mcp_config_in_claude_args() {
+        // MCP servers are disabled due to a Claude CLI compatibility issue
+        // where --mcp-config causes the process to hang indefinitely.
         let session = test_session();
         let pod = build_agent_pod(&PodBuildParams {
             session: &session,
@@ -615,11 +647,11 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let args = spec.containers[0].args.as_ref().unwrap();
-        assert!(args.contains(&"--mcp-config".to_owned()));
-        assert!(args.contains(&"/tmp/mcp-config.json".to_owned()));
+        assert!(!args.contains(&"--mcp-config".to_owned()));
     }
 
     #[test]
@@ -640,6 +672,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let args = spec.containers[0].args.as_ref().unwrap();
@@ -662,6 +695,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -706,6 +740,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -730,6 +765,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -765,6 +801,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let resources = spec.containers[0].resources.as_ref().unwrap();
@@ -786,6 +823,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.restart_policy.as_deref(), Some("Never"));
@@ -799,34 +837,63 @@ mod tests {
             image: Some("golang:1.23".into()),
             ..Default::default()
         };
-        assert_eq!(resolve_image(&config, Some("rust:1.80")), "golang:1.23");
+        assert_eq!(
+            resolve_image(&config, Some("rust:1.80"), None),
+            "golang:1.23"
+        );
     }
 
     #[test]
     fn resolve_image_project_default() {
         let config = ProviderConfig::default();
-        assert_eq!(resolve_image(&config, Some("rust:1.80")), "rust:1.80");
+        assert_eq!(resolve_image(&config, Some("rust:1.80"), None), "rust:1.80");
     }
 
     #[test]
     fn resolve_image_platform_fallback() {
         let config = ProviderConfig::default();
         assert_eq!(
-            resolve_image(&config, None),
+            resolve_image(&config, None, None),
             "platform-claude-runner:latest"
         );
     }
 
     #[test]
-    fn pull_policy_latest_is_always() {
-        assert_eq!(image_pull_policy("golang:latest"), "Always");
-        assert_eq!(image_pull_policy("golang"), "Always"); // no tag = latest
+    fn resolve_image_registry_prefix() {
+        let config = ProviderConfig::default();
+        assert_eq!(
+            resolve_image(&config, None, Some("localhost:5001")),
+            "localhost:5001/platform-claude-runner:latest"
+        );
     }
 
     #[test]
-    fn pull_policy_tagged_is_if_not_present() {
+    fn resolve_image_registry_ignored_when_explicit() {
+        let config = ProviderConfig {
+            image: Some("custom:v1".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_image(&config, None, Some("localhost:5001")),
+            "custom:v1"
+        );
+    }
+
+    #[test]
+    fn pull_policy_latest_uses_always() {
+        assert_eq!(image_pull_policy("golang:latest"), "Always");
+        assert_eq!(image_pull_policy("golang"), "Always"); // no tag = latest
+        assert_eq!(
+            image_pull_policy("kind-registry:5000/platform-claude-runner:latest"),
+            "Always"
+        );
+    }
+
+    #[test]
+    fn pull_policy_specific_tag_uses_if_not_present() {
         assert_eq!(image_pull_policy("golang:1.23"), "IfNotPresent");
         assert_eq!(image_pull_policy("image@sha256:abc123"), "IfNotPresent");
+        assert_eq!(image_pull_policy("myapp:v2.1.0"), "IfNotPresent");
     }
 
     #[test]
@@ -846,6 +913,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let main = &spec.containers[0];
@@ -866,6 +934,7 @@ mod tests {
             project_agent_image: Some("rust:1.80"),
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let main = &spec.containers[0];
@@ -890,6 +959,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -917,6 +987,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -936,6 +1007,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -968,6 +1040,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.containers.len(), 2, "should have claude + browser");
@@ -988,6 +1061,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.containers.len(), 1, "should have only claude");
@@ -1007,6 +1081,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let volumes = spec.volumes.unwrap();
@@ -1034,6 +1109,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let volumes = spec.volumes.unwrap();
@@ -1054,6 +1130,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1082,6 +1159,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1109,6 +1187,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let browser = &spec.containers[1];
@@ -1132,6 +1211,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let browser = &spec.containers[1];
@@ -1157,6 +1237,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let psc = spec.security_context.unwrap();
@@ -1179,6 +1260,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let container = &spec.containers[0];
@@ -1202,6 +1284,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -1230,6 +1313,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &secrets,
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1255,6 +1339,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &[],
+            registry_url: None,
         });
         let spec = pod_without.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1284,6 +1369,7 @@ mod tests {
             project_agent_image: None,
             anthropic_api_key: None,
             extra_env_vars: &secrets,
+            registry_url: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();

@@ -261,13 +261,14 @@ if [[ "$TEST_TYPE" == "total" ]]; then
   echo ""
   echo "==> Running integration tests (coverage, no report)"
   cargo llvm-cov nextest --no-report --test '*_integration' \
+    --profile ci --test-threads 16 \
     --ignore-filename-regex "${COV_IGNORE_REGEX}" --no-fail-fast \
     || TIER_FAILURES=$((TIER_FAILURES + 1))
 
   echo ""
   echo "==> Running E2E tests (coverage, no report)"
   cargo llvm-cov nextest --no-report --test 'e2e_*' \
-    --run-ignored ignored-only --test-threads 2 \
+    --profile ci --run-ignored ignored-only --test-threads 2 \
     --ignore-filename-regex "${COV_IGNORE_REGEX}" --no-fail-fast \
     || TIER_FAILURES=$((TIER_FAILURES + 1))
 
@@ -296,11 +297,19 @@ else
     NEXTEST_ARGS+=(--test-threads "${TEST_THREADS}")
   elif [[ "$TEST_TYPE" == "e2e" ]]; then
     NEXTEST_ARGS+=(--test-threads 2)
+  elif [[ "$TEST_TYPE" == "integration" ]]; then
+    # Limit parallelism to avoid Postgres connection exhaustion.
+    # Each #[sqlx::test] creates a fresh DB + pool; too many concurrent
+    # tests overwhelm max_connections and cause "Connection reset by peer".
+    NEXTEST_ARGS+=(--test-threads 16)
   fi
 
   if [[ "$TEST_TYPE" == "e2e" ]]; then
     NEXTEST_ARGS+=(--run-ignored ignored-only)
   fi
+
+  # Use CI profile for retries on transient failures (e.g. DB connection resets)
+  NEXTEST_ARGS+=(--profile ci)
 
   if $COVERAGE_MODE; then
     COV_ARGS=(--ignore-filename-regex "${COV_IGNORE_REGEX}")

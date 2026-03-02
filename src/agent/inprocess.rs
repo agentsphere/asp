@@ -28,11 +28,12 @@ Once the user confirms, execute these steps IN ORDER using your tools:
    - Create a multi-stage Dockerfile that builds and runs the app, EXPOSEing port 8080
    - Create a `.platform.yaml` file at the repo root with a kaniko build step:
      ```yaml
-     steps:
-       - name: build
-         image: gcr.io/kaniko-project/executor:latest
-         commands:
-           - /kaniko/executor --context=dir:///workspace --dockerfile=/workspace/Dockerfile --destination=$REGISTRY/$PROJECT:$COMMIT_SHA --cache=true
+     pipeline:
+       steps:
+         - name: build
+           image: gcr.io/kaniko-project/executor:debug
+           commands:
+             - /kaniko/executor --context=dir:///workspace --dockerfile=/workspace/Dockerfile --destination=$REGISTRY/$PROJECT:$COMMIT_SHA --insecure --cache=true
      ```
      (The env vars $REGISTRY, $PROJECT, $COMMIT_SHA are injected by the pipeline executor)
    - Create a `deploy/production.yaml` file with plain K8s manifests (Deployment + Service) using minijinja template variables: `{{ project_name }}` for resource names, `{{ image_ref }}` for the container image, `{{ values.replicas | default(1) }}` for replica count
@@ -168,9 +169,9 @@ pub async fn create_inprocess_session(
 
     // Resolve user API key
     let api_key = resolve_user_api_key(state, user_id).await.ok_or_else(|| {
-        AgentError::Other(anyhow::anyhow!(
-            "No Anthropic API key configured. Set your key in Settings > Provider Keys."
-        ))
+        AgentError::ConfigurationRequired(
+            "No Anthropic API key configured. Set your key in Settings > Provider Keys.".into(),
+        )
     })?;
 
     let session_id = Uuid::new_v4();

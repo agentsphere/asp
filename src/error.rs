@@ -1,4 +1,4 @@
-use axum::http::{StatusCode, header};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 #[derive(Debug, thiserror::Error)]
@@ -67,16 +67,7 @@ impl IntoResponse for ApiError {
             }
         };
 
-        let mut resp = (status, axum::Json(body)).into_response();
-        if status == StatusCode::UNAUTHORIZED {
-            resp.headers_mut().insert(
-                header::WWW_AUTHENTICATE,
-                "Basic realm=\"platform\""
-                    .parse()
-                    .expect("valid header value"),
-            );
-        }
-        resp
+        (status, axum::Json(body)).into_response()
     }
 }
 
@@ -124,6 +115,7 @@ impl From<opendal::Error> for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header;
     use axum::response::IntoResponse;
 
     #[test]
@@ -133,13 +125,12 @@ mod tests {
     }
 
     #[test]
-    fn unauthorized_returns_401_with_www_authenticate() {
+    fn unauthorized_returns_401_without_www_authenticate() {
         let resp = ApiError::Unauthorized.into_response();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(
-            resp.headers().get(header::WWW_AUTHENTICATE).unwrap(),
-            "Basic realm=\"platform\""
-        );
+        // WWW-Authenticate: Basic is only added on git smart HTTP routes (not globally)
+        // to avoid triggering the browser's native credentials dialog for API 401s.
+        assert!(resp.headers().get(header::WWW_AUTHENTICATE).is_none());
     }
 
     #[test]

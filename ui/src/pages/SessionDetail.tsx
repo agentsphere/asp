@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api';
-import type { AgentSession, ProgressEvent } from '../lib/types';
+import type { AgentSession, ProgressEvent, SecretRequestMeta } from '../lib/types';
 import { timeAgo, duration } from '../lib/format';
 import { Badge } from '../components/Badge';
 import { StatusDot } from '../components/StatusDot';
+import { SecretRequestModal } from '../components/SecretRequestModal';
 import { createWs, type ReconnectingWebSocket } from '../lib/ws';
 
 interface Props {
@@ -11,11 +12,27 @@ interface Props {
   sessionId?: string;
 }
 
+/** Normalize event kind from backend snake_case to PascalCase. */
+function normalizeKind(kind: string | undefined): ProgressEvent['kind'] {
+  if (!kind) return 'Text';
+  const map: Record<string, ProgressEvent['kind']> = {
+    text: 'Text', thinking: 'Thinking', tool_call: 'ToolCall',
+    tool_result: 'ToolResult', milestone: 'Milestone', error: 'Error',
+    completed: 'Completed', secret_request: 'SecretRequest',
+    // Already PascalCase — pass through
+    Text: 'Text', Thinking: 'Thinking', ToolCall: 'ToolCall',
+    ToolResult: 'ToolResult', Milestone: 'Milestone', Error: 'Error',
+    Completed: 'Completed', SecretRequest: 'SecretRequest',
+  };
+  return map[kind] || 'Text';
+}
+
 export function SessionDetail({ id: projectId, sessionId }: Props) {
   const [session, setSession] = useState<AgentSession | null>(null);
   const [events, setEvents] = useState<ProgressEvent[]>([]);
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
+  const [secretRequest, setSecretRequest] = useState<SecretRequestMeta | null>(null);
   const eventsEndRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
 
@@ -28,7 +45,7 @@ export function SessionDetail({ id: projectId, sessionId }: Props) {
       // Map session messages to ProgressEvent format
       if (data.messages) {
         setEvents(data.messages.map(m => ({
-          kind: (m.metadata?.kind as ProgressEvent['kind']) || (m.role === 'assistant' ? 'Text' : 'Text'),
+          kind: normalizeKind(m.metadata?.kind as string),
           message: m.content,
           metadata: m.metadata,
         })));
@@ -43,8 +60,21 @@ export function SessionDetail({ id: projectId, sessionId }: Props) {
 
     const ws = createWs({
       url: `/api/projects/${projectId}/sessions/${sessionId}/ws`,
-      onMessage: (event: ProgressEvent) => {
+      onMessage: (raw: Record<string, any>) => {
+        const event: ProgressEvent = {
+          kind: normalizeKind(raw.kind),
+          message: raw.message ?? '',
+          metadata: raw.metadata,
+        };
         setEvents(prev => [...prev, event]);
+        if (event.kind === 'SecretRequest' && event.metadata) {
+          setSecretRequest({
+            request_id: event.metadata.request_id,
+            name: event.metadata.name,
+            prompt: event.metadata.prompt || event.message,
+            environments: event.metadata.environments,
+          });
+        }
         if (event.kind === 'Completed' || event.kind === 'Error') {
           // Refresh session to get updated status
           api.get<AgentSession>(`/api/projects/${projectId}/sessions/${sessionId}`)
@@ -124,8 +154,8 @@ export function SessionDetail({ id: projectId, sessionId }: Props) {
                 </div>
               ) : (
                 events.map((event, i) => (
-                  <div key={i} class={`session-event session-event-${event.kind.toLowerCase()}`}>
-                    <span class="session-event-icon">{getEventIcon(event.kind)}</span>
+                  <div key={i} class={`session-event session-event-${(event.kind || 'text').toLowerCase()}`}>
+                    <span class="session-event-icon">{getEventIcon(event.kind || 'Text')}</span>
                     <div class="session-event-content">
                       <div class="session-event-message">{event.message}</div>
                       {event.metadata && Object.keys(event.metadata).length > 0 && (
@@ -197,6 +227,24 @@ export function SessionDetail({ id: projectId, sessionId }: Props) {
           </div>
         </div>
       </div>
+
+      {secretRequest && projectId && (
+        <SecretRequestModal
+          open={!!secretRequest}
+          projectId={projectId}
+          requestId={secretRequest.request_id}
+          name={secretRequest.name}
+          prompt={secretRequest.prompt}
+          onComplete={() => {
+            setSecretRequest(null);
+            setEvents(prev => [...prev, {
+              kind: 'Milestone',
+              message: `Secret "${secretRequest.name}" provided successfully`,
+            }]);
+          }}
+          onClose={() => setSecretRequest(null)}
+        />
+      )}
     </div>
   );
 }
@@ -210,6 +258,7 @@ function getEventIcon(kind: string): string {
     case 'Error': return '[!]';
     case 'Completed': return '[=]';
     case 'Text': return '[-]';
+    case 'SecretRequest': return '[?]';
     default: return '[ ]';
   }
 }

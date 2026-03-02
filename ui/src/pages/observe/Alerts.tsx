@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'preact/hooks';
-import { api, type ListResponse } from '../../lib/api';
-import type { AlertRule, AlertEvent } from '../../lib/types';
+import { api, qs, type ListResponse } from '../../lib/api';
+import type { AlertRule, AlertEvent, Project } from '../../lib/types';
 import { timeAgo } from '../../lib/format';
 import { Badge } from '../../components/Badge';
 import { Modal } from '../../components/Modal';
@@ -11,23 +11,35 @@ export function Alerts() {
   const [events, setEvents] = useState<AlertEvent[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [editingRule, setEditingRule] = useState<AlertRule | null>(null);
+  const [selectedProject, setSelectedProject] = useState('');
+  const [projects, setProjects] = useState<Project[]>([]);
   const [form, setForm] = useState({
     name: '', query: '', condition: 'gt', threshold: '0',
     window_seconds: '300', channels: '', enabled: true,
   });
   const [error, setError] = useState('');
 
+  useEffect(() => {
+    api.get<ListResponse<Project>>('/api/projects?limit=100')
+      .then(r => setProjects(r.items))
+      .catch(() => {});
+  }, []);
+
   const loadRules = () => {
-    api.get<ListResponse<AlertRule>>('/api/observe/alerts?limit=100')
+    const params: Record<string, string | number> = { limit: 100 };
+    if (selectedProject) params.project_id = selectedProject;
+    api.get<ListResponse<AlertRule>>(`/api/observe/alerts${qs(params)}`)
       .then(r => setRules(r.items)).catch(() => {});
   };
 
   const loadEvents = () => {
-    api.get<ListResponse<AlertEvent>>('/api/observe/alerts/events?limit=50')
+    const params: Record<string, string | number> = { limit: 50 };
+    if (selectedProject) params.project_id = selectedProject;
+    api.get<ListResponse<AlertEvent>>(`/api/observe/alerts/events${qs(params)}`)
       .then(r => setEvents(r.items)).catch(() => {});
   };
 
-  useEffect(() => { loadRules(); loadEvents(); }, []);
+  useEffect(() => { loadRules(); loadEvents(); }, [selectedProject]);
 
   const resetForm = () => {
     setForm({ name: '', query: '', condition: 'gt', threshold: '0', window_seconds: '300', channels: '', enabled: true });
@@ -94,6 +106,17 @@ export function Alerts() {
         <button class="btn btn-primary" onClick={() => { resetForm(); setShowCreate(true); }}>
           New Alert Rule
         </button>
+      </div>
+
+      <div class="filter-bar mb-md">
+        <div class="filter-item">
+          <label class="filter-label">Project</label>
+          <select class="input filter-input" value={selectedProject}
+            onChange={(e) => setSelectedProject((e.target as HTMLSelectElement).value)}>
+            <option value="">All projects</option>
+            {projects.map(p => <option key={p.id} value={p.id}>{p.display_name || p.name}</option>)}
+          </select>
+        </div>
       </div>
 
       <div class="card mb-md">

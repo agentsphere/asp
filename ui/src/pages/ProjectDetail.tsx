@@ -634,6 +634,23 @@ function SettingsTab({ project, onUpdate }: { project: Project; onUpdate: (p: Pr
           <button type="submit" class="btn btn-primary mt-sm">Save Settings</button>
         </form>
       </div>
+      {(project.namespace_slug || project.agent_image) && (
+        <div class="card mb-md">
+          <div class="card-title mb-md">Agent Settings</div>
+          <div class="session-meta-list">
+            <div class="session-meta-row">
+              <span class="text-muted text-sm">Namespace</span>
+              <span class="mono text-sm">{project.namespace_slug}</span>
+            </div>
+            {project.agent_image && (
+              <div class="session-meta-row">
+                <span class="text-muted text-sm">Agent Image</span>
+                <span class="mono text-sm" style="word-break:break-all">{project.agent_image}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <SecretsSection projectId={project.id} />
     </div>
   );

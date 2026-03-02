@@ -46,9 +46,22 @@ struct CompleteSecretRequestBody {
     pub value: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ListSecretRequestsParams {
+    session_id: Option<Uuid>,
+    status: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
 #[derive(Debug, Serialize)]
 struct SecretRequestResponse {
     id: Uuid,
+    project_id: Uuid,
+    session_id: Uuid,
+    name: String,
+    description: String,
+    environments: Vec<String>,
     status: SecretRequestStatus,
 }
 
@@ -167,7 +180,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/api/projects/{id}/secret-requests",
-            axum::routing::post(create_secret_request),
+            get(list_secret_requests).post(create_secret_request),
         )
         .route(
             "/api/projects/{id}/secret-requests/{request_id}",
@@ -373,6 +386,11 @@ async fn create_secret_request(
 
     let response = SecretRequestResponse {
         id: req.id,
+        project_id: req.project_id,
+        session_id: req.session_id,
+        name: req.name.clone(),
+        description: req.description.clone(),
+        environments: req.environments.clone(),
         status: req.status,
     };
 
@@ -407,6 +425,76 @@ async fn create_secret_request(
     Ok((StatusCode::CREATED, Json(response)))
 }
 
+#[tracing::instrument(skip(state), fields(%id), err)]
+async fn list_secret_requests(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Query(params): Query<ListSecretRequestsParams>,
+) -> Result<Json<ListResponse<SecretRequestResponse>>, ApiError> {
+    require_secret_read(&state, &auth, id).await?;
+
+    let map = state
+        .secret_requests
+        .read()
+        .map_err(|_| ApiError::Internal(anyhow::anyhow!("secret_requests lock poisoned")))?;
+
+    let limit = params.limit.unwrap_or(50).clamp(1, 100);
+    let offset = params.offset.unwrap_or(0).max(0);
+
+    let mut items: Vec<SecretRequestResponse> = map
+        .values()
+        .filter(|r| r.project_id == id)
+        .filter(|r| {
+            if let Some(ref sid) = params.session_id {
+                r.session_id == *sid
+            } else {
+                true
+            }
+        })
+        .filter(|r| {
+            if let Some(ref status_filter) = params.status {
+                let effective = r.effective_status();
+                let status_str = match effective {
+                    SecretRequestStatus::Pending => "pending",
+                    SecretRequestStatus::Completed => "completed",
+                    SecretRequestStatus::TimedOut => "timed_out",
+                };
+                status_str == status_filter.as_str()
+            } else {
+                true
+            }
+        })
+        .map(|r| SecretRequestResponse {
+            id: r.id,
+            project_id: r.project_id,
+            session_id: r.session_id,
+            name: r.name.clone(),
+            description: r.description.clone(),
+            environments: r.environments.clone(),
+            status: r.effective_status(),
+        })
+        .collect();
+
+    // Sort by name for stable ordering
+    items.sort_by(|a, b| a.name.cmp(&b.name));
+
+    #[allow(clippy::cast_possible_wrap)]
+    let total = items.len() as i64;
+    let offset_usize = usize::try_from(offset).unwrap_or(0);
+    let limit_usize = usize::try_from(limit).unwrap_or(50);
+    let paged: Vec<SecretRequestResponse> = items
+        .into_iter()
+        .skip(offset_usize)
+        .take(limit_usize)
+        .collect();
+
+    Ok(Json(ListResponse {
+        items: paged,
+        total,
+    }))
+}
+
 #[tracing::instrument(skip(state), fields(%id, %request_id), err)]
 async fn get_secret_request(
     State(state): State<AppState>,
@@ -427,6 +515,11 @@ async fn get_secret_request(
 
     Ok(Json(SecretRequestResponse {
         id: req.id,
+        project_id: req.project_id,
+        session_id: req.session_id,
+        name: req.name.clone(),
+        description: req.description.clone(),
+        environments: req.environments.clone(),
         status: req.effective_status(),
     }))
 }
@@ -443,7 +536,7 @@ async fn complete_secret_request(
     validation::check_length("value", &body.value, 1, 65_536)?;
 
     // Extract request metadata from in-memory map, validate state
-    let (req_name, req_environments) = {
+    let (req_name, req_description, req_environments, req_session_id) = {
         let mut map = state
             .secret_requests
             .write()
@@ -467,7 +560,12 @@ async fn complete_secret_request(
         }
 
         req.status = SecretRequestStatus::Completed;
-        (req.name.clone(), req.environments.clone())
+        (
+            req.name.clone(),
+            req.description.clone(),
+            req.environments.clone(),
+            req.session_id,
+        )
     };
 
     // Store the secret in the database for each requested environment
@@ -526,6 +624,11 @@ async fn complete_secret_request(
 
     Ok(Json(SecretRequestResponse {
         id: request_id,
+        project_id: id,
+        session_id: req_session_id,
+        name: req_name.clone(),
+        description: req_description,
+        environments: req_environments,
         status: SecretRequestStatus::Completed,
     }))
 }

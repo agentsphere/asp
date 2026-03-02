@@ -23,6 +23,7 @@ export class MockApiServer {
   constructor() {
     this.requests = [];
     this.nextResponse = { status: 200, body: {} };
+    this.responseQueues = new Map(); // "METHOD|pathPrefix" → [responses]
     this.server = createServer((req, res) => {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
@@ -33,8 +34,24 @@ export class MockApiServer {
           headers: req.headers,
           body: body ? JSON.parse(body) : null,
         });
-        res.writeHead(this.nextResponse.status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(this.nextResponse.body));
+
+        // Check queued responses first (match method + path prefix)
+        let response = null;
+        for (const [key, queue] of this.responseQueues) {
+          const [method, pathPrefix] = key.split("|", 2);
+          if (req.method === method && req.url.startsWith(pathPrefix) && queue.length > 0) {
+            response = queue.shift();
+            if (queue.length === 0) this.responseQueues.delete(key);
+            break;
+          }
+        }
+
+        if (!response) {
+          response = this.nextResponse;
+        }
+
+        res.writeHead(response.status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(response.body));
       });
     });
   }
@@ -51,13 +68,36 @@ export class MockApiServer {
     this.nextResponse = { status, body };
   }
 
+  /**
+   * Queue multiple responses for a given method + path prefix.
+   * Each call to the matching endpoint consumes the next response in order.
+   * Falls back to `nextResponse` when the queue is empty.
+   * @param {string} method - HTTP method (GET, POST, etc.)
+   * @param {string} pathPrefix - URL prefix to match (e.g. "/api/projects/")
+   * @param {...{status: number, body: any}} responses - Ordered responses
+   */
+  queueResponses(method, pathPrefix, ...responses) {
+    const key = `${method}|${pathPrefix}`;
+    const existing = this.responseQueues.get(key) || [];
+    existing.push(...responses.map(r => ({ status: r.status, body: r.body })));
+    this.responseQueues.set(key, existing);
+  }
+
   lastRequest() {
     return this.requests[this.requests.length - 1];
+  }
+
+  /**
+   * Get all requests matching a method and path prefix.
+   */
+  requestsMatching(method, pathPrefix) {
+    return this.requests.filter(r => r.method === method && r.path.startsWith(pathPrefix));
   }
 
   reset() {
     this.requests = [];
     this.nextResponse = { status: 200, body: {} };
+    this.responseQueues.clear();
   }
 
   async close() {
@@ -125,7 +165,7 @@ export class McpTestClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Timeout waiting for response to ${method} (id=${id})`));
-      }, 5000);
+      }, 15000);
 
       this.pending.set(id, {
         resolve: (msg) => {

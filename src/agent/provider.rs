@@ -149,6 +149,8 @@ pub struct BuildPodParams<'a> {
     pub anthropic_api_key: Option<&'a str>,
     /// Extra env vars from project secrets (scope=agent/all), injected into the pod.
     pub extra_env_vars: &'a [(String, String)],
+    /// Container registry URL (e.g. `localhost:5001`). Prefixed to the default agent image.
+    pub registry_url: Option<&'a str>,
 }
 
 /// Trait for agent provider implementations.

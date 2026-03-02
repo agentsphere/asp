@@ -22,6 +22,14 @@ pub struct PipelineDefinition {
     pub artifacts: Vec<ArtifactDef>,
     #[serde(rename = "on")]
     pub trigger: Option<TriggerConfig>,
+    #[serde(default)]
+    pub dev_image: Option<DevImageConfig>,
+}
+
+/// Configuration for building a custom dev/agent image from the project repo.
+#[derive(Debug, Deserialize)]
+pub struct DevImageConfig {
+    pub dockerfile: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +103,29 @@ fn validate(def: &PipelineDefinition) -> Result<(), PipelineError> {
                 "step '{}' is missing an image",
                 step.name
             )));
+        }
+    }
+
+    if let Some(dev) = &def.dev_image {
+        if dev.dockerfile.is_empty() {
+            return Err(PipelineError::InvalidDefinition(
+                "dev_image.dockerfile must not be empty".into(),
+            ));
+        }
+        if dev.dockerfile.len() > 255 {
+            return Err(PipelineError::InvalidDefinition(
+                "dev_image.dockerfile must be 255 characters or fewer".into(),
+            ));
+        }
+        if dev.dockerfile.contains("..") {
+            return Err(PipelineError::InvalidDefinition(
+                "dev_image.dockerfile must not contain path traversal (..)".into(),
+            ));
+        }
+        if dev.dockerfile.starts_with('/') {
+            return Err(PipelineError::InvalidDefinition(
+                "dev_image.dockerfile must be a relative path".into(),
+            ));
         }
     }
 
@@ -570,5 +601,102 @@ pipeline:
         assert!(matches_mr(def.trigger.as_ref(), "opened"));
         assert!(matches_mr(def.trigger.as_ref(), "reopened"));
         assert!(!matches_mr(def.trigger.as_ref(), "closed"));
+    }
+
+    // -- dev_image parsing --
+
+    #[test]
+    fn parse_dev_image_config() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: gcr.io/kaniko-project/executor:debug
+      commands:
+        - /kaniko/executor --context=. --dockerfile=Dockerfile
+  dev_image:
+    dockerfile: Dockerfile.dev
+"#;
+        let def = parse(yaml).unwrap();
+        let dev = def.dev_image.as_ref().unwrap();
+        assert_eq!(dev.dockerfile, "Dockerfile.dev");
+    }
+
+    #[test]
+    fn parse_dev_image_custom_path() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+  dev_image:
+    dockerfile: docker/Dockerfile.agent
+"#;
+        let def = parse(yaml).unwrap();
+        let dev = def.dev_image.as_ref().unwrap();
+        assert_eq!(dev.dockerfile, "docker/Dockerfile.agent");
+    }
+
+    #[test]
+    fn parse_dev_image_optional() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+"#;
+        let def = parse(yaml).unwrap();
+        assert!(def.dev_image.is_none());
+    }
+
+    #[test]
+    fn validate_dev_image_empty_dockerfile() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+  dev_image:
+    dockerfile: ""
+"#;
+        let err = parse(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("must not be empty")),
+            "empty dockerfile should fail: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_dev_image_path_traversal() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+  dev_image:
+    dockerfile: "../Dockerfile.dev"
+"#;
+        let err = parse(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("path traversal")),
+            "path traversal should fail: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_dev_image_absolute_path() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+  dev_image:
+    dockerfile: /etc/Dockerfile
+"#;
+        let err = parse(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("relative path")),
+            "absolute path should fail: {err:?}"
+        );
     }
 }

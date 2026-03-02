@@ -57,7 +57,9 @@ export function OnboardingOverlay() {
     return () => { wsRef.current?.close(); };
   }, []);
 
-  if (!needsOnboarding) return null;
+  // Keep overlay visible while an onboarding session is active,
+  // even after the project has been created (needsOnboarding may become false).
+  if (!needsOnboarding && !session) return null;
 
   // --- Key validation ---
   async function handleValidate(e: Event) {
@@ -132,8 +134,6 @@ export function OnboardingOverlay() {
           case 'completed': {
             streamBuf.current = '';
             setStreaming(false);
-            // Re-check onboarding — project may have been created
-            setTimeout(() => refresh(), 1000);
             break;
           }
           case 'tool_call': {
@@ -143,7 +143,7 @@ export function OnboardingOverlay() {
           case 'tool_result': {
             const isError = data.metadata?.is_error;
             setMessages(prev => [...prev, { role: 'system', content: isError ? `Error: ${data.message}` : data.message }]);
-            // If a project was created, update session + trigger onboarding refresh
+            // If a project was created, update session state (but don't refresh — keep overlay open)
             if (data.metadata?.tool_name === 'create_project' && !isError && data.metadata?.result) {
               try {
                 const result = JSON.parse(data.metadata.result as string);
@@ -151,7 +151,6 @@ export function OnboardingOverlay() {
                   setSession(prev => prev ? { ...prev, project_id: result.project_id } : prev);
                 }
               } catch { /* ignore parse errors */ }
-              refresh();
             }
             break;
           }
@@ -309,12 +308,30 @@ export function OnboardingOverlay() {
             </button>
           </form>
 
-          {/* Session info */}
+          {/* Session info + completion actions */}
           {session && (
-            <div class="text-sm text-muted" style="padding-top:0.5rem">
-              Session: {session.id.slice(0, 8)} | Status: {session.status}
-              {session.project_id && (
-                <span> | <a href={`/projects/${session.project_id}`}>View Project</a></span>
+            <div style="padding-top:0.5rem">
+              {!streaming && session.project_id ? (
+                <div style="display:flex;gap:0.5rem;align-items:center">
+                  <a href={`/projects/${session.project_id}`}
+                    class="btn btn-primary"
+                    onClick={() => refresh()}>
+                    View Project
+                  </a>
+                  <button class="btn" onClick={() => { refresh(); }}>
+                    Dismiss
+                  </button>
+                  <span class="text-xs text-muted" style="margin-left:auto">
+                    Session: {session.id.slice(0, 8)}
+                  </span>
+                </div>
+              ) : (
+                <div class="text-sm text-muted">
+                  Session: {session.id.slice(0, 8)} | Status: {session.status}
+                  {session.project_id && (
+                    <span> | <a href={`/projects/${session.project_id}`}>View Project</a></span>
+                  )}
+                </div>
               )}
             </div>
           )}

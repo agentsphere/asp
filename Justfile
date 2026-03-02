@@ -72,12 +72,21 @@ test-ui:
     @echo "Requires running server: just run"
     cd ui && npx playwright test
 
-# Start platform server, run Playwright tests, stop server (for in-pod use)
-test-ui-headless:
-    @echo "Starting platform server in background..."
-    cargo run &
-    @sleep 5
-    cd ui && PLATFORM_URL=http://localhost:8080 npx playwright test; STATUS=$$?; kill %1 2>/dev/null || true; exit $$STATUS
+# Start platform server, run Playwright tests, stop server
+test-ui-headless port="8090":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    echo "Starting platform server on port {{port}}..."
+    PLATFORM_DEV=true PLATFORM_LISTEN="0.0.0.0:{{port}}" cargo run &
+    SERVER_PID=$!
+    for i in $(seq 1 30); do
+      curl -sf "http://localhost:{{port}}/healthz" >/dev/null 2>&1 && break
+      sleep 2
+    done
+    curl -sf "http://localhost:{{port}}/healthz" >/dev/null 2>&1 || { echo "Server failed to start"; kill "$SERVER_PID" 2>/dev/null; exit 1; }
+    cd ui && PLATFORM_URL="http://localhost:{{port}}" npx playwright test; STATUS=$?
+    kill "$SERVER_PID" 2>/dev/null || true
+    exit "$STATUS"
 
 # Cleanup stale test namespaces
 test-cleanup:
@@ -142,6 +151,10 @@ build:
 
 docker tag="platform:dev":
     docker build -f docker/Dockerfile -t {{ tag }} .
+
+agent-image:
+    docker build -f docker/Dockerfile.claude-runner -t localhost:5001/platform-claude-runner:latest .
+    docker push localhost:5001/platform-claude-runner:latest
 
 # -- Deploy to kind -------------------------------------------------
 deploy-local tag="platform:dev":

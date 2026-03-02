@@ -7,6 +7,7 @@ pub mod signature;
 pub mod smart_http;
 pub mod ssh_keys;
 pub mod ssh_server;
+pub mod templates;
 
 use axum::Router;
 

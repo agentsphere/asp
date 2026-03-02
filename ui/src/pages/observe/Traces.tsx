@@ -1,25 +1,10 @@
 import { useState, useEffect } from 'preact/hooks';
 import { api, qs, type ListResponse } from '../../lib/api';
-import type { TraceSummary, Span } from '../../lib/types';
+import type { TraceSummary, Span, Project } from '../../lib/types';
 import { FilterBar, type FilterDef } from '../../components/FilterBar';
 import { Pagination } from '../../components/Pagination';
 import { Badge } from '../../components/Badge';
 import { duration } from '../../lib/format';
-
-const FILTERS: FilterDef[] = [
-  { key: 'service', label: 'Service', type: 'text', placeholder: 'All services' },
-  { key: 'status', label: 'Status', type: 'select', options: [
-    { value: '', label: 'All' },
-    { value: 'ok', label: 'OK' },
-    { value: 'error', label: 'Error' },
-  ]},
-  { key: 'time_range', label: 'Time range', type: 'select', options: [
-    { value: '1h', label: 'Last 1 hour' },
-    { value: '6h', label: 'Last 6 hours' },
-    { value: '24h', label: 'Last 24 hours' },
-    { value: '7d', label: 'Last 7 days' },
-  ]},
-];
 
 interface TraceListProps {
   path?: string;
@@ -29,12 +14,40 @@ export function Traces({ path }: TraceListProps) {
   const [traces, setTraces] = useState<TraceSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
-  const [filters, setFilters] = useState<Record<string, string>>({ time_range: '1h', status: '' });
+  const [filters, setFilters] = useState<Record<string, string>>({ time_range: '1h', status: '', project_id: '' });
   const [loading, setLoading] = useState(false);
+  const [projects, setProjects] = useState<{ value: string; label: string }[]>([{ value: '', label: 'All projects' }]);
+
+  useEffect(() => {
+    api.get<ListResponse<Project>>('/api/projects?limit=100')
+      .then(r => {
+        const opts = [{ value: '', label: 'All projects' }];
+        for (const p of r.items) opts.push({ value: p.id, label: p.display_name || p.name });
+        setProjects(opts);
+      })
+      .catch(() => {});
+  }, []);
+
+  const filterDefs: FilterDef[] = [
+    { key: 'project_id', label: 'Project', type: 'select', options: projects },
+    { key: 'service', label: 'Service', type: 'text', placeholder: 'All services' },
+    { key: 'status', label: 'Status', type: 'select', options: [
+      { value: '', label: 'All' },
+      { value: 'ok', label: 'OK' },
+      { value: 'error', label: 'Error' },
+    ]},
+    { key: 'time_range', label: 'Time range', type: 'select', options: [
+      { value: '1h', label: 'Last 1 hour' },
+      { value: '6h', label: 'Last 6 hours' },
+      { value: '24h', label: 'Last 24 hours' },
+      { value: '7d', label: 'Last 7 days' },
+    ]},
+  ];
 
   const load = () => {
     setLoading(true);
     const params: Record<string, string | number> = { limit: 50, offset };
+    if (filters.project_id) params.project_id = filters.project_id;
     if (filters.service) params.service = filters.service;
     if (filters.status) params.status = filters.status;
     if (filters.time_range) params.time_range = filters.time_range;
@@ -50,7 +63,7 @@ export function Traces({ path }: TraceListProps) {
   return (
     <div>
       <h2 class="mb-md">Traces</h2>
-      <FilterBar filters={FILTERS} values={filters} onChange={setFilters} onApply={() => { setOffset(0); load(); }} />
+      <FilterBar filters={filterDefs} values={filters} onChange={setFilters} onApply={() => { setOffset(0); load(); }} />
       <div class="card">
         {loading ? (
           <div class="empty-state">Loading...</div>

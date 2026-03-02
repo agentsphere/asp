@@ -57,7 +57,14 @@ pub async fn on_push(
         return Ok(None);
     }
 
-    let has_dev_dockerfile = has_dockerfile_dev(&params.repo_path, &params.branch).await;
+    // Determine dev image dockerfile: explicit YAML config takes priority, auto-detect as fallback
+    let dev_dockerfile = if let Some(dev) = &def.dev_image {
+        Some(dev.dockerfile.as_str())
+    } else if has_dockerfile_dev(&params.repo_path, &params.branch).await {
+        Some("Dockerfile.dev")
+    } else {
+        None
+    };
 
     let git_ref = format!("refs/heads/{}", params.branch);
     let pipeline_id = create_pipeline_with_steps(
@@ -68,11 +75,11 @@ pub async fn on_push(
         params.user_id,
         "push",
         &def,
-        has_dev_dockerfile,
+        dev_dockerfile,
     )
     .await?;
 
-    tracing::info!(pipeline_id = %pipeline_id, has_dev_dockerfile, "pipeline triggered by push");
+    tracing::info!(pipeline_id = %pipeline_id, ?dev_dockerfile, "pipeline triggered by push");
     Ok(Some(pipeline_id))
 }
 
@@ -105,7 +112,7 @@ pub async fn on_mr(pool: &PgPool, params: &MrTriggerParams) -> Result<Option<Uui
         params.user_id,
         "mr",
         &def,
-        false,
+        None,
     )
     .await?;
 
@@ -147,7 +154,7 @@ pub async fn on_api(
         user_id,
         "api",
         &def,
-        false,
+        None,
     )
     .await
 }
@@ -158,8 +165,8 @@ pub async fn on_api(
 
 /// Create a pipeline row and its step rows in a single transaction.
 ///
-/// When `add_dev_image_step` is true, an extra kaniko step is appended that
-/// builds `Dockerfile.dev` and pushes to `$REGISTRY/$PROJECT-dev:$COMMIT_SHA`.
+/// When `dev_image_dockerfile` is `Some(path)`, an extra kaniko step is appended
+/// that builds the specified Dockerfile and pushes to `$REGISTRY/$PROJECT-dev:$COMMIT_SHA`.
 #[allow(clippy::too_many_arguments)]
 async fn create_pipeline_with_steps(
     pool: &PgPool,
@@ -169,7 +176,7 @@ async fn create_pipeline_with_steps(
     triggered_by: Uuid,
     trigger_type: &str,
     def: &PipelineDefinition,
-    add_dev_image_step: bool,
+    dev_image_dockerfile: Option<&str>,
 ) -> Result<Uuid, PipelineError> {
     let mut tx = pool.begin().await?;
 
@@ -208,28 +215,40 @@ async fn create_pipeline_with_steps(
         .await?;
     }
 
-    if add_dev_image_step {
-        insert_dev_image_step(&mut tx, pipeline_id, project_id, def.steps.len()).await?;
+    if let Some(dockerfile) = dev_image_dockerfile {
+        insert_dev_image_step(
+            &mut tx,
+            pipeline_id,
+            project_id,
+            def.steps.len(),
+            dockerfile,
+        )
+        .await?;
     }
 
     tx.commit().await?;
     Ok(pipeline_id)
 }
 
-/// Insert the auto-generated kaniko step that builds `Dockerfile.dev`.
+/// Insert the auto-generated kaniko step that builds a dev image.
+///
+/// The `dockerfile` parameter specifies which Dockerfile to use (e.g. `Dockerfile.dev`).
 async fn insert_dev_image_step(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     pipeline_id: Uuid,
     project_id: Uuid,
     existing_step_count: usize,
+    dockerfile: &str,
 ) -> Result<(), PipelineError> {
     let step_order = i32::try_from(existing_step_count).unwrap_or(i32::MAX);
-    let cmd = "/kaniko/executor \
-        --dockerfile=Dockerfile.dev \
+    let cmd = format!(
+        "/kaniko/executor \
+        --dockerfile={dockerfile} \
         --context=/workspace \
-        --destination=${REGISTRY}/${PLATFORM_PROJECT_NAME}-dev:${COMMIT_SHA:-latest} \
-        --cache=true";
-    let commands: Vec<&str> = vec![cmd];
+        --destination=${{REGISTRY}}/${{PLATFORM_PROJECT_NAME}}-dev:${{COMMIT_SHA:-latest}} \
+        --cache=true"
+    );
+    let commands: Vec<&str> = vec![&cmd];
 
     sqlx::query!(
         r#"

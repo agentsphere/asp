@@ -58,6 +58,25 @@ pub fn router() -> Router<AppState> {
         .route("/{owner}/{repo}/info/refs", get(info_refs))
         .route("/{owner}/{repo}/git-upload-pack", post(upload_pack))
         .route("/{owner}/{repo}/git-receive-pack", post(receive_pack))
+        .layer(axum::middleware::map_response(add_www_authenticate))
+}
+
+/// Add `WWW-Authenticate: Basic` to 401 responses on git routes.
+/// Placed only on the git smart HTTP router so the browser SPA doesn't
+/// get a native credentials dialog for API 401s.
+async fn add_www_authenticate(response: Response) -> Response {
+    if response.status() == axum::http::StatusCode::UNAUTHORIZED {
+        let (mut parts, body) = response.into_parts();
+        parts.headers.insert(
+            axum::http::header::WWW_AUTHENTICATE,
+            "Basic realm=\"platform\""
+                .parse()
+                .expect("valid header value"),
+        );
+        Response::from_parts(parts, body)
+    } else {
+        response
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -371,17 +390,23 @@ async fn receive_pack(
     let mut stdin = child.stdin.take().expect("stdin piped");
     let mut stdout = child.stdout.take().expect("stdout piped");
 
+    // Read body bytes first so we can parse ref commands before piping to git
+    let body_bytes = body
+        .collect()
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("body read failed: {e}")))?
+        .to_bytes();
+
+    // Parse pushed refs from the pack data before piping to git
+    let ref_updates = super::hooks::parse_pack_commands(&body_bytes);
+    let pushed_branches = super::hooks::extract_pushed_branches(&ref_updates);
+
     // Pipe body to stdin and read stdout concurrently
     let (stdin_result, stdout_bytes) = tokio::join!(
         async {
-            let bytes = body
-                .collect()
-                .await
-                .map_err(|e| anyhow::anyhow!("body read failed: {e}"))?
-                .to_bytes();
-            stdin.write_all(&bytes).await?;
+            stdin.write_all(&body_bytes).await?;
             stdin.shutdown().await?;
-            Ok::<(), anyhow::Error>(())
+            Ok::<(), std::io::Error>(())
         },
         async {
             let mut buf = Vec::new();
@@ -390,7 +415,7 @@ async fn receive_pack(
         }
     );
 
-    stdin_result.map_err(ApiError::Internal)?;
+    stdin_result.map_err(|e| ApiError::Internal(anyhow::anyhow!("stdin write: {e}")))?;
     let output =
         stdout_bytes.map_err(|e| ApiError::Internal(anyhow::anyhow!("stdout read: {e}")))?;
 
@@ -408,6 +433,7 @@ async fn receive_pack(
             user_name: git_user.user_name.clone(),
             repo_path: project.repo_disk_path.clone(),
             default_branch: project.default_branch.clone(),
+            pushed_branches,
         };
         tokio::spawn(async move {
             if let Err(e) = super::hooks::post_receive(&hook_state, &params).await {

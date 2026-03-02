@@ -570,7 +570,10 @@ async fn render_manifests(
         .fetch_one(&state.pool)
         .await?;
 
-        let manifest_file = deployment.manifest_path.as_deref().unwrap_or("deploy.yaml");
+        let manifest_file = deployment
+            .manifest_path
+            .as_deref()
+            .unwrap_or("deploy/production.yaml");
 
         // Read the template from the bare repo
         let manifest_ref_path = if repo.path == "/" || repo.path.is_empty() {

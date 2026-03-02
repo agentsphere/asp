@@ -96,7 +96,15 @@ export type { ListResponse } from './generated/ListResponse';
 
 // WebSocket progress events from agent sessions
 export interface ProgressEvent {
-  kind: 'Thinking' | 'ToolCall' | 'ToolResult' | 'Milestone' | 'Error' | 'Completed' | 'Text';
+  kind: 'Thinking' | 'ToolCall' | 'ToolResult' | 'Milestone' | 'Error' | 'Completed' | 'Text' | 'SecretRequest';
   message: string;
   metadata?: Record<string, any>;
+}
+
+// Secret request metadata (within ProgressEvent.metadata for kind='SecretRequest')
+export interface SecretRequestMeta {
+  request_id: string;
+  name: string;
+  prompt: string;
+  environments?: string[];
 }

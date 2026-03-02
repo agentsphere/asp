@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{ project_name }}"
+spec:
+  replicas: {{ values.replicas | default(1) }}
+  selector:
+    matchLabels:
+      app: "{{ project_name }}"
+  template:
+    metadata:
+      labels:
+        app: "{{ project_name }}"
+    spec:
+      containers:
+        - name: app
+          image: "{{ image_ref }}"
+          ports:
+            - containerPort: 8080
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.platform.svc.cluster.local:4318"
+            - name: OTEL_SERVICE_NAME
+              value: "{{ project_name }}"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ project_name }}"
+spec:
+  selector:
+    app: "{{ project_name }}"
+  ports:
+    - port: 80
+      targetPort: 8080

@@ -11,6 +11,9 @@ pub enum AgentError {
     #[error("invalid provider: {0}")]
     InvalidProvider(String),
 
+    #[error("{0}")]
+    ConfigurationRequired(String),
+
     #[error("pod creation failed: {0}")]
     PodCreationFailed(String),
 
@@ -32,7 +35,9 @@ impl From<AgentError> for ApiError {
         match err {
             AgentError::SessionNotFound => Self::NotFound("session".into()),
             AgentError::SessionNotRunning => Self::BadRequest("session not running".into()),
-            AgentError::InvalidProvider(msg) => Self::BadRequest(msg),
+            AgentError::InvalidProvider(msg) | AgentError::ConfigurationRequired(msg) => {
+                Self::BadRequest(msg)
+            }
             AgentError::PodCreationFailed(_)
             | AgentError::AttachFailed(_)
             | AgentError::Db(_)
@@ -65,6 +70,12 @@ mod tests {
     }
 
     #[test]
+    fn configuration_required_maps_to_bad_request() {
+        let api: ApiError = AgentError::ConfigurationRequired("no API key".into()).into();
+        assert!(matches!(api, ApiError::BadRequest(msg) if msg.contains("no API key")));
+    }
+
+    #[test]
     fn pod_creation_failed_maps_to_internal() {
         let api: ApiError = AgentError::PodCreationFailed("timeout".into()).into();
         assert!(matches!(api, ApiError::Internal(_)));
@@ -92,6 +103,10 @@ mod tests {
         assert_eq!(
             AgentError::InvalidProvider("foo".into()).to_string(),
             "invalid provider: foo"
+        );
+        assert_eq!(
+            AgentError::ConfigurationRequired("set your key".into()).to_string(),
+            "set your key"
         );
         assert_eq!(
             AgentError::PodCreationFailed("timeout".into()).to_string(),

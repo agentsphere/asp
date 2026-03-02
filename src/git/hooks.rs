@@ -24,16 +24,97 @@ pub struct PostReceiveParams {
     pub user_name: String,
     pub repo_path: std::path::PathBuf,
     pub default_branch: String,
+    /// Branch names that were updated (stripped of `refs/heads/` prefix).
+    /// When empty, falls back to `default_branch`.
+    pub pushed_branches: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
 
+/// Extract branch names from ref updates, filtering to `refs/heads/*` only.
+///
+/// Strips the `refs/heads/` prefix and skips deletions (`new_sha` all zeros)
+/// and non-branch refs (tags, etc.).
+pub fn extract_pushed_branches(updates: &[RefUpdate]) -> Vec<String> {
+    let zero_sha = "0".repeat(40);
+    updates
+        .iter()
+        .filter_map(|u| {
+            // Skip deletions
+            if u.new_sha == zero_sha {
+                return None;
+            }
+            // Only process branch refs
+            u.refname.strip_prefix("refs/heads/").map(str::to_string)
+        })
+        .collect()
+}
+
+/// Parse ref update commands from a git receive-pack request body (pkt-line format).
+///
+/// The pack data starts with pkt-line encoded ref commands:
+/// ```text
+/// <4-hex-len><old-sha> <new-sha> <refname>\0<capabilities>\n
+/// <4-hex-len><old-sha> <new-sha> <refname>\n
+/// 0000
+/// PACK...
+/// ```
+pub fn parse_pack_commands(data: &[u8]) -> Vec<RefUpdate> {
+    let mut updates = Vec::new();
+    let mut pos = 0;
+
+    while pos + 4 <= data.len() {
+        let Ok(len_hex) = std::str::from_utf8(&data[pos..pos + 4]) else {
+            break;
+        };
+
+        // "0000" marks end of commands
+        if len_hex == "0000" {
+            break;
+        }
+
+        let pkt_len = match usize::from_str_radix(len_hex, 16) {
+            Ok(n) if n >= 4 => n,
+            _ => break,
+        };
+
+        if pos + pkt_len > data.len() {
+            break;
+        }
+
+        // Extract the data portion (after the 4-byte length prefix)
+        let line_bytes = &data[pos + 4..pos + pkt_len];
+
+        // Convert to string, strip NUL and everything after (capabilities)
+        if let Ok(line) = std::str::from_utf8(line_bytes) {
+            let line = line.split('\0').next().unwrap_or(line).trim();
+            let mut parts = line.splitn(3, ' ');
+            if let (Some(old_sha), Some(new_sha), Some(refname)) =
+                (parts.next(), parts.next(), parts.next())
+                && old_sha.len() >= 40
+                && new_sha.len() >= 40
+                && !refname.is_empty()
+            {
+                updates.push(RefUpdate {
+                    old_sha: old_sha.to_owned(),
+                    new_sha: new_sha.to_owned(),
+                    refname: refname.to_owned(),
+                });
+            }
+        }
+
+        pos += pkt_len;
+    }
+
+    updates
+}
+
 /// Parse ref update lines from receive-pack output.
 ///
 /// Each line has the format: `old_sha new_sha refname\n`
-#[allow(dead_code)] // used in tests; will be used in integration wiring for ref-level triggers
+#[cfg(test)]
 pub fn parse_ref_updates(input: &str) -> Vec<RefUpdate> {
     input
         .lines()
@@ -64,38 +145,50 @@ pub fn parse_ref_updates(input: &str) -> Vec<RefUpdate> {
 
 /// Run post-receive logic after a successful push.
 ///
+/// For each pushed branch:
 /// 1. Delegate to `pipeline::trigger::on_push()` to parse `.platform.yaml` and create pipeline + steps
 /// 2. If a pipeline was created, notify the executor via Valkey
 /// 3. Fire push webhooks
 #[tracing::instrument(skip(state, params), fields(project_id = %params.project_id, user = %params.user_name), err)]
 pub async fn post_receive(state: &AppState, params: &PostReceiveParams) -> Result<(), ApiError> {
-    let commit_sha = get_branch_sha(&params.repo_path, &params.default_branch).await;
-
-    let trigger_params = crate::pipeline::trigger::PushTriggerParams {
-        project_id: params.project_id,
-        user_id: params.user_id,
-        repo_path: params.repo_path.clone(),
-        branch: params.default_branch.clone(),
-        commit_sha,
+    // Use pushed branches if available, otherwise fall back to default branch
+    let branches: Vec<&str> = if params.pushed_branches.is_empty() {
+        vec![params.default_branch.as_str()]
+    } else {
+        params.pushed_branches.iter().map(String::as_str).collect()
     };
 
-    match crate::pipeline::trigger::on_push(&state.pool, &trigger_params).await {
-        Ok(Some(pipeline_id)) => {
-            crate::pipeline::trigger::notify_executor(state, pipeline_id).await;
-        }
-        Ok(None) => {}
-        Err(e) => {
-            tracing::error!(error = %e, "pipeline trigger failed");
+    for branch in &branches {
+        let commit_sha = get_branch_sha(&params.repo_path, branch).await;
+
+        let trigger_params = crate::pipeline::trigger::PushTriggerParams {
+            project_id: params.project_id,
+            user_id: params.user_id,
+            repo_path: params.repo_path.clone(),
+            branch: (*branch).to_string(),
+            commit_sha,
+        };
+
+        match crate::pipeline::trigger::on_push(&state.pool, &trigger_params).await {
+            Ok(Some(pipeline_id)) => {
+                crate::pipeline::trigger::notify_executor(state, pipeline_id).await;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!(error = %e, branch, "pipeline trigger failed");
+            }
         }
     }
 
-    // Fire push webhooks
-    let payload = serde_json::json!({
-        "ref": format!("refs/heads/{}", params.default_branch),
-        "project_id": params.project_id,
-        "pusher": params.user_name,
-    });
-    crate::api::webhooks::fire_webhooks(&state.pool, params.project_id, "push", &payload).await;
+    // Fire push webhooks for each pushed branch
+    for branch in &branches {
+        let payload = serde_json::json!({
+            "ref": format!("refs/heads/{branch}"),
+            "project_id": params.project_id,
+            "pusher": params.user_name,
+        });
+        crate::api::webhooks::fire_webhooks(&state.pool, params.project_id, "push", &payload).await;
+    }
 
     Ok(())
 }
@@ -298,5 +391,98 @@ cccccccccccccccccccccccccccccccccccccccc ddddddddddddddddddddddddddddddddddddddd
         let debug = format!("{update:?}");
         assert!(debug.contains("RefUpdate"));
         assert!(debug.contains("refs/heads/main"));
+    }
+
+    // -- extract_pushed_branches --
+
+    #[test]
+    fn extract_branches_from_updates() {
+        let updates = vec![
+            RefUpdate {
+                old_sha: "a".repeat(40),
+                new_sha: "b".repeat(40),
+                refname: "refs/heads/main".into(),
+            },
+            RefUpdate {
+                old_sha: "a".repeat(40),
+                new_sha: "b".repeat(40),
+                refname: "refs/heads/feature/login".into(),
+            },
+        ];
+        let branches = extract_pushed_branches(&updates);
+        assert_eq!(branches, vec!["main", "feature/login"]);
+    }
+
+    #[test]
+    fn extract_branches_skips_deletions() {
+        let updates = vec![RefUpdate {
+            old_sha: "a".repeat(40),
+            new_sha: "0".repeat(40),
+            refname: "refs/heads/old-branch".into(),
+        }];
+        let branches = extract_pushed_branches(&updates);
+        assert!(branches.is_empty());
+    }
+
+    #[test]
+    fn extract_branches_skips_tags() {
+        let updates = vec![RefUpdate {
+            old_sha: "a".repeat(40),
+            new_sha: "b".repeat(40),
+            refname: "refs/tags/v1.0.0".into(),
+        }];
+        let branches = extract_pushed_branches(&updates);
+        assert!(branches.is_empty());
+    }
+
+    // -- parse_pack_commands --
+
+    #[test]
+    fn parse_pack_single_ref() {
+        let old = "a".repeat(40);
+        let new = "b".repeat(40);
+        let cmd = format!("{old} {new} refs/heads/main\0 report-status\n");
+        let pkt_len = cmd.len() + 4;
+        let data = format!("{pkt_len:04x}{cmd}0000");
+        let updates = parse_pack_commands(data.as_bytes());
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].refname, "refs/heads/main");
+        assert_eq!(updates[0].old_sha, old);
+        assert_eq!(updates[0].new_sha, new);
+    }
+
+    #[test]
+    fn parse_pack_multiple_refs() {
+        let old = "a".repeat(40);
+        let new = "b".repeat(40);
+        let cmd1 = format!("{old} {new} refs/heads/main\0 report-status\n");
+        let cmd2 = format!("{old} {new} refs/heads/feature\n");
+        let len1 = cmd1.len() + 4;
+        let len2 = cmd2.len() + 4;
+        let data = format!("{len1:04x}{cmd1}{len2:04x}{cmd2}0000");
+        let updates = parse_pack_commands(data.as_bytes());
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].refname, "refs/heads/main");
+        assert_eq!(updates[1].refname, "refs/heads/feature");
+    }
+
+    #[test]
+    fn parse_pack_empty_data() {
+        assert!(parse_pack_commands(b"0000").is_empty());
+        assert!(parse_pack_commands(b"").is_empty());
+    }
+
+    #[test]
+    fn parse_pack_with_trailing_pack_data() {
+        let old = "a".repeat(40);
+        let new = "b".repeat(40);
+        let cmd = format!("{old} {new} refs/heads/main\n");
+        let pkt_len = cmd.len() + 4;
+        let mut data = format!("{pkt_len:04x}{cmd}0000PACK").into_bytes();
+        // Append some binary pack data
+        data.extend_from_slice(&[0x00, 0x01, 0x02, 0xff]);
+        let updates = parse_pack_commands(&data);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].refname, "refs/heads/main");
     }
 }

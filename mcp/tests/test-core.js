@@ -29,6 +29,7 @@ describe("platform-core", () => {
     assert.ok(names.includes("delete_project"), "missing delete_project");
     assert.ok(names.includes("get_session"), "missing get_session");
     assert.ok(names.includes("send_message_to_session"), "missing send_message_to_session");
+    assert.ok(names.includes("ask_for_secret"), "missing ask_for_secret");
   });
 
   it("get_project sends GET /api/projects/:id", async () => {
@@ -108,6 +109,55 @@ describe("platform-core", () => {
     await assert.rejects(
       () => client.callTool("create_project", { name: "dup" }),
       /400/,
+    );
+  });
+
+  it("ask_for_secret creates request and polls until completed", async () => {
+    const requestId = "req-" + Date.now();
+    // Queue: POST create → 201, then GET poll (pending), then GET poll (completed)
+    api.queueResponses("POST", `/api/projects/${projectId}/secret-requests`,
+      { status: 201, body: { id: requestId, status: "pending", name: "MY_TOKEN" } },
+    );
+    api.queueResponses("GET", `/api/projects/${projectId}/secret-requests/${requestId}`,
+      { status: 200, body: { id: requestId, status: "pending", name: "MY_TOKEN" } },
+      { status: 200, body: { id: requestId, status: "completed", name: "MY_TOKEN" } },
+    );
+
+    const result = await client.callTool("ask_for_secret", {
+      name: "MY_TOKEN",
+      prompt: "Please provide your token",
+    });
+
+    // Verify the POST was made to create the secret request
+    const postReqs = api.requestsMatching("POST", `/api/projects/${projectId}/secret-requests`);
+    assert.ok(postReqs.length >= 1, "should have created secret request");
+    assert.equal(postReqs[0].body.name, "MY_TOKEN");
+    assert.equal(postReqs[0].body.description, "Please provide your token");
+    assert.equal(postReqs[0].body.session_id, sessionId);
+
+    // Verify the result indicates completion
+    const text = result.content[0].text;
+    assert.ok(text.includes("completed"), "result should indicate completed");
+    assert.ok(text.includes("MY_TOKEN"), "result should include secret name");
+  });
+
+  it("ask_for_secret returns error on timeout", async () => {
+    const requestId = "req-timeout-" + Date.now();
+    // Queue: POST create → 201, then GET poll returns timed_out
+    api.queueResponses("POST", `/api/projects/${projectId}/secret-requests`,
+      { status: 201, body: { id: requestId, status: "pending", name: "EXPIRED_KEY" } },
+    );
+    api.queueResponses("GET", `/api/projects/${projectId}/secret-requests/${requestId}`,
+      { status: 200, body: { id: requestId, status: "timed_out", name: "EXPIRED_KEY" } },
+    );
+
+    // callTool throws on isError results, so expect rejection with timeout message
+    await assert.rejects(
+      () => client.callTool("ask_for_secret", {
+        name: "EXPIRED_KEY",
+        prompt: "This will timeout",
+      }),
+      /timed out/,
     );
   });
 });

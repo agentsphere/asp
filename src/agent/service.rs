@@ -146,6 +146,7 @@ pub async fn create_session(
         project_agent_image: project_agent_image.as_deref(),
         anthropic_api_key: user_api_key.as_deref(),
         extra_env_vars: &extra_env_vars,
+        registry_url: state.config.registry_url.as_deref(),
     })?;
 
     let pod_name = pod
@@ -326,7 +327,7 @@ pub async fn run_reaper(state: AppState, mut shutdown: tokio::sync::watch::Recei
 async fn reap_terminated_sessions(state: &AppState) -> Result<(), AgentError> {
     let running = sqlx::query!(
         r#"
-        SELECT s.id, s.pod_name, s.agent_user_id, s.project_id,
+        SELECT s.id as "id!", s.pod_name, s.agent_user_id, s.project_id,
                p.namespace_slug as "namespace_slug?"
         FROM agent_sessions s
         LEFT JOIN projects p ON p.id = s.project_id

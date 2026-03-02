@@ -48,6 +48,7 @@ mod registry;
 mod workspace;
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> anyhow::Result<()> {
     // Install rustls crypto provider before any TLS usage (kube, reqwest, lettre)
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -57,18 +58,40 @@ async fn main() -> anyhow::Result<()> {
         .with(fmt::layer().json())
         .init();
 
-    let cfg = config::Config::load();
+    let mut cfg = config::Config::load();
 
     // Validate master key for secrets engine
     if let Some(ref mk) = cfg.master_key {
         secrets::engine::parse_master_key(mk).expect("PLATFORM_MASTER_KEY is invalid");
         tracing::info!("secrets engine master key loaded");
     } else if cfg.dev_mode {
+        // Deterministic dev key — NOT for production
+        let dev_key = "0".repeat(64);
+        cfg.master_key = Some(dev_key);
         tracing::warn!(
             "PLATFORM_MASTER_KEY not set — using deterministic dev key (NOT for production)"
         );
     } else {
         tracing::warn!("PLATFORM_MASTER_KEY not set — secrets engine disabled");
+    }
+
+    // In dev mode, ensure data directories exist (use writable fallbacks if needed)
+    if cfg.dev_mode {
+        for dir in [&mut cfg.git_repos_path, &mut cfg.ops_repos_path] {
+            if std::fs::create_dir_all(&*dir).is_err() {
+                // Default /data/* paths aren't writable on dev machines — fall back to /tmp
+                let fallback = std::env::temp_dir()
+                    .join("platform-dev")
+                    .join(dir.file_name().unwrap_or_default());
+                std::fs::create_dir_all(&fallback).expect("failed to create dev data directory");
+                tracing::warn!(
+                    original = %dir.display(),
+                    fallback = %fallback.display(),
+                    "data directory not writable, using fallback"
+                );
+                *dir = fallback;
+            }
+        }
     }
 
     // Connect to Postgres and run migrations

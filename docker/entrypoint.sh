@@ -3,6 +3,15 @@ set -euo pipefail
 cd /workspace
 
 # ---------------------------------------------------------------------------
+# Configure git credentials using PLATFORM_API_TOKEN for push auth
+# ---------------------------------------------------------------------------
+if [ -n "${PLATFORM_API_TOKEN:-}" ]; then
+  printf '#!/bin/sh\necho "$PLATFORM_API_TOKEN"\n' > /tmp/git-askpass.sh
+  chmod +x /tmp/git-askpass.sh
+  export GIT_ASKPASS=/tmp/git-askpass.sh
+fi
+
+# ---------------------------------------------------------------------------
 # Generate MCP config based on agent role
 # ---------------------------------------------------------------------------
 ROLE="${AGENT_ROLE:-dev}"
@@ -55,7 +64,12 @@ echo "$MCP_JSON" > /tmp/mcp-config.json
 # ---------------------------------------------------------------------------
 # Run Claude Code with MCP config, streaming JSON output
 # ---------------------------------------------------------------------------
-claude --output-format stream-json --mcp-config /tmp/mcp-config.json "$@"
+# MCP servers are generated above but currently disabled due to a Claude CLI
+# compatibility issue where --mcp-config causes the process to hang
+# indefinitely during MCP server startup. The coding agent works fine with
+# built-in tools (Bash, Edit, Read, Write).  Re-enable when the issue is
+# resolved by uncommenting --mcp-config below.
+claude --print --output-format stream-json --verbose --dangerously-skip-permissions "$@"
 EXIT_CODE=$?
 
 # ---------------------------------------------------------------------------
@@ -65,6 +79,14 @@ if [ -n "$(git status --porcelain)" ]; then
   git add -A
   git commit -m "agent session ${SESSION_ID:-unknown}"
   git push origin "${BRANCH:-agent/${SESSION_ID:-unknown}}"
+fi
+
+# ---------------------------------------------------------------------------
+# Wait for pipeline build to finish (if a pipeline config exists)
+# ---------------------------------------------------------------------------
+if [ -f /workspace/.platform.yaml ] && [ "$EXIT_CODE" -eq 0 ]; then
+  echo "Verifying pipeline build..."
+  platform-build-status 300 10 || echo "WARNING: Pipeline build did not succeed (exit $?)"
 fi
 
 exit $EXIT_CODE

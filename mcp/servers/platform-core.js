@@ -138,6 +138,37 @@ const TOOLS = [
       required: ["session_id", "content"],
     },
   },
+  {
+    name: "ask_for_secret",
+    description:
+      "Request a secret from the user (e.g. API key, password). " +
+      "Creates a pending secret request that appears in the UI. " +
+      "The user enters the value in a modal, then this tool returns it. " +
+      "Polls until the user responds or the request times out (5 min).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Secret name (e.g. GITHUB_TOKEN, API_KEY)",
+        },
+        prompt: {
+          type: "string",
+          description: "Human-readable prompt explaining what the secret is for",
+        },
+        environments: {
+          type: "array",
+          items: { type: "string" },
+          description: "Environments to store the secret for (e.g. ['production', 'staging']). Optional.",
+        },
+        project_id: {
+          type: "string",
+          description: "Project UUID (defaults to current project)",
+        },
+      },
+      required: ["name", "prompt"],
+    },
+  },
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
@@ -211,6 +242,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         { body: { content: args.content } },
       );
       return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    }
+    case "ask_for_secret": {
+      if (!SESSION_ID) throw new Error("SESSION_ID not set — cannot request secrets");
+      const p = args.project_id || PROJECT_ID;
+      if (!p) throw new Error("PROJECT_ID not set and no project_id provided");
+
+      // Create the secret request
+      const payload = {
+        name: args.name,
+        description: args.prompt || "",
+        environments: args.environments || [],
+        session_id: SESSION_ID,
+      };
+      const created = await apiPost(`/api/projects/${p}/secret-requests`, { body: payload });
+      const requestId = created.id;
+
+      // Poll until completed or timed out (max 5 min, 2s interval)
+      const maxAttempts = 150; // 5 min / 2s
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const status = await apiGet(`/api/projects/${p}/secret-requests/${requestId}`);
+        if (status.status === "completed") {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                secret_request_id: requestId,
+                status: "completed",
+                name: status.name,
+              }, null, 2),
+            }],
+          };
+        }
+        if (status.status === "timed_out") {
+          return {
+            content: [{ type: "text", text: `Secret request timed out. The user did not provide the secret "${args.name}" within 5 minutes.` }],
+            isError: true,
+          };
+        }
+      }
+
+      return {
+        content: [{ type: "text", text: `Secret request polling timed out for "${args.name}".` }],
+        isError: true,
+      };
     }
     default:
       throw new Error(`Unknown tool: ${name}`);

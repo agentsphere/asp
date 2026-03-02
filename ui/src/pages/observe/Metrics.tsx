@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
-import { api, qs } from '../../lib/api';
-import type { MetricSeries } from '../../lib/types';
+import { api, qs, type ListResponse } from '../../lib/api';
+import type { MetricSeries, Project } from '../../lib/types';
 
 const TIME_RANGES: { value: string; label: string; seconds: number }[] = [
   { value: '1h', label: '1 hour', seconds: 3600 },
@@ -17,17 +17,22 @@ const CHART_COLORS = [
 export function Metrics() {
   const [names, setNames] = useState<string[]>([]);
   const [selectedMetric, setSelectedMetric] = useState('');
+  const [selectedProject, setSelectedProject] = useState('');
   const [labelFilter, setLabelFilter] = useState('');
   const [timeRange, setTimeRange] = useState('1h');
   const [series, setSeries] = useState<MetricSeries[]>([]);
   const [loading, setLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [projects, setProjects] = useState<Project[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const intervalRef = useRef<number | null>(null);
 
   useEffect(() => {
     api.get<string[]>('/api/observe/metrics/names')
       .then(n => { setNames(n); if (n.length > 0 && !selectedMetric) setSelectedMetric(n[0]); })
+      .catch(() => {});
+    api.get<ListResponse<Project>>('/api/projects?limit=100')
+      .then(r => setProjects(r.items))
       .catch(() => {});
   }, []);
 
@@ -36,6 +41,7 @@ export function Metrics() {
     setLoading(true);
     const params: Record<string, string> = { name: selectedMetric, range: timeRange };
     if (labelFilter) params.labels = labelFilter;
+    if (selectedProject) params.project_id = selectedProject;
 
     api.get<MetricSeries[]>(`/api/observe/metrics/query${qs(params)}`)
       .then(setSeries)
@@ -167,6 +173,14 @@ export function Metrics() {
     <div>
       <h2 class="mb-md">Metrics</h2>
       <div class="filter-bar">
+        <div class="filter-item">
+          <label class="filter-label">Project</label>
+          <select class="input filter-input" value={selectedProject}
+            onChange={(e) => setSelectedProject((e.target as HTMLSelectElement).value)}>
+            <option value="">All projects</option>
+            {projects.map(p => <option key={p.id} value={p.id}>{p.display_name || p.name}</option>)}
+          </select>
+        </div>
         <div class="filter-item">
           <label class="filter-label">Metric</label>
           <select class="input filter-input" value={selectedMetric}

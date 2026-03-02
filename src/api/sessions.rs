@@ -872,18 +872,55 @@ async fn handle_ws(
     provider_name: String,
     mut socket: ws::WebSocket,
 ) {
+    // First, try the in-process broadcast channel (for sessions created via create-app).
+    if let Some(mut rx) = crate::agent::inprocess::subscribe(&state, session_id) {
+        loop {
+            tokio::select! {
+                event = rx.recv() => {
+                    match event {
+                        Ok(event) => {
+                            let json = serde_json::to_string(&event).unwrap_or_default();
+                            if socket.send(ws::Message::Text(json.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(%session_id, lagged = n, "ws subscriber lagged");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            break;
+                        }
+                    }
+                }
+                msg = socket.recv() => {
+                    match msg {
+                        Some(Ok(ws::Message::Text(text))) => {
+                            if let Ok(cmd) = serde_json::from_str::<SendMessageRequest>(&text) {
+                                let _ = service::send_message(&state, session_id, &cmd.content).await;
+                            }
+                        }
+                        Some(Ok(ws::Message::Close(_))) | None => break,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        tracing::info!(%session_id, "websocket connection closed (in-process)");
+        return;
+    }
+
+    // Fall back to pod log streaming for pod-based sessions.
     let Ok(provider) = service::get_provider(&provider_name) else {
         return;
     };
 
-    // Get log lines from the pod
     let mut lines = match service::get_log_lines(&state, session_id).await {
         Ok(l) => l,
         Err(e) => {
             tracing::error!(error = %e, %session_id, "failed to get log stream for ws");
             let _ = socket
                 .send(ws::Message::Text(
-                    serde_json::json!({"error": "failed to connect to agent"})
+                    serde_json::json!({"kind":"error","message":"failed to connect to agent"})
                         .to_string()
                         .into(),
                 ))
