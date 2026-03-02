@@ -81,6 +81,7 @@ pub struct SessionResponse {
     pub created_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
     pub browser_enabled: bool,
+    pub execution_mode: String,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -363,7 +364,7 @@ async fn list_sessions(
     let rows = sqlx::query!(
         r#"
         SELECT id, project_id, user_id, agent_user_id, prompt, status, branch, pod_name,
-               provider, cost_tokens, created_at, finished_at
+               provider, cost_tokens, created_at, finished_at, execution_mode
         FROM agent_sessions
         WHERE project_id = $1 AND ($2::text IS NULL OR status = $2)
         ORDER BY created_at DESC
@@ -393,6 +394,7 @@ async fn list_sessions(
             created_at: r.created_at,
             finished_at: r.finished_at,
             browser_enabled: false, // List view doesn't load provider_config
+            execution_mode: r.execution_mode,
         })
         .collect();
 
@@ -630,7 +632,7 @@ async fn update_session(
     }
 
     if let Some(project_id) = body.project_id {
-        // Verify project exists and user has access
+        // Verify project exists
         let exists: Option<(Uuid,)> =
             sqlx::query_as("SELECT id FROM projects WHERE id = $1 AND is_active = true")
                 .bind(project_id)
@@ -640,11 +642,40 @@ async fn update_session(
             return Err(ApiError::NotFound("project".into()));
         }
 
+        // Verify user has project write access
+        let allowed = crate::rbac::resolver::has_permission(
+            &state.pool,
+            &state.valkey,
+            auth.user_id,
+            Some(project_id),
+            crate::rbac::Permission::ProjectWrite,
+        )
+        .await
+        .map_err(ApiError::Internal)?;
+        if !allowed {
+            return Err(ApiError::Forbidden);
+        }
+
         sqlx::query("UPDATE agent_sessions SET project_id = $2 WHERE id = $1")
             .bind(session_id)
             .bind(project_id)
             .execute(&state.pool)
             .await?;
+
+        crate::audit::write_audit(
+            &state.pool,
+            &crate::audit::AuditEntry {
+                actor_id: auth.user_id,
+                actor_name: &auth.user_name,
+                action: "agent_session.update",
+                resource: "agent_session",
+                resource_id: Some(session_id),
+                project_id: Some(project_id),
+                detail: None,
+                ip_addr: auth.ip_addr.as_deref(),
+            },
+        )
+        .await;
     }
 
     let updated = service::fetch_session(&state.pool, session_id)
@@ -766,7 +797,7 @@ async fn list_children(
     let children = sqlx::query!(
         r#"
         SELECT id, project_id, user_id, agent_user_id, prompt, status, branch, pod_name,
-               provider, cost_tokens, created_at, finished_at, spawn_depth
+               provider, cost_tokens, created_at, finished_at, spawn_depth, execution_mode
         FROM agent_sessions
         WHERE parent_session_id = $1 AND project_id = $2
         ORDER BY created_at
@@ -793,17 +824,19 @@ async fn list_children(
             created_at: r.created_at,
             finished_at: r.finished_at,
             browser_enabled: false,
+            execution_mode: r.execution_mode,
         })
         .collect();
 
     Ok(Json(items))
 }
 
-fn truncate_prompt(prompt: &str, max_len: usize) -> String {
-    if prompt.len() <= max_len {
+fn truncate_prompt(prompt: &str, max_chars: usize) -> String {
+    if prompt.chars().count() <= max_chars {
         prompt.to_owned()
     } else {
-        format!("{}...", &prompt[..max_len])
+        let truncated: String = prompt.chars().take(max_chars).collect();
+        format!("{truncated}...")
     }
 }
 
@@ -836,6 +869,7 @@ fn session_to_response(
         created_at: session.created_at,
         finished_at: session.finished_at,
         browser_enabled,
+        execution_mode: session.execution_mode.clone(),
     }
 }
 
@@ -873,48 +907,76 @@ async fn handle_ws(
     mut socket: ws::WebSocket,
 ) {
     // First, try the in-process broadcast channel (for sessions created via create-app).
-    if let Some(mut rx) = crate::agent::inprocess::subscribe(&state, session_id) {
-        loop {
-            tokio::select! {
-                event = rx.recv() => {
-                    match event {
-                        Ok(event) => {
-                            let json = serde_json::to_string(&event).unwrap_or_default();
-                            if socket.send(ws::Message::Text(json.into())).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!(%session_id, lagged = n, "ws subscriber lagged");
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            break;
-                        }
-                    }
-                }
-                msg = socket.recv() => {
-                    match msg {
-                        Some(Ok(ws::Message::Text(text))) => {
-                            if let Ok(cmd) = serde_json::from_str::<SendMessageRequest>(&text) {
-                                let _ = service::send_message(&state, session_id, &cmd.content).await;
-                            }
-                        }
-                        Some(Ok(ws::Message::Close(_))) | None => break,
-                        _ => {}
-                    }
-                }
-            }
-        }
-        tracing::info!(%session_id, "websocket connection closed (in-process)");
+    if let Some(rx) = crate::agent::inprocess::subscribe(&state, session_id) {
+        stream_broadcast_to_ws(&state, session_id, rx, &mut socket, "in-process").await;
+        return;
+    }
+
+    // Try CLI subprocess broadcast channel.
+    if let Ok(rx) = state.cli_sessions.subscribe(session_id).await {
+        stream_broadcast_to_ws(&state, session_id, rx, &mut socket, "cli-subprocess").await;
         return;
     }
 
     // Fall back to pod log streaming for pod-based sessions.
-    let Ok(provider) = service::get_provider(&provider_name) else {
+    stream_pod_logs_to_ws(&state, session_id, &provider_name, &mut socket).await;
+}
+
+/// Stream events from a broadcast channel to a WebSocket client.
+/// Used for both in-process and CLI subprocess sessions.
+async fn stream_broadcast_to_ws(
+    state: &AppState,
+    session_id: Uuid,
+    mut rx: tokio::sync::broadcast::Receiver<crate::agent::provider::ProgressEvent>,
+    socket: &mut ws::WebSocket,
+    label: &str,
+) {
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                match event {
+                    Ok(event) => {
+                        let json = serde_json::to_string(&event).unwrap_or_default();
+                        if socket.send(ws::Message::Text(json.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(%session_id, lagged = n, %label, "ws subscriber lagged");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        break;
+                    }
+                }
+            }
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(ws::Message::Text(text))) => {
+                        if let Ok(cmd) = serde_json::from_str::<SendMessageRequest>(&text) {
+                            let _ = service::send_message(state, session_id, &cmd.content).await;
+                        }
+                    }
+                    Some(Ok(ws::Message::Close(_))) | None => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+    tracing::info!(%session_id, %label, "websocket connection closed");
+}
+
+/// Stream pod logs to a WebSocket client.
+async fn stream_pod_logs_to_ws(
+    state: &AppState,
+    session_id: Uuid,
+    provider_name: &str,
+    socket: &mut ws::WebSocket,
+) {
+    let Ok(provider) = service::get_provider(provider_name) else {
         return;
     };
 
-    let mut lines = match service::get_log_lines(&state, session_id).await {
+    let mut lines = match service::get_log_lines(state, session_id).await {
         Ok(l) => l,
         Err(e) => {
             tracing::error!(error = %e, %session_id, "failed to get log stream for ws");
@@ -931,12 +993,10 @@ async fn handle_ws(
 
     loop {
         tokio::select! {
-            // Read from pod log stream and send to WebSocket client
             line = lines.next_line() => {
                 match line {
                     Ok(Some(line)) => {
                         if let Some(event) = provider.parse_progress(&line) {
-                            // Store as assistant message
                             let _ = sqlx::query!(
                                 r#"INSERT INTO agent_messages (session_id, role, content, metadata)
                                    VALUES ($1, 'assistant', $2, $3)"#,
@@ -947,35 +1007,32 @@ async fn handle_ws(
                             .execute(&state.pool)
                             .await;
 
-                            // Send to WebSocket
                             let json = serde_json::to_string(&event).unwrap_or_default();
                             if socket.send(ws::Message::Text(json.into())).await.is_err() {
-                                break; // Client disconnected
+                                break;
                             }
                         }
                     }
-                    Ok(None) => break, // Stream ended (pod exited)
+                    Ok(None) => break,
                     Err(e) => {
                         tracing::warn!(error = %e, %session_id, "log stream error");
                         break;
                     }
                 }
             }
-            // Read from WebSocket client (user sending messages)
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(ws::Message::Text(text))) => {
                         if let Ok(cmd) = serde_json::from_str::<SendMessageRequest>(&text) {
-                            let _ = service::send_message(&state, session_id, &cmd.content).await;
+                            let _ = service::send_message(state, session_id, &cmd.content).await;
                         }
                     }
                     Some(Ok(ws::Message::Close(_))) | None => break,
-                    _ => {} // Ignore pings, binary, etc.
+                    _ => {}
                 }
             }
         }
     }
-
     tracing::info!(%session_id, "websocket connection closed");
 }
 
@@ -1246,6 +1303,7 @@ mod tests {
             parent_session_id: None,
             spawn_depth: 0,
             allowed_child_roles: None,
+            execution_mode: "pod".to_owned(),
         };
 
         let response = session_to_response(&session, false);
@@ -1274,6 +1332,7 @@ mod tests {
             parent_session_id: None,
             spawn_depth: 0,
             allowed_child_roles: None,
+            execution_mode: "pod".to_owned(),
         };
 
         let response = session_to_response(&session, true);
@@ -1302,6 +1361,7 @@ mod tests {
             parent_session_id: None,
             spawn_depth: 0,
             allowed_child_roles: None,
+            execution_mode: "pod".to_owned(),
         };
 
         let response = session_to_response(&session, false);
@@ -1327,6 +1387,7 @@ mod tests {
             parent_session_id: None,
             spawn_depth: 0,
             allowed_child_roles: None,
+            execution_mode: "pod".to_owned(),
         };
 
         let response = session_to_response(&session, false);

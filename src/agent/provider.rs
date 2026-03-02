@@ -68,6 +68,7 @@ pub struct AgentSession {
     pub parent_session_id: Option<Uuid>,
     pub spawn_depth: i32,
     pub allowed_child_roles: Option<Vec<String>>,
+    pub execution_mode: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -147,10 +148,15 @@ pub struct BuildPodParams<'a> {
     pub project_agent_image: Option<&'a str>,
     /// User-provided Anthropic API key. If set, used instead of the global K8s secret.
     pub anthropic_api_key: Option<&'a str>,
+    /// CLI OAuth token for subscription auth. When set, `CLAUDE_CODE_OAUTH_TOKEN` is
+    /// injected instead of `ANTHROPIC_API_KEY`.
+    pub cli_oauth_token: Option<&'a str>,
     /// Extra env vars from project secrets (scope=agent/all), injected into the pod.
     pub extra_env_vars: &'a [(String, String)],
-    /// Container registry URL (e.g. `localhost:5001`). Prefixed to the default agent image.
+    /// Container registry URL (e.g. `host.docker.internal:8080`). Prefixed to the default agent image.
     pub registry_url: Option<&'a str>,
+    /// K8s Secret name for `imagePullSecrets` (registry auth for image pulls).
+    pub registry_secret_name: Option<&'a str>,
 }
 
 /// Trait for agent provider implementations.

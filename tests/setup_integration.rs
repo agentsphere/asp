@@ -84,6 +84,7 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
         platform_namespace: "test-platform".into(),
         ssh_listen: None,
         ssh_host_key_path: "/tmp/test_ssh_host_key".into(),
+        max_cli_subprocesses: 10,
     };
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");
@@ -103,6 +104,7 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
         secret_requests: std::sync::Arc::new(std::sync::RwLock::new(
             std::collections::HashMap::new(),
         )),
+        cli_sessions: platform::agent::claude_cli::CliSessionManager::new(10),
     };
 
     (state, setup_token)

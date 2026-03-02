@@ -20,8 +20,10 @@ impl AgentProvider for ClaudeCodeProvider {
             namespace: params.namespace,
             project_agent_image: params.project_agent_image,
             anthropic_api_key: params.anthropic_api_key,
+            cli_oauth_token: params.cli_oauth_token,
             extra_env_vars: params.extra_env_vars,
             registry_url: params.registry_url,
+            registry_secret_name: params.registry_secret_name,
         }))
     }
 

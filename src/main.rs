@@ -133,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
         deploy_notify: Arc::new(tokio::sync::Notify::new()),
         inprocess_sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         secret_requests: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        cli_sessions: agent::claude_cli::CliSessionManager::new(cfg.max_cli_subprocesses),
     };
 
     // Set configurable permission cache TTL

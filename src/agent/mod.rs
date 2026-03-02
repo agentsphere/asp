@@ -1,5 +1,7 @@
 pub mod anthropic;
+pub mod claude_cli;
 pub mod claude_code;
+pub mod commands;
 pub mod error;
 pub mod identity;
 pub mod inprocess;

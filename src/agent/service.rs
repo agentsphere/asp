@@ -110,14 +110,42 @@ pub async fn create_session(
     let (repo_clone_url, project_agent_image) =
         get_project_repo_info(&state.pool, project_id, platform_api_url).await?;
 
-    // 4. Look up user's provider key, falling back to global platform secret
-    let user_api_key = match resolve_user_api_key(state, user_id).await {
-        Some(key) => Some(key),
-        None => resolve_global_api_key(state).await,
+    // 4. Resolve auth: CLI subscription credentials > user API key > global platform secret
+    let cli_oauth_token = resolve_cli_oauth_token(state, user_id).await;
+    let user_api_key = if cli_oauth_token.is_some() {
+        None // CLI OAuth takes priority; skip API key lookup
+    } else {
+        match resolve_user_api_key(state, user_id).await {
+            Some(key) => Some(key),
+            None => resolve_global_api_key(state).await,
+        }
     };
 
     // 4b. Query project secrets scoped to agent/all
     let extra_env_vars = resolve_agent_secrets(state, project_id).await;
+
+    // 4c. Create registry pull secret if registry is configured
+    let registry_pull_secret = if state.config.registry_url.is_some() {
+        match crate::registry::pull_secret::create_pull_secret(
+            &state.pool,
+            &state.kube,
+            state.config.registry_url.as_deref().unwrap(),
+            user_id,
+            &namespace,
+            "platform.io/session",
+            &session_id.to_string(),
+        )
+        .await
+        {
+            Ok(result) => Some(result),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to create registry pull secret for agent, continuing without");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // 5. Build and create the K8s pod
     let session_for_pod = AgentSession {
@@ -137,6 +165,7 @@ pub async fn create_session(
         parent_session_id: None,
         spawn_depth: 0,
         allowed_child_roles: None,
+        execution_mode: "pod".to_owned(),
     };
 
     let pod = provider.build_pod(BuildPodParams {
@@ -148,8 +177,12 @@ pub async fn create_session(
         namespace: &namespace,
         project_agent_image: project_agent_image.as_deref(),
         anthropic_api_key: user_api_key.as_deref(),
+        cli_oauth_token: cli_oauth_token.as_deref(),
         extra_env_vars: &extra_env_vars,
         registry_url: state.config.registry_url.as_deref(),
+        registry_secret_name: registry_pull_secret
+            .as_ref()
+            .map(|s| s.secret_name.as_str()),
     })?;
 
     let pod_name = pod
@@ -188,12 +221,21 @@ pub async fn send_message(
         return Err(AgentError::SessionNotRunning);
     }
 
-    // In-process sessions (no pod) use the inprocess module
-    if session.pod_name.is_none() {
-        return super::inprocess::send_inprocess_message(state, session_id, content).await;
+    // Route by execution mode
+    match session.execution_mode.as_str() {
+        "inprocess" => {
+            return super::inprocess::send_inprocess_message(state, session_id, content).await;
+        }
+        "cli_subprocess" => {
+            return send_cli_message(state, session_id, content).await;
+        }
+        _ => {} // "pod" — fall through to existing pod logic
     }
 
-    let pod_name = session.pod_name.as_deref().unwrap();
+    let pod_name = session
+        .pod_name
+        .as_deref()
+        .ok_or(AgentError::SessionNotRunning)?;
     let namespace =
         resolve_session_namespace(&state.pool, &session, &state.config.agent_namespace).await?;
     let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &namespace);
@@ -238,16 +280,26 @@ pub async fn send_message(
 pub async fn stop_session(state: &AppState, session_id: Uuid) -> Result<(), AgentError> {
     let session = fetch_session(&state.pool, session_id).await?;
 
-    if let Some(ref pod_name) = session.pod_name {
-        // K8s pod session — capture logs and delete pod
-        let namespace =
-            resolve_session_namespace(&state.pool, &session, &state.config.agent_namespace).await?;
-        let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &namespace);
-        capture_session_logs(&pods, pod_name, state, session_id).await;
-        let _ = pods.delete(pod_name, &DeleteParams::default()).await;
-    } else {
-        // In-process session — remove handle from memory
-        super::inprocess::remove_session(state, session_id);
+    match session.execution_mode.as_str() {
+        "cli_subprocess" => {
+            // CLI subprocess — kill the process and remove from manager
+            stop_cli_session(state, session_id).await;
+        }
+        "inprocess" => {
+            // In-process session — remove handle from memory
+            super::inprocess::remove_session(state, session_id);
+        }
+        _ => {
+            // Pod session — capture logs and delete pod
+            if let Some(ref pod_name) = session.pod_name {
+                let namespace =
+                    resolve_session_namespace(&state.pool, &session, &state.config.agent_namespace)
+                        .await?;
+                let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &namespace);
+                capture_session_logs(&pods, pod_name, state, session_id).await;
+                let _ = pods.delete(pod_name, &DeleteParams::default()).await;
+            }
+        }
     }
 
     // Update session status
@@ -490,7 +542,8 @@ pub async fn fetch_session(pool: &PgPool, session_id: Uuid) -> Result<AgentSessi
         SELECT id, project_id, user_id, agent_user_id, prompt, status,
                branch, pod_name, provider, provider_config,
                cost_tokens, created_at, finished_at,
-               parent_session_id, spawn_depth, allowed_child_roles
+               parent_session_id, spawn_depth, allowed_child_roles,
+               execution_mode
         FROM agent_sessions WHERE id = $1
         "#,
         session_id,
@@ -516,6 +569,7 @@ pub async fn fetch_session(pool: &PgPool, session_id: Uuid) -> Result<AgentSessi
         parent_session_id: row.parent_session_id,
         spawn_depth: row.spawn_depth,
         allowed_child_roles: row.allowed_child_roles,
+        execution_mode: row.execution_mode,
     })
 }
 
@@ -589,6 +643,25 @@ async fn resolve_agent_secrets(state: &AppState, project_id: Uuid) -> Vec<(Strin
     }
 }
 
+/// Try to resolve the user's CLI OAuth token from `cli_credentials`.
+/// Returns `None` if no credentials are stored or if the secrets engine isn't configured.
+async fn resolve_cli_oauth_token(state: &AppState, user_id: Uuid) -> Option<String> {
+    let master_key_hex = state.config.master_key.as_deref()?;
+    let master_key = crate::secrets::engine::parse_master_key(master_key_hex).ok()?;
+    match crate::auth::cli_creds::resolve_cli_auth(&state.pool, &master_key, user_id).await {
+        Ok(token) => {
+            if token.is_none() {
+                tracing::debug!(%user_id, "no CLI credentials stored");
+            }
+            token
+        }
+        Err(e) => {
+            tracing::error!(error = %e, %user_id, "failed to decrypt CLI credentials");
+            None
+        }
+    }
+}
+
 /// Try to resolve the user's Anthropic API key from `user_provider_keys`.
 /// Returns `None` if the user hasn't set one or if the secrets engine isn't configured.
 pub(crate) async fn resolve_user_api_key(state: &AppState, user_id: Uuid) -> Option<String> {
@@ -621,6 +694,48 @@ pub(crate) async fn resolve_global_api_key(state: &AppState) -> Option<String> {
         Err(e) => {
             tracing::debug!(error = %e, "no global ANTHROPIC_API_KEY secret found");
             None
+        }
+    }
+}
+
+/// Send a message to a CLI subprocess session.
+async fn send_cli_message(
+    state: &AppState,
+    session_id: Uuid,
+    content: &str,
+) -> Result<(), AgentError> {
+    let handle = state
+        .cli_sessions
+        .get(session_id)
+        .await
+        .ok_or(AgentError::SessionNotRunning)?;
+
+    // Send via transport
+    let transport = handle.transport.lock().await;
+    transport
+        .send_message(content)
+        .await
+        .map_err(|e| AgentError::Other(e.into()))?;
+    drop(transport);
+
+    // Store in agent_messages
+    sqlx::query!(
+        "INSERT INTO agent_messages (session_id, role, content) VALUES ($1, 'user', $2)",
+        session_id,
+        content,
+    )
+    .execute(&state.pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Stop a CLI subprocess session: kill the process and remove from manager.
+async fn stop_cli_session(state: &AppState, session_id: Uuid) {
+    if let Some(handle) = state.cli_sessions.remove(session_id).await {
+        let mut transport = handle.transport.lock().await;
+        if let Err(e) = transport.kill().await {
+            tracing::warn!(error = %e, %session_id, "failed to kill CLI subprocess");
         }
     }
 }

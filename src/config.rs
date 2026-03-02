@@ -42,6 +42,8 @@ pub struct Config {
     pub ssh_listen: Option<String>,
     /// Path to ED25519 host key (auto-generated if absent).
     pub ssh_host_key_path: String,
+    /// Maximum concurrent CLI subprocess sessions per platform pod.
+    pub max_cli_subprocesses: usize,
 }
 
 fn parse_cors_origins(s: &str) -> Vec<String> {
@@ -110,6 +112,10 @@ impl Config {
             ssh_listen: env::var("PLATFORM_SSH_LISTEN").ok(),
             ssh_host_key_path: env::var("PLATFORM_SSH_HOST_KEY_PATH")
                 .unwrap_or_else(|_| "/data/ssh_host_ed25519_key".into()),
+            max_cli_subprocesses: env::var("PLATFORM_MAX_CLI_SUBPROCESSES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
         }
     }
 }
@@ -150,6 +156,7 @@ impl Config {
             platform_namespace: "test-platform".into(),
             ssh_listen: None,
             ssh_host_key_path: "/tmp/test_ssh_host_key".into(),
+            max_cli_subprocesses: 10,
         }
     }
 }
