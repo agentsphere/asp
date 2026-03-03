@@ -59,6 +59,10 @@ const RESERVED_ENV_VARS: &[&str] = &[
     about = "Claude CLI wrapper with Valkey pub/sub for platform agent pods"
 )]
 struct Cli {
+    /// Initial prompt to send to Claude (if omitted, reads first line from stdin)
+    #[arg(short = 'p', long)]
+    prompt: Option<String>,
+
     /// Model selection (e.g. "opus", "sonnet")
     #[arg(long)]
     model: Option<String>,
@@ -177,8 +181,8 @@ fn resolve_pubsub() -> anyhow::Result<Option<PubSubConfig>> {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // 1. Resolve auth
-    let auth = resolve_auth()?;
+    // 1. Resolve auth (may be None if user relies on config-dir OAuth)
+    let auth = resolve_auth().ok();
 
     // 2. Validate extra-env
     let extra_env = parse_extra_env(&cli.extra_env)?;
@@ -186,8 +190,14 @@ async fn main() -> anyhow::Result<()> {
     // 3. Resolve pub/sub
     let pubsub_config = resolve_pubsub()?;
 
-    // 4. Create isolated temp config dir
-    let config_dir = tempfile::TempDir::new().context("failed to create temp config dir")?;
+    // 4. Config dir isolation
+    //    - Pod mode (pub/sub): use temp dir for security isolation
+    //    - REPL mode (local): use default ~/.claude/ so OAuth credentials work
+    let config_dir = if pubsub_config.is_some() {
+        Some(tempfile::TempDir::new().context("failed to create temp config dir")?)
+    } else {
+        None
+    };
 
     // 5. Connect pub/sub if configured
     let pubsub = if let Some(ref ps_config) = pubsub_config {
@@ -205,15 +215,38 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    // 6. Build spawn options
+    // 6. Resolve initial prompt
+    //    --input-format stream-json requires --print per Claude CLI docs,
+    //    so we always need an initial prompt. If not provided via -p, read
+    //    the first line from stdin.
+    let initial_prompt = if let Some(prompt) = cli.prompt {
+        prompt
+    } else {
+        eprintln!("Enter your prompt (then press Enter):");
+        eprint!("> ");
+        let mut line = String::new();
+        std::io::stdin()
+            .read_line(&mut line)
+            .context("failed to read initial prompt from stdin")?;
+        let trimmed = line.trim().to_owned();
+        if trimmed.is_empty() {
+            bail!("no initial prompt provided");
+        }
+        trimmed
+    };
+
+    // 7. Build spawn options
     let allowed_tools = cli
         .allowed_tools
         .map(|s| s.split(',').map(|t| t.trim().to_owned()).collect());
 
-    let (oauth_token, anthropic_api_key) = match auth {
-        AuthToken::OAuth(t) => (Some(t), None),
-        AuthToken::ApiKey(k) => (None, Some(k)),
+    let (oauth_token, anthropic_api_key) = match &auth {
+        Some(AuthToken::OAuth(t)) => (Some(t.clone()), None),
+        Some(AuthToken::ApiKey(k)) => (None, Some(k.clone())),
+        None => (None, None),
     };
+
+    let is_pod_mode = pubsub_config.is_some();
 
     let opts = CliSpawnOptions {
         cli_path: cli.cli_path,
@@ -223,18 +256,19 @@ async fn main() -> anyhow::Result<()> {
         max_turns: cli.max_turns,
         permission_mode: cli.permission_mode,
         allowed_tools,
-        config_dir: Some(config_dir.path().to_path_buf()),
+        config_dir: config_dir.as_ref().map(|d| d.path().to_path_buf()),
         oauth_token,
         anthropic_api_key,
         extra_env,
+        isolate_env: is_pod_mode,
         ..Default::default()
     };
 
-    // 7. Spawn CLI subprocess
+    // 8. Spawn CLI subprocess
     let transport = SubprocessTransport::spawn(opts).context("failed to spawn Claude CLI")?;
 
-    // 8. Run REPL
-    repl::run(transport, pubsub).await?;
+    // 9. Run REPL (initial prompt sent inside so response-reading picks it up)
+    repl::run(transport, pubsub, initial_prompt).await?;
 
     // config_dir is dropped here (auto-cleanup)
     Ok(())

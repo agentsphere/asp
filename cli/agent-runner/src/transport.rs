@@ -61,6 +61,13 @@ pub struct CliSpawnOptions {
     pub anthropic_api_key: Option<String>,
     /// Additional environment variables to pass to the subprocess.
     pub extra_env: Vec<(String, String)>,
+    /// Initial prompt — passed as `--print <prompt>` (positional arg).
+    /// Required for `--input-format stream-json` to take effect.
+    pub initial_prompt: Option<String>,
+    /// Use `env_clear()` + whitelist for security isolation (pod mode).
+    /// When false, inherits parent env (REPL/local mode — needed for
+    /// config-dir OAuth credentials to work).
+    pub isolate_env: bool,
 }
 
 impl SubprocessTransport {
@@ -79,12 +86,19 @@ impl SubprocessTransport {
         cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env_clear(); // Security: start with empty environment
+            .stderr(Stdio::piped());
 
-        // Apply whitelisted environment variables
-        for (key, value) in &env_vars {
-            cmd.env(key, value);
+        if opts.isolate_env {
+            // Pod mode: clear env then add only whitelisted vars
+            cmd.env_clear();
+            for (key, value) in &env_vars {
+                cmd.env(key, value);
+            }
+        } else {
+            // REPL mode: inherit parent env, overlay explicit vars
+            for (key, value) in &env_vars {
+                cmd.env(key, value);
+            }
         }
 
         if let Some(ref cwd) = opts.cwd {
@@ -301,11 +315,15 @@ fn find_claude_cli(explicit: Option<&Path>) -> Result<PathBuf, CliError> {
 }
 
 /// Build CLI arguments from spawn options.
+///
+/// Always uses `--input-format stream-json --output-format stream-json`.
+/// The initial prompt is NOT passed as a CLI arg — it must be sent as a
+/// JSON user message on stdin after spawn (see `send_message`).
 pub(crate) fn build_args(opts: &CliSpawnOptions) -> Vec<String> {
     let mut args = vec![
-        "--input-format".to_owned(),
-        "stream-json".to_owned(),
         "--output-format".to_owned(),
+        "stream-json".to_owned(),
+        "--input-format".to_owned(),
         "stream-json".to_owned(),
         "--verbose".to_owned(),
     ];
@@ -430,13 +448,14 @@ mod tests {
     }
 
     #[test]
-    fn build_args_includes_stream_flags() {
+    fn build_args_always_includes_stream_json() {
         let opts = CliSpawnOptions::default();
         let args = build_args(&opts);
-        assert!(args.contains(&"--input-format".to_owned()));
-        assert!(args.contains(&"stream-json".to_owned()));
         assert!(args.contains(&"--output-format".to_owned()));
+        assert!(args.contains(&"--input-format".to_owned()));
         assert!(args.contains(&"--verbose".to_owned()));
+        // No --print: initial prompt is sent via stdin, not CLI arg
+        assert!(!args.contains(&"--print".to_owned()));
     }
 
     #[test]

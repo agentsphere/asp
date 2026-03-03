@@ -31,13 +31,22 @@ pub(crate) async fn wait_for_init(
 ///
 /// Merges three input sources (stdin, pub/sub, SIGTERM) and streams CLI output
 /// with terminal rendering + pub/sub event publishing.
-pub async fn run(transport: SubprocessTransport, pubsub: Option<PubSubClient>) -> Result<()> {
+pub async fn run(
+    transport: SubprocessTransport,
+    pubsub: Option<PubSubClient>,
+    initial_prompt: String,
+) -> Result<()> {
     // 1. Register SIGTERM handler for K8s graceful shutdown
     #[cfg(unix)]
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .context("failed to register SIGTERM handler")?;
 
-    // 2. Wait for system init message
+    // 2. Send initial prompt, then wait for system init
+    transport
+        .send_message(&initial_prompt)
+        .await
+        .context("failed to send initial prompt to CLI")?;
+
     let sys = wait_for_init(&transport, 30).await?;
     render::render_message(&CliMessage::System(sys.clone()));
 
@@ -92,66 +101,83 @@ pub async fn run(transport: SubprocessTransport, pubsub: Option<PubSubClient>) -
     });
 
     // 5. Main loop
+    //    First iteration: initial prompt already sent → skip to response reading.
+    //    Subsequent iterations: wait for user/pub-sub input, send, then read response.
+    let mut first_turn = true;
+
     loop {
-        if is_tty {
-            eprint!("> ");
-        }
+        if first_turn {
+            first_turn = false;
+        } else {
+            if is_tty {
+                eprint!("> ");
+            }
 
-        // Wait for input from any source
-        let input_result = tokio::select! {
-            line = stdin_rx.recv() => {
-                match line {
-                    Some(text) => {
-                        if text.trim().is_empty() {
-                            continue;
+            // Wait for input from any source
+            let input_result = tokio::select! {
+                line = stdin_rx.recv() => {
+                    match line {
+                        Some(text) => {
+                            let trimmed = text.trim();
+                            if trimmed.is_empty() {
+                                continue;
+                            }
+                            // Exit commands
+                            if matches!(trimmed, "exit" | "/exit" | "quit" | "/quit") {
+                                Ok(false)
+                            } else {
+                                transport.send_message(&text).await
+                                    .context("failed to send stdin input to CLI")?;
+                                Ok(true)
+                            }
                         }
-                        transport.send_message(&text).await
-                            .context("failed to send stdin input to CLI")?;
-                        Ok(true)
+                        None => Ok(false), // stdin closed (Ctrl-D)
                     }
-                    None => Ok(false), // stdin closed
                 }
-            }
-            input = async {
-                match pubsub_rx.as_mut() {
-                    Some(rx) => rx.recv().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                match input {
-                    Some(ps_input) => {
-                        dispatch_input(&transport, ps_input).await
-                            .context("failed to dispatch pub/sub input to CLI")?;
-                        Ok(true)
+                input = async {
+                    match pubsub_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
                     }
-                    None => Ok(false), // pub/sub channel closed
+                } => {
+                    match input {
+                        Some(ps_input) => {
+                            dispatch_input(&transport, ps_input).await
+                                .context("failed to dispatch pub/sub input to CLI")?;
+                            Ok(true)
+                        }
+                        None => Ok(false), // pub/sub channel closed
+                    }
                 }
-            }
-            _ = async {
-                #[cfg(unix)]
-                sigterm.recv().await;
-                #[cfg(not(unix))]
-                std::future::pending::<()>().await;
-            } => {
-                eprintln!("[info] SIGTERM received, shutting down...");
-                // Send interrupt to CLI
-                transport.send_control(crate::control::ControlRequest::interrupt()).await.ok();
-                if let Some(ref ps) = pubsub {
-                    let event = crate::pubsub::PubSubEvent {
-                        kind: crate::pubsub::PubSubKind::Error,
-                        message: "Session terminated by SIGTERM".into(),
-                        metadata: None,
-                    };
-                    ps.publish_event(&event).await.ok();
+                _ = tokio::signal::ctrl_c() => {
+                    eprintln!("\n[info] Ctrl-C, exiting...");
+                    Ok(false)
                 }
-                break;
-            }
-        };
+                _ = async {
+                    #[cfg(unix)]
+                    sigterm.recv().await;
+                    #[cfg(not(unix))]
+                    std::future::pending::<()>().await;
+                } => {
+                    eprintln!("[info] SIGTERM received, shutting down...");
+                    transport.send_control(crate::control::ControlRequest::interrupt()).await.ok();
+                    if let Some(ref ps) = pubsub {
+                        let event = crate::pubsub::PubSubEvent {
+                            kind: crate::pubsub::PubSubKind::Error,
+                            message: "Session terminated by SIGTERM".into(),
+                            metadata: None,
+                        };
+                        ps.publish_event(&event).await.ok();
+                    }
+                    break;
+                }
+            };
 
-        match input_result {
-            Ok(true) => {}      // input dispatched, stream responses
-            Ok(false) => break, // input source closed
-            Err(e) => return Err(e),
+            match input_result {
+                Ok(true) => {}      // input dispatched, stream responses
+                Ok(false) => break, // input source closed
+                Err(e) => return Err(e),
+            }
         }
 
         // 6. Stream responses until Result or EOF
