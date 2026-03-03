@@ -107,6 +107,8 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         ssh_host_key_path: "/tmp/test_ssh_host_key".into(),
         max_cli_subprocesses: 10,
         valkey_agent_host: "localhost:6379".into(),
+        agent_runner_dir: std::env::temp_dir().join(format!("agent-runner-{}", Uuid::new_v4())),
+        claude_cli_version: "stable".into(),
     };
 
     // Build WebAuthn

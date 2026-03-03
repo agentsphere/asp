@@ -163,6 +163,8 @@ pub struct BuildPodParams<'a> {
     pub registry_secret_name: Option<&'a str>,
     /// Valkey URL with per-session ACL credentials for pub/sub.
     pub valkey_url: Option<&'a str>,
+    /// Claude CLI version for auto-setup init container (e.g., "stable", "2.1.63").
+    pub claude_cli_version: &'a str,
 }
 
 /// Trait for agent provider implementations.

@@ -193,6 +193,7 @@ pub async fn create_session(
             .as_ref()
             .map(|s| s.secret_name.as_str()),
         valkey_url: Some(&valkey_creds.url),
+        claude_cli_version: &state.config.claude_cli_version,
     })?;
 
     let pod_name = pod

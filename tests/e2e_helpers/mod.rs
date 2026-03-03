@@ -181,6 +181,9 @@ pub async fn e2e_state_with_api_url(
         max_cli_subprocesses: 10,
         valkey_agent_host: std::env::var("PLATFORM_VALKEY_AGENT_HOST")
             .unwrap_or_else(|_| "localhost:6379".into()),
+        agent_runner_dir: std::env::temp_dir()
+            .join(format!("agent-runner-{}", uuid::Uuid::new_v4())),
+        claude_cli_version: "stable".into(),
     };
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");

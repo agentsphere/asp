@@ -45,6 +45,8 @@ pub struct PodBuildParams<'a> {
     pub registry_secret_name: Option<&'a str>,
     /// Valkey URL with per-session ACL credentials for pub/sub.
     pub valkey_url: Option<&'a str>,
+    /// Claude CLI version for auto-setup init container (e.g., "stable", "2.1.63").
+    pub claude_cli_version: &'a str,
 }
 
 /// Resolves the container image for an agent pod.
@@ -164,6 +166,8 @@ pub fn build_agent_pod(params: &PodBuildParams<'_>) -> Pod {
 
 fn build_agent_runner_args(params: &PodBuildParams<'_>) -> Vec<String> {
     let mut args = vec![
+        "--cli-path".to_owned(),
+        "/workspace/.platform/bin/claude".to_owned(),
         "--prompt".to_owned(),
         params.session.prompt.clone(),
         "--cwd".to_owned(),
@@ -191,6 +195,7 @@ const RESERVED_ENV_VARS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CLI_VERSION",
     "VALKEY_URL",
     "BRANCH",
     "AGENT_ROLE",
@@ -200,6 +205,9 @@ const RESERVED_ENV_VARS: &[&str] = &[
     "BROWSER_ENABLED",
     "BROWSER_CDP_URL",
     "BROWSER_ALLOWED_ORIGINS",
+    "DISABLE_AUTOUPDATER",
+    "DISABLE_TELEMETRY",
+    "PATH",
 ];
 
 fn is_reserved_env_var(name: &str) -> bool {
@@ -217,6 +225,14 @@ fn build_env_vars(
         env_var("SESSION_ID", &session_id.to_string()),
         env_var("PLATFORM_API_TOKEN", params.agent_api_token),
         env_var("PLATFORM_API_URL", params.platform_api_url),
+        // Ensure workspace-installed tools are on PATH
+        env_var(
+            "PATH",
+            "/workspace/.platform/bin:/workspace/.platform/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        ),
+        // Headless Claude CLI operation
+        env_var("DISABLE_AUTOUPDATER", "1"),
+        env_var("DISABLE_TELEMETRY", "1"),
         env_var("BRANCH", branch),
         env_var("AGENT_ROLE", role),
     ];
@@ -256,14 +272,115 @@ fn build_env_vars(
     vars
 }
 
-fn build_init_containers(params: &PodBuildParams<'_>, branch: &str) -> Vec<Container> {
-    let mut containers = vec![build_git_clone_container(
-        params.repo_clone_url,
-        branch,
-        params.agent_api_token,
-    )];
+/// Build the setup-tools init container that downloads agent-runner from the
+/// platform server and installs Claude CLI.
+///
+/// Uses the same image as the main container (no extra image pull).
+/// Tools are installed to `/workspace/.platform/bin/` (shared workspace volume).
+/// Idempotent: skips each tool if already present.
+fn build_setup_tools_container(
+    params: &PodBuildParams<'_>,
+    image: &str,
+    pull_policy: &str,
+) -> Container {
+    let setup_script = format!(
+        r#"set -eu
+BIN_DIR=/workspace/.platform/bin
+mkdir -p "$BIN_DIR"
 
-    // Optional setup container (runs after clone, before claude)
+# 1. Download agent-runner from platform server
+if [ ! -x "$BIN_DIR/agent-runner" ]; then
+  ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+  echo "[setup] Downloading agent-runner ($ARCH)..."
+  if command -v curl >/dev/null 2>&1; then
+    curl -sf -H "Authorization: Bearer $PLATFORM_API_TOKEN" \
+      "${{PLATFORM_API_URL}}/api/downloads/agent-runner?arch=${{ARCH}}" \
+      -o "$BIN_DIR/agent-runner"
+  elif command -v node >/dev/null 2>&1; then
+    node -e "
+      const fs = require('fs');
+      const url = process.env.PLATFORM_API_URL + '/api/downloads/agent-runner?arch=' + '${{ARCH}}';
+      fetch(url, {{headers:{{'Authorization':'Bearer '+process.env.PLATFORM_API_TOKEN}}}})
+        .then(r => {{ if(!r.ok) throw new Error('HTTP '+r.status); return r.arrayBuffer(); }})
+        .then(b => fs.writeFileSync('$BIN_DIR/agent-runner', Buffer.from(b)))
+        .catch(e => {{ console.error(e); process.exit(1); }});
+    "
+  else
+    echo '[setup] ERROR: need curl or node to download agent-runner' >&2
+    exit 1
+  fi
+  chmod +x "$BIN_DIR/agent-runner"
+  echo "[setup] agent-runner installed"
+fi
+
+# 2. Install Claude CLI (npm preferred, native installer fallback)
+if ! command -v claude >/dev/null 2>&1 && [ ! -x "$BIN_DIR/claude" ]; then
+  if command -v npm >/dev/null 2>&1; then
+    echo "[setup] Installing Claude CLI v{claude_cli_version} via npm..."
+    npm install -g --prefix /workspace/.platform \
+      @anthropic-ai/claude-code@{claude_cli_version} 2>&1 | tail -1
+    echo "[setup] Claude CLI installed"
+  elif command -v curl >/dev/null 2>&1; then
+    echo "[setup] Installing Claude CLI via native installer..."
+    export HOME=/workspace/.platform
+    curl -fsSL https://claude.ai/install.sh | bash -s "{claude_cli_version}"
+    if [ -x /workspace/.platform/.local/bin/claude ]; then
+      ln -sf /workspace/.platform/.local/bin/claude "$BIN_DIR/claude"
+    fi
+    echo "[setup] Claude CLI installed"
+  else
+    echo '[setup] WARNING: no npm or curl — Claude CLI not installed' >&2
+    echo '[setup] Ensure claude is available on PATH in the main container' >&2
+  fi
+fi
+
+echo "[setup] Auto-setup complete""#,
+        claude_cli_version = params.claude_cli_version,
+    );
+
+    Container {
+        name: "setup-tools".into(),
+        image: Some(image.to_owned()),
+        image_pull_policy: Some(pull_policy.to_owned()),
+        command: Some(vec!["sh".into(), "-c".into()]),
+        args: Some(vec![setup_script]),
+        env: Some(vec![
+            env_var("PLATFORM_API_TOKEN", params.agent_api_token),
+            env_var("PLATFORM_API_URL", params.platform_api_url),
+            env_var("CLAUDE_CLI_VERSION", params.claude_cli_version),
+        ]),
+        working_dir: Some("/workspace".into()),
+        volume_mounts: Some(vec![workspace_mount()]),
+        security_context: Some(container_security()),
+        resources: Some(ResourceRequirements {
+            requests: Some(BTreeMap::from([
+                ("cpu".into(), Quantity("100m".into())),
+                ("memory".into(), Quantity("256Mi".into())),
+            ])),
+            limits: Some(BTreeMap::from([
+                ("cpu".into(), Quantity("500m".into())),
+                ("memory".into(), Quantity("512Mi".into())),
+            ])),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn build_init_containers(params: &PodBuildParams<'_>, branch: &str) -> Vec<Container> {
+    let resolved_image = resolve_image(
+        params.config,
+        params.project_agent_image,
+        params.registry_url,
+    );
+    let pull_policy = image_pull_policy(&resolved_image);
+
+    let mut containers = vec![
+        build_git_clone_container(params.repo_clone_url, branch, params.agent_api_token),
+        build_setup_tools_container(params, &resolved_image, &pull_policy),
+    ];
+
+    // Optional setup container (runs after clone + setup-tools, before claude)
     if let Some(ref commands) = params.config.setup_commands
         && !commands.is_empty()
     {
@@ -353,7 +470,7 @@ fn build_main_container(
         name: "claude".into(),
         image: Some(image.to_owned()),
         image_pull_policy: Some(pull_policy.to_owned()),
-        command: Some(vec!["agent-runner".to_owned()]),
+        command: Some(vec!["/workspace/.platform/bin/agent-runner".to_owned()]),
         args: Some(agent_runner_args),
         stdin: Some(false),
         tty: Some(false),
@@ -482,6 +599,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         assert_eq!(pod.metadata.name.as_deref(), Some("agent-12345678"));
         assert_eq!(pod.metadata.namespace.as_deref(), Some("platform-agents"));
@@ -504,6 +622,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let labels = pod.metadata.labels.unwrap();
         assert_eq!(labels["platform.io/component"], "agent-session");
@@ -531,6 +650,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let claude_container = &spec.containers[0];
@@ -556,6 +676,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -583,6 +704,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -609,6 +731,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -649,6 +772,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -678,6 +802,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let args = spec.containers[0].args.as_ref().unwrap();
@@ -706,6 +831,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let args = spec.containers[0].args.as_ref().unwrap();
@@ -732,6 +858,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -780,6 +907,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -808,6 +936,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -847,6 +976,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let resources = spec.containers[0].resources.as_ref().unwrap();
@@ -872,6 +1002,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.restart_policy.as_deref(), Some("Never"));
@@ -965,6 +1096,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let main = &spec.containers[0];
@@ -989,6 +1121,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let main = &spec.containers[0];
@@ -1017,13 +1150,15 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
-        assert_eq!(init.len(), 2); // git-clone + setup
+        assert_eq!(init.len(), 3); // git-clone + setup-tools + setup
         assert_eq!(init[0].name, "git-clone");
-        assert_eq!(init[1].name, "setup");
-        let cmd = init[1].command.as_ref().unwrap();
+        assert_eq!(init[1].name, "setup-tools");
+        assert_eq!(init[2].name, "setup");
+        let cmd = init[2].command.as_ref().unwrap();
         assert_eq!(cmd[2], "npm install && npm run build");
     }
 
@@ -1048,10 +1183,11 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
-        assert_eq!(init.len(), 1); // git-clone only
+        assert_eq!(init.len(), 2); // git-clone + setup-tools
     }
 
     #[test]
@@ -1071,10 +1207,159 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
-        assert_eq!(init.len(), 1); // git-clone only
+        assert_eq!(init.len(), 2); // git-clone + setup-tools
+    }
+
+    // -- Setup-tools init container tests --
+
+    #[test]
+    fn setup_tools_container_present_by_default() {
+        let session = test_session();
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &ProviderConfig::default(),
+            agent_api_token: "tok",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: None,
+            cli_oauth_token: None,
+            extra_env_vars: &[],
+            registry_url: None,
+            registry_secret_name: None,
+            valkey_url: None,
+            claude_cli_version: "stable",
+        });
+        let spec = pod.spec.unwrap();
+        let init = spec.init_containers.unwrap();
+        let setup = init.iter().find(|c| c.name == "setup-tools").unwrap();
+        // Uses same image as main container
+        assert_eq!(setup.image, spec.containers[0].image);
+        // Has workspace volume mount
+        let mounts = setup.volume_mounts.as_ref().unwrap();
+        assert_eq!(mounts[0].name, "workspace");
+        assert_eq!(mounts[0].mount_path, "/workspace");
+    }
+
+    #[test]
+    fn setup_tools_container_has_platform_env_vars() {
+        let session = test_session();
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &ProviderConfig::default(),
+            agent_api_token: "mytoken",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: None,
+            cli_oauth_token: None,
+            extra_env_vars: &[],
+            registry_url: None,
+            registry_secret_name: None,
+            valkey_url: None,
+            claude_cli_version: "2.1.63",
+        });
+        let spec = pod.spec.unwrap();
+        let init = spec.init_containers.unwrap();
+        let setup = init.iter().find(|c| c.name == "setup-tools").unwrap();
+        let env = setup.env.as_ref().unwrap();
+        let find_env = |name: &str| env.iter().find(|e| e.name == name).unwrap();
+        assert_eq!(
+            find_env("PLATFORM_API_TOKEN").value.as_deref(),
+            Some("mytoken")
+        );
+        assert_eq!(
+            find_env("PLATFORM_API_URL").value.as_deref(),
+            Some("http://platform:8080")
+        );
+        assert_eq!(
+            find_env("CLAUDE_CLI_VERSION").value.as_deref(),
+            Some("2.1.63")
+        );
+    }
+
+    #[test]
+    fn setup_tools_script_references_claude_cli_version() {
+        let session = test_session();
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &ProviderConfig::default(),
+            agent_api_token: "tok",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: None,
+            cli_oauth_token: None,
+            extra_env_vars: &[],
+            registry_url: None,
+            registry_secret_name: None,
+            valkey_url: None,
+            claude_cli_version: "2.1.63",
+        });
+        let spec = pod.spec.unwrap();
+        let init = spec.init_containers.unwrap();
+        let setup = init.iter().find(|c| c.name == "setup-tools").unwrap();
+        let script = &setup.args.as_ref().unwrap()[0];
+        assert!(script.contains("@anthropic-ai/claude-code@2.1.63"));
+        assert!(script.contains("agent-runner"));
+    }
+
+    #[test]
+    fn setup_tools_ordered_after_git_clone() {
+        let session = test_session();
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &ProviderConfig::default(),
+            agent_api_token: "tok",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: None,
+            cli_oauth_token: None,
+            extra_env_vars: &[],
+            registry_url: None,
+            registry_secret_name: None,
+            valkey_url: None,
+            claude_cli_version: "stable",
+        });
+        let spec = pod.spec.unwrap();
+        let init = spec.init_containers.unwrap();
+        assert_eq!(init[0].name, "git-clone");
+        assert_eq!(init[1].name, "setup-tools");
+    }
+
+    #[test]
+    fn setup_tools_has_security_context() {
+        let session = test_session();
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &ProviderConfig::default(),
+            agent_api_token: "tok",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: None,
+            cli_oauth_token: None,
+            extra_env_vars: &[],
+            registry_url: None,
+            registry_secret_name: None,
+            valkey_url: None,
+            claude_cli_version: "stable",
+        });
+        let spec = pod.spec.unwrap();
+        let init = spec.init_containers.unwrap();
+        let setup = init.iter().find(|c| c.name == "setup-tools").unwrap();
+        let sec = setup.security_context.as_ref().unwrap();
+        assert_eq!(sec.allow_privilege_escalation, Some(false));
     }
 
     // -- Browser sidecar tests --
@@ -1107,6 +1392,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.containers.len(), 2, "should have claude + browser");
@@ -1131,6 +1417,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.containers.len(), 1, "should have only claude");
@@ -1154,6 +1441,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let volumes = spec.volumes.unwrap();
@@ -1185,6 +1473,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let volumes = spec.volumes.unwrap();
@@ -1209,6 +1498,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1241,6 +1531,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1272,6 +1563,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let browser = &spec.containers[1];
@@ -1299,6 +1591,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let browser = &spec.containers[1];
@@ -1328,6 +1621,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let psc = spec.security_context.unwrap();
@@ -1354,6 +1648,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let container = &spec.containers[0];
@@ -1381,6 +1676,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -1413,6 +1709,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1442,6 +1739,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod_without.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1475,6 +1773,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1518,6 +1817,7 @@ mod tests {
             registry_url: Some("host.docker.internal:8080"),
             registry_secret_name: Some("regpull-12345678"),
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let secrets = spec.image_pull_secrets.unwrap();
@@ -1542,6 +1842,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         assert!(
@@ -1569,6 +1870,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1596,6 +1898,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1622,6 +1925,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1669,6 +1973,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1702,6 +2007,7 @@ mod tests {
             registry_url: None,
             registry_secret_name: None,
             valkey_url: None,
+            claude_cli_version: "stable",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();

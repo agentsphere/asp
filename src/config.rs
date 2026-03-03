@@ -49,6 +49,12 @@ pub struct Config {
     /// Override when platform connects via port-forward but agents use K8s DNS.
     /// Example: `"valkey.platform.svc.cluster.local:6379"`
     pub valkey_agent_host: String,
+    /// Directory containing cross-compiled agent-runner binaries.
+    /// Expected layout: `{dir}/amd64`, `{dir}/arm64`
+    pub agent_runner_dir: PathBuf,
+    /// Claude CLI version for auto-setup in agent pods.
+    /// Used by the setup init container: `npm install -g @anthropic-ai/claude-code@<version>`.
+    pub claude_cli_version: String,
 }
 
 fn parse_cors_origins(s: &str) -> Vec<String> {
@@ -125,6 +131,10 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(10),
             valkey_agent_host,
+            agent_runner_dir: env::var("PLATFORM_AGENT_RUNNER_DIR")
+                .map_or_else(|_| PathBuf::from("/data/agent-runner"), PathBuf::from),
+            claude_cli_version: env::var("PLATFORM_CLAUDE_CLI_VERSION")
+                .unwrap_or_else(|_| "stable".into()),
         }
     }
 }
@@ -179,6 +189,8 @@ impl Config {
             ssh_host_key_path: "/tmp/test_ssh_host_key".into(),
             max_cli_subprocesses: 10,
             valkey_agent_host: "localhost:6379".into(),
+            agent_runner_dir: "/tmp/test-agent-runner".into(),
+            claude_cli_version: "stable".into(),
         }
     }
 }
@@ -354,6 +366,28 @@ mod tests {
     #[test]
     fn derive_valkey_host_port_invalid_url() {
         assert_eq!(derive_valkey_host_port("not-a-url"), "localhost:6379");
+    }
+
+    #[test]
+    fn test_default_agent_runner_dir() {
+        let config = Config::test_default();
+        assert_eq!(
+            config.agent_runner_dir,
+            std::path::PathBuf::from("/tmp/test-agent-runner")
+        );
+    }
+
+    #[test]
+    fn test_default_claude_cli_version() {
+        let config = Config::test_default();
+        assert_eq!(config.claude_cli_version, "stable");
+    }
+
+    #[test]
+    fn config_load_agent_runner_defaults() {
+        let config = Config::load();
+        assert!(!config.claude_cli_version.is_empty());
+        assert!(!config.agent_runner_dir.as_os_str().is_empty());
     }
 
     #[test]

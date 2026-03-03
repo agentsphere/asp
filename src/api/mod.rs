@@ -3,6 +3,7 @@ pub mod cli_auth;
 pub mod commands;
 pub mod dashboard;
 pub mod deployments;
+pub mod downloads;
 pub mod gpg_keys;
 pub mod helpers;
 pub mod issues;
@@ -46,5 +47,6 @@ pub fn router() -> Router<AppState> {
         .merge(setup::router())
         .merge(cli_auth::router())
         .merge(commands::router())
+        .merge(downloads::router())
         .merge(crate::git::browser_router())
 }

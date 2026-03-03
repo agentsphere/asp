@@ -86,6 +86,8 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
         ssh_host_key_path: "/tmp/test_ssh_host_key".into(),
         max_cli_subprocesses: 10,
         valkey_agent_host: "localhost:6379".into(),
+        agent_runner_dir: std::env::temp_dir().join("agent-runner-test"),
+        claude_cli_version: "stable".into(),
     };
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");
