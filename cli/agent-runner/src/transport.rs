@@ -101,6 +101,10 @@ impl SubprocessTransport {
             }
         }
 
+        // Always strip Claude Code nested-session guard — the agent-runner IS the
+        // intended launcher, not a nested interactive session.
+        cmd.env_remove("CLAUDECODE");
+
         if let Some(ref cwd) = opts.cwd {
             cmd.current_dir(cwd);
         }
@@ -260,6 +264,14 @@ impl SubprocessTransport {
             .map_err(CliError::StdinWrite)?;
         stdin.flush().await.map_err(CliError::StdinWrite)?;
         Ok(())
+    }
+}
+
+impl Drop for SubprocessTransport {
+    fn drop(&mut self) {
+        self.alive
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let _ = self.child.start_kill();
     }
 }
 
@@ -794,5 +806,291 @@ mod tests {
 
         let result = transport.send_message("hello").await;
         assert!(matches!(result, Err(CliError::NotRunning)));
+    }
+
+    #[tokio::test]
+    async fn send_structured_writes_ndjson() {
+        let transport = spawn_cat_transport().await;
+        let content = serde_json::json!([
+            {"type": "text", "text": "analyze this"},
+            {"type": "image", "source": {"type": "base64", "data": "abc"}}
+        ]);
+        transport.send_structured(content.clone()).await.unwrap();
+
+        let mut stdout = transport.stdout.lock().await;
+        let mut line = String::new();
+        stdout.read_line(&mut line).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["type"], "user");
+        assert_eq!(parsed["message"]["role"], "user");
+        assert_eq!(parsed["message"]["content"], content);
+    }
+
+    #[tokio::test]
+    async fn send_structured_to_dead_process_fails() {
+        let mut transport = spawn_cat_transport().await;
+        transport.kill().await.unwrap();
+
+        let result = transport.send_structured(serde_json::json!("hello")).await;
+        assert!(matches!(result, Err(CliError::NotRunning)));
+    }
+
+    #[tokio::test]
+    async fn session_id_none_before_init() {
+        let transport = spawn_cat_transport().await;
+        assert!(transport.session_id().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn session_id_set_after_system_message() {
+        let transport = spawn_cat_transport().await;
+
+        let msg = r#"{"type":"system","subtype":"init","session_id":"sess-42"}"#;
+        {
+            let mut stdin = transport.stdin.lock().await;
+            stdin
+                .write_all(format!("{msg}\n").as_bytes())
+                .await
+                .unwrap();
+            stdin.flush().await.unwrap();
+        }
+
+        let _ = transport.recv().await.unwrap(); // consumes system msg, sets session_id
+        assert_eq!(transport.session_id().await.as_deref(), Some("sess-42"));
+    }
+
+    #[tokio::test]
+    async fn wait_returns_exit_code() {
+        // Spawn a process that exits with code 0
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "echo done"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take();
+
+        let stderr_task = stderr.map(|stderr| {
+            tokio::spawn(async move {
+                let reader = BufReader::new(stderr);
+                let mut lines = reader.lines();
+                let mut collected = String::new();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if !line.is_empty() {
+                        collected.push_str(&line);
+                    }
+                }
+                collected
+            })
+        });
+
+        let transport = SubprocessTransport {
+            child,
+            stdin: Mutex::new(BufWriter::new(stdin)),
+            stdout: Mutex::new(BufReader::new(stdout)),
+            stderr_task,
+            session_id: Mutex::new(None),
+            alive: std::sync::atomic::AtomicBool::new(true),
+        };
+
+        let (code, _stderr) = transport.wait().await.unwrap();
+        assert_eq!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn wait_returns_nonzero_exit_code() {
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "exit 42"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let transport = SubprocessTransport {
+            child,
+            stdin: Mutex::new(BufWriter::new(stdin)),
+            stdout: Mutex::new(BufReader::new(stdout)),
+            stderr_task: None,
+            session_id: Mutex::new(None),
+            alive: std::sync::atomic::AtomicBool::new(true),
+        };
+
+        let (code, _) = transport.wait().await.unwrap();
+        assert_eq!(code, 42);
+    }
+
+    #[tokio::test]
+    async fn wait_captures_stderr() {
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "echo 'error output' >&2"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take();
+
+        let stderr_task = stderr.map(|stderr| {
+            tokio::spawn(async move {
+                let reader = BufReader::new(stderr);
+                let mut lines = reader.lines();
+                let mut collected = String::new();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if !line.is_empty() {
+                        if !collected.is_empty() {
+                            collected.push('\n');
+                        }
+                        collected.push_str(&line);
+                    }
+                }
+                collected
+            })
+        });
+
+        let transport = SubprocessTransport {
+            child,
+            stdin: Mutex::new(BufWriter::new(stdin)),
+            stdout: Mutex::new(BufReader::new(stdout)),
+            stderr_task,
+            session_id: Mutex::new(None),
+            alive: std::sync::atomic::AtomicBool::new(true),
+        };
+
+        let (code, stderr_output) = transport.wait().await.unwrap();
+        assert_eq!(code, 0);
+        assert!(stderr_output.contains("error output"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn find_cli_from_env_var() {
+        let backup = std::env::var("CLAUDE_CLI_PATH").ok();
+        std::env::set_var("CLAUDE_CLI_PATH", "/usr/bin/env");
+
+        let result = find_claude_cli(None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), PathBuf::from("/usr/bin/env"));
+
+        match backup {
+            Some(v) => std::env::set_var("CLAUDE_CLI_PATH", v),
+            None => std::env::remove_var("CLAUDE_CLI_PATH"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn find_cli_env_var_nonexistent_path_falls_through() {
+        let backup = std::env::var("CLAUDE_CLI_PATH").ok();
+        std::env::set_var("CLAUDE_CLI_PATH", "/nonexistent/path/to/claude");
+
+        // Should fall through to PATH lookup / npm paths
+        let _result = find_claude_cli(None);
+        // Just verify it doesn't panic; result depends on whether `claude` is on PATH
+
+        match backup {
+            Some(v) => std::env::set_var("CLAUDE_CLI_PATH", v),
+            None => std::env::remove_var("CLAUDE_CLI_PATH"),
+        }
+    }
+
+    #[tokio::test]
+    async fn drop_kills_process() {
+        let transport = spawn_cat_transport().await;
+        let pid = transport.child.id().unwrap();
+        drop(transport);
+
+        // Give OS a moment to clean up
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Process should no longer be running
+        let status = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status();
+        // kill -0 returns non-zero if process doesn't exist
+        if let Ok(s) = status {
+            assert!(!s.success(), "process should be dead after drop");
+        }
+    }
+
+    #[test]
+    fn build_env_never_includes_claudecode() {
+        // CLAUDECODE env var triggers Claude Code's nested session guard.
+        // The agent-runner is the intended launcher, not a nested session,
+        // so build_env must never include it (and spawn() strips it via env_remove).
+        let opts = CliSpawnOptions {
+            extra_env: vec![("CLAUDECODE".into(), "1".into())],
+            ..Default::default()
+        };
+        let env = build_env(&opts);
+        // extra_env passes it through — but spawn() calls env_remove("CLAUDECODE")
+        // after setting env vars. Verify the whitelist doesn't add it on its own.
+        let opts_no_extra = CliSpawnOptions::default();
+        let env_clean = build_env(&opts_no_extra);
+        assert!(
+            env_clean.iter().all(|(k, _)| k != "CLAUDECODE"),
+            "CLAUDECODE must not appear in default whitelisted env"
+        );
+        // If someone passes it via extra_env, spawn() will strip it anyway
+        assert!(env.iter().any(|(k, _)| k == "CLAUDECODE"));
+    }
+
+    #[test]
+    fn build_env_no_auth() {
+        let opts = CliSpawnOptions::default();
+        let env = build_env(&opts);
+        assert!(env.iter().all(|(k, _)| k != "CLAUDE_CODE_OAUTH_TOKEN"));
+        assert!(env.iter().all(|(k, _)| k != "ANTHROPIC_API_KEY"));
+    }
+
+    #[tokio::test]
+    async fn send_control_request() {
+        let transport = spawn_cat_transport().await;
+        let req = crate::control::ControlRequest::interrupt();
+        transport.send_control(req).await.unwrap();
+
+        let mut stdout = transport.stdout.lock().await;
+        let mut line = String::new();
+        stdout.read_line(&mut line).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["type"], "control");
+        assert_eq!(parsed["control"]["type"], "interrupt");
+    }
+
+    #[tokio::test]
+    async fn is_alive_false_after_eof() {
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "true"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let transport = SubprocessTransport {
+            child,
+            stdin: Mutex::new(BufWriter::new(stdin)),
+            stdout: Mutex::new(BufReader::new(stdout)),
+            stderr_task: None,
+            session_id: Mutex::new(None),
+            alive: std::sync::atomic::AtomicBool::new(true),
+        };
+
+        assert!(transport.is_alive());
+        let _ = transport.recv().await; // EOF
+        assert!(!transport.is_alive());
     }
 }
