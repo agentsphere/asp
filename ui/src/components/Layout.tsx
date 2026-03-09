@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useState, useEffect, useRef } from 'preact/hooks';
 import { useAuth } from '../lib/auth';
 import { NotificationBell } from './NotificationBell';
 
@@ -22,6 +22,7 @@ const ADMIN_NAV = [
 ];
 
 const SETTINGS_NAV = [
+  { href: '/settings/account', label: 'Account' },
   { href: '/settings/tokens', label: 'API Tokens' },
   { href: '/settings/provider-keys', label: 'Provider Keys' },
 ];
@@ -36,8 +37,43 @@ function NavLink({ href, label }: { href: string; label: string }) {
   );
 }
 
-export function Layout({ children }: { children: any }) {
+function UserMenu() {
   const { user, logout } = useAuth();
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, [open]);
+
+  return (
+    <div class="user-menu" ref={menuRef}>
+      <button class="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); setOpen(!open); }}>
+        {user?.display_name || user?.name}
+      </button>
+      {open && (
+        <div class="user-menu-dropdown">
+          <a href="/settings/account" class="user-menu-item">Account Settings</a>
+          <a href="/settings/tokens" class="user-menu-item">API Tokens</a>
+          <a href="/settings/provider-keys" class="user-menu-item">Provider Keys</a>
+          <div class="user-menu-divider" />
+          <button class="user-menu-item user-menu-logout" onClick={() => logout().then(() => { window.location.href = '/login'; })}>
+            Logout
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function Layout({ children }: { children: any }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
@@ -71,10 +107,7 @@ export function Layout({ children }: { children: any }) {
       <div class="main">
         <header class="topbar">
           <NotificationBell />
-          <span class="topbar-user">{user?.display_name || user?.name}</span>
-          <button class="btn btn-ghost btn-sm" onClick={() => logout().then(() => { window.location.href = '/login'; })}>
-            Logout
-          </button>
+          <UserMenu />
         </header>
         <div class="content">
           {children}

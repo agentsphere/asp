@@ -23,6 +23,7 @@ import { Roles } from './pages/admin/Roles';
 import { Delegations } from './pages/admin/Delegations';
 import { Tokens } from './pages/admin/Tokens';
 import { ProviderKeys } from './pages/ProviderKeys';
+import { AccountSettings } from './pages/AccountSettings';
 import { Workspaces } from './pages/Workspaces';
 import { WorkspaceDetail } from './pages/WorkspaceDetail';
 import { CreateApp } from './pages/CreateApp';
@@ -67,6 +68,7 @@ function AppRouter() {
           <Users path="/admin/users" />
           <Roles path="/admin/roles" />
           <Delegations path="/admin/delegations" />
+          <AccountSettings path="/settings/account" />
           <Tokens path="/settings/tokens" />
           <ProviderKeys path="/settings/provider-keys" />
         </Router>

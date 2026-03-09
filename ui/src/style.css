@@ -38,6 +38,12 @@ a:hover { text-decoration: underline; }
 .main { margin-left: var(--sidebar-w); flex: 1; display: flex; flex-direction: column; }
 .topbar { display: flex; align-items: center; justify-content: flex-end; padding: 0.5rem 1.5rem; border-bottom: 1px solid var(--border); background: var(--bg-secondary); gap: 1rem; }
 .topbar-user { color: var(--text-secondary); font-size: 13px; }
+.user-menu { position: relative; }
+.user-menu-dropdown { position: absolute; top: 100%; right: 0; margin-top: 0.5rem; min-width: 180px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 8px 24px rgba(0,0,0,0.4); z-index: 60; padding: 0.25rem 0; }
+.user-menu-item { display: block; width: 100%; padding: 0.5rem 1rem; font-size: 13px; color: var(--text-primary); text-decoration: none; background: none; border: none; text-align: left; cursor: pointer; }
+.user-menu-item:hover { background: var(--bg-hover); }
+.user-menu-divider { height: 1px; background: var(--border); margin: 0.25rem 0; }
+.user-menu-logout { color: var(--danger, #e55); }
 .content { padding: 1.5rem; flex: 1; max-width: 1200px; width: 100%; }
 
 /* Sidebar toggle (hamburger) */
@@ -149,6 +155,8 @@ textarea.input { resize: vertical; min-height: 80px; }
 .login-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
 .login-card { width: 360px; }
 .login-title { text-align: center; margin-bottom: 1.5rem; font-size: 1.3rem; }
+.login-divider { display: flex; align-items: center; gap: 0.75rem; margin: 1rem 0; color: var(--text-secondary); font-size: 13px; }
+.login-divider::before, .login-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
 
 /* Utility */
 .flex { display: flex; }
