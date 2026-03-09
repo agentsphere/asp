@@ -29,7 +29,29 @@ dev-env:
     bash hack/dev-env.sh
 
 dev-env-stop:
-    @if [ -f /tmp/platform-dev-pf.pids ]; then while read -r pid; do kill "$pid" 2>/dev/null || true; done < /tmp/platform-dev-pf.pids; rm -f /tmp/platform-dev-pf.pids; echo "Port-forwards stopped"; else echo "No port-forwards running"; fi
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KUBECONFIG="${HOME}/.kube/kind-platform"
+    WORKTREE="$(bash hack/detect-worktree.sh)"
+    NS="platform-dev-${WORKTREE}"
+    echo "Deleting namespace: ${NS}"
+    kubectl delete namespace "${NS}" --wait=false 2>/dev/null || true
+    rm -f .env.dev
+    # Clean up legacy PID files from old port-forward approach
+    if [ -f /tmp/platform-dev-pf.pids ]; then
+      while read -r pid; do kill "$pid" 2>/dev/null || true; done < /tmp/platform-dev-pf.pids
+      rm -f /tmp/platform-dev-pf.pids
+    fi
+    echo "Dev environment stopped (${WORKTREE})"
+
+dev-env-stop-all:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export KUBECONFIG="${HOME}/.kube/kind-platform"
+    echo "Deleting all platform-dev-* namespaces..."
+    kubectl get namespaces -o name | grep '^namespace/platform-dev-' | xargs -r kubectl delete --wait=false 2>/dev/null || true
+    rm -f .env.dev
+    echo "All dev environments stopped"
 
 dev:
     bash hack/dev-env.sh
@@ -38,6 +60,7 @@ watch:
     bacon
 
 run:
+    @if [ ! -f .env.dev ]; then echo "ERROR: .env.dev not found. Run: just dev-env"; exit 1; fi
     @mkdir -p /tmp/platform-repos /tmp/platform-ops-repos /tmp/platform-e2e/seed-images
     cargo run
 
