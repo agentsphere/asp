@@ -1,5 +1,5 @@
 # Lightweight MinIO for per-run test namespaces.
-# Bucket creation handled by post-deploy script (mkdir in container).
+# Bucket creation handled by deploy-services.sh (mc mb).
 apiVersion: v1
 kind: Pod
 metadata:
@@ -36,6 +36,7 @@ kind: Service
 metadata:
   name: minio
 spec:
+  type: NodePort
   selector:
     app: minio
   ports:

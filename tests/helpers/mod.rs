@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::Router;
@@ -8,23 +9,44 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::Value;
 use sqlx::PgPool;
+use tempfile::TempDir;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+use fred::interfaces::ClientLike;
 use platform::config::Config;
 use platform::store::AppState;
+
+/// Build a test `AppState` with optional `cli_spawn_enabled`.
+///
+/// Wrapper around `test_state()` that optionally enables CLI subprocess spawning.
+/// `CLAUDE_CLI_PATH` must be set externally (by `hack/test-in-cluster.sh`) to point
+/// to `tests/fixtures/mock-claude-cli.sh`.
+///
+/// - `cli_spawn_enabled = false` — tests that don't exercise CLI subprocess flow
+/// - `cli_spawn_enabled = true` — tests that trigger the mock CLI subprocess
+pub async fn test_state_with_cli(pool: PgPool, cli_spawn_enabled: bool) -> (AppState, String) {
+    let (mut state, token) = test_state(pool).await;
+    if cli_spawn_enabled {
+        let mut config = (*state.config).clone();
+        config.cli_spawn_enabled = true;
+        state.config = Arc::new(config);
+    }
+    (state, token)
+}
 
 /// Build a test `AppState` and pre-authenticated admin API token.
 ///
 /// - Bootstraps permissions, roles, admin user (password = "testpassword")
 /// - Connects to real Valkey (no FLUSHDB — keys are UUID-scoped)
-/// - Connects to real MinIO (S3 backend, bucket: `platform-e2e`)
+/// - Connects to real `MinIO` (S3 backend, bucket: `platform-e2e`)
 /// - Creates an API token for the admin user directly in the DB
-/// - Uses a dummy `Kube` client (panics if actually called)
+/// - Uses a real `Kube` client (Kind cluster must be running)
 ///
 /// Returns `(state, admin_token)`. The admin token bypasses the login
 /// endpoint's rate limiter, which was the only source of cross-test
 /// Valkey key collision (`rate:login:admin`).
+#[allow(clippy::too_many_lines)]
 pub async fn test_state(pool: PgPool) -> (AppState, String) {
     // Ensure a rustls CryptoProvider is installed (needed by reqwest/fred)
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -38,11 +60,16 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
     // (permission cache, upload sessions, WebAuthn challenges) and never collide
     // between parallel tests. The admin token is created directly in the DB,
     // bypassing the login endpoint's rate limiter.
+    //
+    // Pool size 1 (not 4) — with 32 parallel tests, 4×32=128 connections overwhelm
+    // the server under load. 1×32=32 is sufficient for test workloads.
     let valkey_url =
         std::env::var("VALKEY_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
-    let valkey = platform::store::valkey::connect(&valkey_url)
-        .await
-        .expect("valkey connection failed");
+    let valkey_config =
+        fred::types::config::Config::from_url(&valkey_url).expect("invalid VALKEY_URL");
+    let valkey = fred::clients::Pool::new(valkey_config, None, None, None, 1)
+        .expect("valkey pool creation failed");
+    valkey.init().await.expect("valkey connection failed");
 
     // Real MinIO (S3 backend) — same instance as Postgres/Valkey from Kind cluster.
     // Uses a dedicated test bucket to avoid polluting production data.
@@ -63,15 +90,22 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
             .finish()
     };
 
-    // Dummy Kube client — try real kubeconfig, fall back to a stub
-    let kube = if let Ok(c) = kube::Client::try_default().await {
-        c
-    } else {
-        // No kubeconfig available in CI — build a stub config manually.
-        // It will panic if any test actually makes a K8s API call.
-        let cfg = kube::Config::new("https://127.0.0.1:1".parse().unwrap());
-        kube::Client::try_from(cfg).expect("dummy kube client")
-    };
+    // Real Kube client — integration tests require a Kind cluster
+    let kube = kube::Client::try_default()
+        .await
+        .expect("kube client required — run `just cluster-up` first");
+
+    // Namespace prefix from test-in-cluster.sh (for test isolation)
+    let ns_prefix = std::env::var("PLATFORM_NS_PREFIX").ok();
+    let pipeline_namespace =
+        std::env::var("PLATFORM_PIPELINE_NAMESPACE").unwrap_or_else(|_| "test-pipelines".into());
+    let agent_namespace =
+        std::env::var("PLATFORM_AGENT_NAMESPACE").unwrap_or_else(|_| "test-agents".into());
+    let registry_url = std::env::var("PLATFORM_REGISTRY_URL").ok();
+    let platform_api_url = std::env::var("PLATFORM_API_URL")
+        .unwrap_or_else(|_| "http://platform.test-agents.svc.cluster.local:8080".into());
+    let valkey_agent_host =
+        std::env::var("PLATFORM_VALKEY_AGENT_HOST").unwrap_or_else(|_| "localhost:6379".into());
 
     // Config with test defaults
     let config = Config {
@@ -90,9 +124,9 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         smtp_username: None,
         smtp_password: None,
         admin_password: None,
-        pipeline_namespace: "test-pipelines".into(),
-        agent_namespace: "test-agents".into(),
-        registry_url: None,
+        pipeline_namespace,
+        agent_namespace,
+        registry_url,
         secure_cookies: false,
         cors_origins: vec![],
         trust_proxy_headers: false,
@@ -101,15 +135,30 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         webauthn_rp_origin: "http://localhost:8080".into(),
         permission_cache_ttl_secs: 300,
         webauthn_rp_name: "Test Platform".into(),
-        platform_api_url: "http://platform.test-agents.svc.cluster.local:8080".into(),
+        platform_api_url,
         platform_namespace: "test-platform".into(),
         ssh_listen: None,
         ssh_host_key_path: "/tmp/test_ssh_host_key".into(),
         max_cli_subprocesses: 10,
-        valkey_agent_host: "localhost:6379".into(),
-        agent_runner_dir: std::env::temp_dir().join(format!("agent-runner-{}", Uuid::new_v4())),
+        valkey_agent_host,
+        agent_runner_dir: std::env::var("PLATFORM_AGENT_RUNNER_DIR").map_or_else(
+            |_| std::env::temp_dir().join(format!("agent-runner-{}", Uuid::new_v4())),
+            PathBuf::from,
+        ),
         claude_cli_version: "stable".into(),
+        ns_prefix,
+        cli_spawn_enabled: false,
+        registry_node_url: std::env::var("PLATFORM_REGISTRY_NODE_URL").ok(),
+        seed_images_path: std::env::var("PLATFORM_SEED_IMAGES_PATH")
+            .map_or_else(|_| "/tmp/seed-images".into(), std::path::PathBuf::from),
     };
+
+    // Seed registry images from OCI tarballs (idempotent, uses file-based cache)
+    if let Err(e) =
+        platform::registry::seed::seed_all(&pool, &minio, &config.seed_images_path).await
+    {
+        tracing::warn!(error = %e, "test registry seed failed (non-fatal)");
+    }
 
     // Build WebAuthn
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");
@@ -216,7 +265,7 @@ pub async fn create_user(
     (user_id, token)
 }
 
-/// Create a project. Returns the project id.
+/// Create a project (DB only, no K8s namespaces). Returns the project id.
 pub async fn create_project(app: &Router, token: &str, name: &str, visibility: &str) -> Uuid {
     let (status, body) = post_json(
         app,
@@ -225,6 +274,29 @@ pub async fn create_project(app: &Router, token: &str, name: &str, visibility: &
         serde_json::json!({
             "name": name,
             "visibility": visibility,
+            "setup_infra": false,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "create project failed: {body}");
+    Uuid::parse_str(body["id"].as_str().unwrap()).unwrap()
+}
+
+/// Create a project with full infrastructure (K8s namespaces + ops repo).
+pub async fn create_project_with_infra(
+    app: &Router,
+    token: &str,
+    name: &str,
+    visibility: &str,
+) -> Uuid {
+    let (status, body) = post_json(
+        app,
+        token,
+        "/api/projects",
+        serde_json::json!({
+            "name": name,
+            "visibility": visibility,
+            "setup_infra": true,
         }),
     )
     .await;
@@ -364,6 +436,26 @@ pub async fn delete_json(app: &Router, token: &str, path: &str) -> (StatusCode, 
     (status, body)
 }
 
+/// Start a real TCP server for integration tests that need pod connectivity.
+///
+/// Binds to `PLATFORM_LISTEN_PORT` (set by `test-in-cluster.sh`).
+/// Returns `(state, admin_token, server_handle)`.
+pub async fn start_test_server(pool: PgPool) -> (AppState, String, tokio::task::JoinHandle<()>) {
+    let port: u16 = std::env::var("PLATFORM_LISTEN_PORT")
+        .expect("PLATFORM_LISTEN_PORT must be set — run via: just test-integration")
+        .parse()
+        .expect("invalid PLATFORM_LISTEN_PORT");
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+        .await
+        .expect("bind listener");
+    let (state, token) = test_state(pool).await;
+    let app = test_router(state.clone());
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (state, token, handle)
+}
+
 /// Extract JSON body from a response.
 async fn body_json(resp: axum::http::Response<Body>) -> Value {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
@@ -371,4 +463,111 @@ async fn body_json(resp: axum::http::Response<Body>) -> Value {
         return Value::Null;
     }
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+}
+
+// ---------------------------------------------------------------------------
+// Raw bytes HTTP helper
+// ---------------------------------------------------------------------------
+
+/// Send a raw GET request and return the body as bytes (for non-JSON endpoints).
+pub async fn get_bytes(app: &Router, token: &str, path: &str) -> (StatusCode, Vec<u8>) {
+    let mut builder = Request::builder().method("GET").uri(path);
+    if !token.is_empty() {
+        builder = builder.header("Authorization", format!("Bearer {token}"));
+    }
+    let req = builder.body(Body::empty()).unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
+    (status, bytes)
+}
+
+// ---------------------------------------------------------------------------
+// Git repo helpers
+// ---------------------------------------------------------------------------
+
+/// Create a bare git repo in a tempdir, return `(TempDir, PathBuf)`.
+///
+/// Uses `/tmp/platform-e2e/` as the base directory so that repos are visible
+/// inside the Kind cluster (which has `/tmp/platform-e2e` as an extra mount).
+pub fn create_bare_repo() -> (TempDir, PathBuf) {
+    let base = Path::new("/tmp/platform-e2e");
+    std::fs::create_dir_all(base).unwrap();
+    let dir = tempfile::tempdir_in(base).unwrap();
+    let repo_path = dir.path().join("test.git");
+    let output = std::process::Command::new("git")
+        .args(["init", "--bare"])
+        .arg(&repo_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git init --bare failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (dir, repo_path)
+}
+
+/// Create a working copy from a bare repo with an initial commit.
+/// Returns `(TempDir, PathBuf)`.
+pub fn create_working_copy(bare_path: &Path) -> (TempDir, PathBuf) {
+    let base = Path::new("/tmp/platform-e2e");
+    std::fs::create_dir_all(base).unwrap();
+    let dir = tempfile::tempdir_in(base).unwrap();
+    let work_path = dir.path().join("work");
+    git_cmd_at(dir.path(), &["clone", bare_path.to_str().unwrap(), "work"]);
+
+    // Configure git user for commits
+    git_cmd(&work_path, &["config", "user.email", "test@e2e.local"]);
+    git_cmd(&work_path, &["config", "user.name", "E2E Test"]);
+
+    // Create initial commit
+    std::fs::write(work_path.join("README.md"), "# Test Project\n").unwrap();
+    git_cmd(&work_path, &["add", "."]);
+    git_cmd(&work_path, &["commit", "-m", "initial commit"]);
+    git_cmd(&work_path, &["push", "origin", "HEAD:refs/heads/main"]);
+    (dir, work_path)
+}
+
+/// Run a git command in a directory; panic on failure.
+pub fn git_cmd(dir: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "E2E Test")
+        .env("GIT_AUTHOR_EMAIL", "test@e2e.local")
+        .env("GIT_COMMITTER_NAME", "E2E Test")
+        .env("GIT_COMMITTER_EMAIL", "test@e2e.local")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// Run a git command in a directory (no env override).
+fn git_cmd_at(dir: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
 }

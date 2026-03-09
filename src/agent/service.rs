@@ -14,7 +14,9 @@ use super::AgentRoleName;
 use super::claude_code::ClaudeCodeProvider;
 use super::error::AgentError;
 use super::identity;
-use super::provider::{AgentProvider, AgentSession, BuildPodParams, ProviderConfig};
+use super::provider::{
+    AgentProvider, AgentSession, BuildPodParams, ProgressEvent, ProgressKind, ProviderConfig,
+};
 
 // ---------------------------------------------------------------------------
 // Provider resolution
@@ -46,6 +48,7 @@ pub async fn create_session(
     branch: Option<&str>,
     provider_config: Option<serde_json::Value>,
     agent_role: AgentRoleName,
+    parent_session_id: Option<Uuid>,
 ) -> Result<AgentSession, AgentError> {
     let provider = get_provider(provider_name)?;
     let config: ProviderConfig = provider_config
@@ -58,10 +61,24 @@ pub async fn create_session(
     let short_id = &session_id.to_string()[..8];
     let branch_name = branch.map_or_else(|| format!("agent/{short_id}"), String::from);
 
+    // Compute spawn_depth from parent (if any)
+    let spawn_depth: i32 = if let Some(pid) = parent_session_id {
+        let parent_depth = sqlx::query_scalar!(
+            r#"SELECT spawn_depth as "spawn_depth!" FROM agent_sessions WHERE id = $1"#,
+            pid,
+        )
+        .fetch_optional(&state.pool)
+        .await?
+        .unwrap_or(0);
+        parent_depth + 1
+    } else {
+        0
+    };
+
     sqlx::query!(
         r#"
-        INSERT INTO agent_sessions (id, project_id, user_id, prompt, provider, provider_config, branch, status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+        INSERT INTO agent_sessions (id, project_id, user_id, prompt, provider, provider_config, branch, status, parent_session_id, spawn_depth)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9)
         "#,
         session_id,
         project_id,
@@ -70,6 +87,8 @@ pub async fn create_session(
         provider_name,
         provider_config.as_ref(),
         branch_name,
+        parent_session_id,
+        spawn_depth,
     )
     .execute(&state.pool)
     .await?;
@@ -82,7 +101,27 @@ pub async fn create_session(
     .fetch_one(&state.pool)
     .await?;
     let workspace_id = project_info.workspace_id;
-    let namespace = format!("{}-dev", project_info.namespace_slug);
+    let namespace = state
+        .config
+        .project_namespace(&project_info.namespace_slug, "dev");
+
+    // Ensure project namespace exists (lazy creation for DB-only projects)
+    crate::deployer::namespace::ensure_namespace(
+        &state.kube,
+        &namespace,
+        "dev",
+        &project_id.to_string(),
+    )
+    .await
+    .map_err(|e| AgentError::Other(e.into()))?;
+    if !state.config.dev_mode {
+        let _ = crate::deployer::namespace::ensure_network_policy(
+            &state.kube,
+            &namespace,
+            &state.config.platform_namespace,
+        )
+        .await;
+    }
 
     // 3. Create ephemeral agent identity with role-based permissions
     let agent_identity = identity::create_agent_identity(
@@ -125,11 +164,18 @@ pub async fn create_session(
     let extra_env_vars = resolve_agent_secrets(state, project_id).await;
 
     // 4c. Create registry pull secret if registry is configured
-    let registry_pull_secret = if state.config.registry_url.is_some() {
+    // Use registry_node_url (DaemonSet proxy) for image refs that containerd pulls;
+    // fall back to registry_url for backward compatibility.
+    let node_registry_url = state
+        .config
+        .registry_node_url
+        .as_deref()
+        .or(state.config.registry_url.as_deref());
+    let registry_pull_secret = if let Some(reg_url) = node_registry_url {
         match crate::registry::pull_secret::create_pull_secret(
             &state.pool,
             &state.kube,
-            state.config.registry_url.as_deref().unwrap(),
+            reg_url,
             user_id,
             &namespace,
             "platform.io/session",
@@ -177,6 +223,10 @@ pub async fn create_session(
         uses_pubsub: true,
     };
 
+    // Test/dev: mount host fixture path and set CLAUDE_CLI_PATH for mock CLI
+    let host_mount_path = std::env::var("PLATFORM_HOST_MOUNT_PATH").ok();
+    let claude_cli_path = std::env::var("CLAUDE_CLI_PATH").ok();
+
     let pod = provider.build_pod(BuildPodParams {
         session: &session_for_pod,
         config: &config,
@@ -188,12 +238,14 @@ pub async fn create_session(
         anthropic_api_key: user_api_key.as_deref(),
         cli_oauth_token: cli_oauth_token.as_deref(),
         extra_env_vars: &extra_env_vars,
-        registry_url: state.config.registry_url.as_deref(),
+        registry_url: node_registry_url,
         registry_secret_name: registry_pull_secret
             .as_ref()
             .map(|s| s.secret_name.as_str()),
         valkey_url: Some(&valkey_creds.url),
         claude_cli_version: &state.config.claude_cli_version,
+        host_mount_path: host_mount_path.as_deref(),
+        claude_cli_path: claude_cli_path.as_deref(),
     })?;
 
     let pod_name = pod
@@ -201,13 +253,24 @@ pub async fn create_session(
         .name
         .clone()
         .unwrap_or_else(|| format!("agent-{short_id}"));
+
+    // 7. Start persistence subscriber BEFORE pod creation so no pub/sub messages are lost.
+    //    The subscriber connects and subscribes synchronously before returning.
+    super::pubsub_bridge::spawn_persistence_subscriber(
+        state.pool.clone(),
+        state.valkey.clone(),
+        session_id,
+    )
+    .await;
+
+    // 8. Create the pod (subscriber is already listening)
     let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &namespace);
     if let Err(e) = pods.create(&PostParams::default(), &pod).await {
         let _ = super::valkey_acl::delete_session_acl(&state.valkey, session_id).await;
         return Err(AgentError::PodCreationFailed(e.to_string()));
     }
 
-    // 7. Update session to running with pod_name + uses_pubsub
+    // 9. Update session to running with pod_name + uses_pubsub
     sqlx::query!(
         "UPDATE agent_sessions SET status = 'running', pod_name = $2, uses_pubsub = true WHERE id = $1",
         session_id,
@@ -216,14 +279,7 @@ pub async fn create_session(
     .execute(&state.pool)
     .await?;
 
-    // 8. Start persistence subscriber (writes pub/sub events to agent_messages)
-    super::pubsub_bridge::spawn_persistence_subscriber(
-        state.pool.clone(),
-        state.valkey.clone(),
-        session_id,
-    );
-
-    // 9. Return the complete session
+    // 10. Return the complete session
     fetch_session(&state.pool, session_id).await
 }
 
@@ -262,8 +318,13 @@ pub async fn send_message(
         .pod_name
         .as_deref()
         .ok_or(AgentError::SessionNotRunning)?;
-    let namespace =
-        resolve_session_namespace(&state.pool, &session, &state.config.agent_namespace).await?;
+    let namespace = resolve_session_namespace(
+        &state.pool,
+        &session,
+        &state.config.agent_namespace,
+        &state.config,
+    )
+    .await?;
     let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &namespace);
 
     let mut attached = pods
@@ -314,9 +375,13 @@ pub async fn stop_session(state: &AppState, session_id: Uuid) -> Result<(), Agen
         _ => {
             // Pod session — capture logs and delete pod
             if let Some(ref pod_name) = session.pod_name {
-                let namespace =
-                    resolve_session_namespace(&state.pool, &session, &state.config.agent_namespace)
-                        .await?;
+                let namespace = resolve_session_namespace(
+                    &state.pool,
+                    &session,
+                    &state.config.agent_namespace,
+                    &state.config,
+                )
+                .await?;
                 let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &namespace);
                 capture_session_logs(&pods, pod_name, state, session_id).await;
                 let _ = pods.delete(pod_name, &DeleteParams::default()).await;
@@ -346,6 +411,14 @@ pub async fn stop_session(state: &AppState, session_id: Uuid) -> Result<(), Agen
 // ---------------------------------------------------------------------------
 // Background reaper
 // ---------------------------------------------------------------------------
+
+/// Run a single reaper iteration (used by E2E tests that don't run the background loop).
+#[allow(dead_code)]
+pub async fn run_reaper_once(state: &AppState) {
+    if let Err(e) = reap_terminated_sessions(state).await {
+        tracing::error!(error = %e, "error reaping agent sessions");
+    }
+}
 
 /// Background task that periodically checks for terminated agent pods and
 /// finalizes their sessions.
@@ -388,7 +461,7 @@ async fn reap_terminated_sessions(state: &AppState) -> Result<(), AgentError> {
     for session in running {
         let namespace = session.namespace_slug.as_deref().map_or_else(
             || state.config.agent_namespace.clone(),
-            |s| format!("{s}-dev"),
+            |s| state.config.project_namespace(s, "dev"),
         );
         let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &namespace);
         let Some(ref pod_name) = session.pod_name else {
@@ -437,6 +510,9 @@ async fn reap_terminated_sessions(state: &AppState) -> Result<(), AgentError> {
                         fire_agent_webhook(&state.pool, pid, session.id, status).await;
                     }
 
+                    // Notify parent (Manager) session if this is a child
+                    notify_parent_of_completion(state, session.id, status).await;
+
                     tracing::info!(session_id = %session.id, %status, "reaped agent session");
                 }
             }
@@ -458,6 +534,10 @@ async fn reap_terminated_sessions(state: &AppState) -> Result<(), AgentError> {
                 if let Some(pid) = session.project_id {
                     fire_agent_webhook(&state.pool, pid, session.id, "failed").await;
                 }
+
+                // Notify parent (Manager) session if this is a child
+                notify_parent_of_completion(state, session.id, "failed").await;
+
                 tracing::warn!(session_id = %session.id, "agent pod disappeared, marking failed");
             }
             Err(e) => {
@@ -479,6 +559,7 @@ async fn resolve_session_namespace(
     pool: &PgPool,
     session: &AgentSession,
     fallback_namespace: &str,
+    config: &crate::config::Config,
 ) -> Result<String, AgentError> {
     if let Some(project_id) = session.project_id {
         let slug = sqlx::query_scalar!(
@@ -488,7 +569,7 @@ async fn resolve_session_namespace(
         .fetch_optional(pool)
         .await?
         .ok_or_else(|| AgentError::Other(anyhow::anyhow!("project not found")))?;
-        Ok(format!("{slug}-dev"))
+        Ok(config.project_namespace(&slug, "dev"))
     } else {
         Ok(fallback_namespace.to_string())
     }
@@ -632,26 +713,31 @@ pub async fn create_global_session(
         state.pool.clone(),
         state.valkey.clone(),
         session_id,
-    );
+    )
+    .await;
 
-    // Spawn the create-app tool loop
-    let state_clone = state.clone();
-    let prompt_owned = prompt.to_owned();
-    let oauth = cli_oauth_token.clone();
-    let api_key = user_api_key.clone();
-    tokio::spawn(async move {
-        if let Err(e) = super::create_app::run_create_app_loop(
-            &state_clone,
-            handle,
-            prompt_owned,
-            oauth,
-            api_key,
-        )
-        .await
-        {
-            tracing::error!(error = %e, %session_id, "create-app loop failed");
-        }
-    });
+    // Spawn the create-app tool loop (skip when CLI spawn is disabled, e.g. integration tests)
+    if state.config.cli_spawn_enabled {
+        let state_clone = state.clone();
+        let prompt_owned = prompt.to_owned();
+        let oauth = cli_oauth_token.clone();
+        let api_key = user_api_key.clone();
+        tokio::spawn(async move {
+            if let Err(e) = super::create_app::run_create_app_loop(
+                &state_clone,
+                handle,
+                prompt_owned,
+                oauth,
+                api_key,
+            )
+            .await
+            {
+                tracing::error!(error = %e, %session_id, "create-app loop failed");
+            }
+        });
+    } else {
+        tracing::debug!(%session_id, "CLI spawn disabled, skipping create-app tool loop");
+    }
 
     fetch_session(&state.pool, session_id).await
 }
@@ -683,6 +769,43 @@ async fn fire_agent_webhook(pool: &PgPool, project_id: Uuid, session_id: Uuid, s
         "project_id": project_id,
     });
     crate::api::webhooks::fire_webhooks(pool, project_id, "agent", &payload).await;
+}
+
+/// Notify the parent session (Manager Agent) when a child session completes or fails.
+/// Publishes a `Milestone` event to the parent's events channel so the Manager sees it
+/// in its event stream (and the persistence subscriber saves it to `agent_messages`).
+async fn notify_parent_of_completion(state: &AppState, child_session_id: Uuid, child_status: &str) {
+    // Look up parent_session_id for the completed child
+    let Ok(Some(Some(parent_id))) = sqlx::query_scalar!(
+        "SELECT parent_session_id FROM agent_sessions WHERE id = $1",
+        child_session_id,
+    )
+    .fetch_optional(&state.pool)
+    .await
+    else {
+        return; // No parent or query failed — nothing to notify
+    };
+
+    let event = ProgressEvent {
+        kind: ProgressKind::Milestone,
+        message: format!(
+            "Child agent session {child_session_id} finished with status: {child_status}"
+        ),
+        metadata: Some(serde_json::json!({
+            "event_type": "child_completion",
+            "child_session_id": child_session_id,
+            "child_status": child_status,
+        })),
+    };
+
+    if let Err(e) = super::pubsub_bridge::publish_event(&state.valkey, parent_id, &event).await {
+        tracing::warn!(
+            error = %e,
+            %child_session_id,
+            %parent_id,
+            "failed to notify parent of child completion"
+        );
+    }
 }
 
 /// Resolve project secrets scoped to agent/all for injection into agent pods.

@@ -3,7 +3,7 @@
 //! These tests don't duplicate business logic tests. They focus on:
 //! - Correct field names (catches serde rename bugs)
 //! - Correct field types (string, number, bool, null, array, object)
-//! - ListResponse wrapper on list endpoints (`{items: [...], total: N}`)
+//! - `ListResponse` wrapper on list endpoints (`{items: [...], total: N}`)
 //! - Nullable fields can actually be null
 //!
 //! Every assertion here corresponds to a field access in the UI code.
@@ -45,7 +45,7 @@ fn assert_number(v: &Value, ctx: &str) {
     assert!(v.is_number(), "{ctx}: expected number, got {v}");
 }
 
-/// Assert ListResponse shape: {items: [...], total: N}
+/// Assert `ListResponse` shape: {items: [...], total: N}
 fn assert_list_response<'a>(body: &'a Value, ctx: &str) -> &'a Vec<Value> {
     assert!(body["items"].is_array(), "{ctx}: missing items array");
     assert_number(&body["total"], &format!("{ctx}.total"));

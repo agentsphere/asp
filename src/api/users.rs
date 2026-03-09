@@ -18,6 +18,8 @@ use crate::rbac::Permission;
 use crate::store::AppState;
 use crate::validation;
 
+use super::helpers::require_admin;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -127,24 +129,6 @@ pub fn router() -> Router<AppState> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Check admin:users permission with scope awareness.
-async fn require_admin_scoped(state: &AppState, auth: &AuthUser) -> Result<(), ApiError> {
-    let allowed = crate::rbac::resolver::has_permission_scoped(
-        &state.pool,
-        &state.valkey,
-        auth.user_id,
-        None,
-        Permission::AdminUsers,
-        auth.token_scopes.as_deref(),
-    )
-    .await
-    .map_err(ApiError::Internal)?;
-    if !allowed {
-        return Err(ApiError::Forbidden);
-    }
-    Ok(())
-}
 
 fn parse_user_type(s: &str) -> Result<UserType, ApiError> {
     s.parse::<UserType>()
@@ -348,7 +332,7 @@ async fn create_user(
     auth: AuthUser,
     Json(body): Json<CreateUserRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require_admin_scoped(&state, &auth).await?;
+    require_admin(&state, &auth).await?;
 
     let user_type = body.user_type.unwrap_or(UserType::Human);
 
@@ -438,7 +422,7 @@ async fn list_users(
     auth: AuthUser,
     Query(params): Query<ListParams>,
 ) -> Result<Json<ListResponse<UserResponse>>, ApiError> {
-    require_admin_scoped(&state, &auth).await?;
+    require_admin(&state, &auth).await?;
 
     let limit = params.limit.unwrap_or(50).min(100);
     let offset = params.offset.unwrap_or(0);
@@ -481,7 +465,7 @@ async fn get_user(
     Path(id): Path<Uuid>,
 ) -> Result<Json<UserResponse>, ApiError> {
     if auth.user_id != id {
-        require_admin_scoped(&state, &auth).await?;
+        require_admin(&state, &auth).await?;
     }
 
     let user = sqlx::query!(
@@ -515,7 +499,7 @@ async fn update_user(
     Json(body): Json<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>, ApiError> {
     if auth.user_id != id {
-        require_admin_scoped(&state, &auth).await?;
+        require_admin(&state, &auth).await?;
     }
 
     // Validate inputs
@@ -585,7 +569,7 @@ async fn deactivate_user(
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    require_admin_scoped(&state, &auth).await?;
+    require_admin(&state, &auth).await?;
 
     sqlx::query!("UPDATE users SET is_active = false WHERE id = $1", id,)
         .execute(&state.pool)

@@ -143,8 +143,14 @@ async fn download_agent_runner_no_auth_integration(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn download_agent_runner_missing_binary_integration(pool: PgPool) {
-    let (state, admin_token) = helpers::test_state(pool).await;
-    // Don't create any binary files — the dir may not even exist
+    let (mut state, admin_token) = helpers::test_state(pool).await;
+    // Override agent_runner_dir to an empty temp dir so no binaries exist,
+    // even when PLATFORM_AGENT_RUNNER_DIR points to pre-built binaries.
+    let empty_dir =
+        std::env::temp_dir().join(format!("agent-runner-empty-{}", uuid::Uuid::new_v4()));
+    let mut config = (*state.config).clone();
+    config.agent_runner_dir = empty_dir;
+    state.config = std::sync::Arc::new(config);
     let app = helpers::test_router(state);
 
     let (status, _body) =

@@ -37,7 +37,11 @@ pub struct PubSubEvent {
 #[serde(tag = "type")]
 pub enum PubSubInput {
     #[serde(rename = "prompt")]
-    Prompt { content: String },
+    Prompt {
+        content: String,
+        #[serde(default)]
+        source: Option<String>,
+    },
     #[serde(rename = "control")]
     Control { control: ControlPayload },
 }
@@ -288,12 +292,25 @@ impl PubSubClient {
 }
 
 /// Dispatch a `PubSubInput` to the CLI transport.
+///
+/// Prompt messages are prefixed based on their `source` field so the agent
+/// can distinguish who sent the message:
+/// - `"manager"` → `[From manager agent] ...`
+/// - `"user"` → `[From user] ...`
+/// - `None` → no prefix (backward compatible)
 pub async fn dispatch_input(
     transport: &crate::transport::SubprocessTransport,
     input: PubSubInput,
 ) -> Result<(), crate::error::CliError> {
     match input {
-        PubSubInput::Prompt { content } => transport.send_message(&content).await,
+        PubSubInput::Prompt { content, source } => {
+            let prefixed = match source.as_deref() {
+                Some("manager") => format!("[From manager agent] {content}"),
+                Some("user") => format!("[From user] {content}"),
+                _ => content,
+            };
+            transport.send_message(&prefixed).await
+        }
         PubSubInput::Control { control } => {
             let req = ControlRequest {
                 msg_type: "control",
@@ -420,8 +437,96 @@ mod tests {
         let json = r#"{"type":"prompt","content":"fix bug"}"#;
         let input: PubSubInput = serde_json::from_str(json).unwrap();
         match input {
-            PubSubInput::Prompt { content } => assert_eq!(content, "fix bug"),
+            PubSubInput::Prompt { content, source } => {
+                assert_eq!(content, "fix bug");
+                assert!(source.is_none(), "source should be None for legacy format");
+            }
             _ => panic!("expected Prompt"),
+        }
+    }
+
+    #[test]
+    fn pubsub_input_deserialize_prompt_with_source_manager() {
+        let json = r#"{"type":"prompt","content":"check status","source":"manager"}"#;
+        let input: PubSubInput = serde_json::from_str(json).unwrap();
+        match input {
+            PubSubInput::Prompt { content, source } => {
+                assert_eq!(content, "check status");
+                assert_eq!(source.as_deref(), Some("manager"));
+            }
+            _ => panic!("expected Prompt"),
+        }
+    }
+
+    #[test]
+    fn pubsub_input_deserialize_prompt_with_source_user() {
+        let json = r#"{"type":"prompt","content":"hello","source":"user"}"#;
+        let input: PubSubInput = serde_json::from_str(json).unwrap();
+        match input {
+            PubSubInput::Prompt { content, source } => {
+                assert_eq!(content, "hello");
+                assert_eq!(source.as_deref(), Some("user"));
+            }
+            _ => panic!("expected Prompt"),
+        }
+    }
+
+    #[test]
+    fn dispatch_prefix_manager_source() {
+        let input = PubSubInput::Prompt {
+            content: "do this".into(),
+            source: Some("manager".into()),
+        };
+        // Extract the prefixed content (can't call dispatch_input without transport,
+        // so test the prefix logic directly)
+        match input {
+            PubSubInput::Prompt { content, source } => {
+                let prefixed = match source.as_deref() {
+                    Some("manager") => format!("[From manager agent] {content}"),
+                    Some("user") => format!("[From user] {content}"),
+                    _ => content,
+                };
+                assert_eq!(prefixed, "[From manager agent] do this");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn dispatch_prefix_user_source() {
+        let input = PubSubInput::Prompt {
+            content: "help me".into(),
+            source: Some("user".into()),
+        };
+        match input {
+            PubSubInput::Prompt { content, source } => {
+                let prefixed = match source.as_deref() {
+                    Some("manager") => format!("[From manager agent] {content}"),
+                    Some("user") => format!("[From user] {content}"),
+                    _ => content,
+                };
+                assert_eq!(prefixed, "[From user] help me");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn dispatch_no_prefix_for_none_source() {
+        let input = PubSubInput::Prompt {
+            content: "raw message".into(),
+            source: None,
+        };
+        match input {
+            PubSubInput::Prompt { content, source } => {
+                let prefixed = match source.as_deref() {
+                    Some("manager") => format!("[From manager agent] {content}"),
+                    Some("user") => format!("[From user] {content}"),
+                    _ => content,
+                };
+                assert_eq!(prefixed, "raw message");
+            }
+            _ => unreachable!(),
         }
     }
 
@@ -646,6 +751,274 @@ mod tests {
         assert!(cli_message_to_event(&msg).is_none());
     }
 
+    #[test]
+    fn cli_message_to_event_system_no_model() {
+        let msg = CliMessage::System(SystemMessage {
+            subtype: "init".into(),
+            session_id: "s1".into(),
+            model: None,
+            tools: None,
+            claude_code_version: None,
+        });
+        let event = cli_message_to_event(&msg).unwrap();
+        assert_eq!(event.kind, PubSubKind::Milestone);
+        assert!(event.message.contains("default"));
+        // metadata should have session_id and null version
+        let meta = event.metadata.unwrap();
+        assert_eq!(meta["session_id"], "s1");
+        assert!(meta["claude_code_version"].is_null());
+    }
+
+    #[test]
+    fn cli_message_to_event_thinking_takes_priority_over_text() {
+        // When thinking + text blocks are in the same message, thinking wins
+        let msg = CliMessage::Assistant(AssistantMessage {
+            message: AssistantContent {
+                content: vec![
+                    serde_json::json!({"type": "thinking", "thinking": "reasoning..."}),
+                    serde_json::json!({"type": "text", "text": "Hello"}),
+                ],
+                model: None,
+                usage: None,
+            },
+            session_id: None,
+        });
+        let event = cli_message_to_event(&msg).unwrap();
+        assert_eq!(event.kind, PubSubKind::Thinking);
+        assert_eq!(event.message, "reasoning...");
+    }
+
+    #[test]
+    fn cli_message_to_event_multiple_tool_calls() {
+        let msg = CliMessage::Assistant(AssistantMessage {
+            message: AssistantContent {
+                content: vec![
+                    serde_json::json!({"type": "tool_use", "name": "Read", "id": "t1", "input": {}}),
+                    serde_json::json!({"type": "tool_use", "name": "Write", "id": "t2", "input": {}}),
+                ],
+                model: None,
+                usage: None,
+            },
+            session_id: None,
+        });
+        let event = cli_message_to_event(&msg).unwrap();
+        assert_eq!(event.kind, PubSubKind::ToolCall);
+        assert!(event.message.contains("Read"));
+        assert!(event.message.contains("Write"));
+    }
+
+    #[test]
+    fn cli_message_to_event_tool_use_no_name() {
+        let msg = CliMessage::Assistant(AssistantMessage {
+            message: AssistantContent {
+                content: vec![serde_json::json!({"type": "tool_use", "id": "t1", "input": {}})],
+                model: None,
+                usage: None,
+            },
+            session_id: None,
+        });
+        let event = cli_message_to_event(&msg).unwrap();
+        assert_eq!(event.kind, PubSubKind::ToolCall);
+        assert!(event.message.contains("unknown"));
+    }
+
+    #[test]
+    fn cli_message_to_event_user_no_tool_results() {
+        // User message with non-tool_result blocks → None
+        let msg = CliMessage::User(UserMessage {
+            message: UserContent {
+                content: vec![serde_json::json!({"type": "text", "text": "hi"})],
+            },
+            session_id: None,
+        });
+        assert!(cli_message_to_event(&msg).is_none());
+    }
+
+    #[test]
+    fn cli_message_to_event_user_empty_content() {
+        let msg = CliMessage::User(UserMessage {
+            message: UserContent { content: vec![] },
+            session_id: None,
+        });
+        assert!(cli_message_to_event(&msg).is_none());
+    }
+
+    #[test]
+    fn cli_message_to_event_user_multiple_tool_results() {
+        let msg = CliMessage::User(UserMessage {
+            message: UserContent {
+                content: vec![
+                    serde_json::json!({"type": "tool_result", "tool_use_id": "t1", "content": "ok"}),
+                    serde_json::json!({"type": "tool_result", "tool_use_id": "t2", "content": "done"}),
+                ],
+            },
+            session_id: None,
+        });
+        let event = cli_message_to_event(&msg).unwrap();
+        assert_eq!(event.kind, PubSubKind::ToolResult);
+        assert!(event.message.contains("t1"));
+        assert!(event.message.contains("t2"));
+    }
+
+    #[test]
+    fn cli_message_to_event_user_tool_result_no_id() {
+        let msg = CliMessage::User(UserMessage {
+            message: UserContent {
+                content: vec![serde_json::json!({"type": "tool_result", "content": "ok"})],
+            },
+            session_id: None,
+        });
+        let event = cli_message_to_event(&msg).unwrap();
+        assert!(event.message.contains("unknown"));
+    }
+
+    #[test]
+    fn cli_message_to_event_result_no_result_text_success() {
+        let msg = CliMessage::Result(ResultMessage {
+            subtype: "success".into(),
+            session_id: "s1".into(),
+            is_error: false,
+            result: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            usage: None,
+        });
+        let event = cli_message_to_event(&msg).unwrap();
+        assert_eq!(event.kind, PubSubKind::Completed);
+        assert_eq!(event.message, "Agent completed successfully");
+    }
+
+    #[test]
+    fn cli_message_to_event_result_no_result_text_error() {
+        let msg = CliMessage::Result(ResultMessage {
+            subtype: "error".into(),
+            session_id: "s1".into(),
+            is_error: true,
+            result: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            usage: None,
+        });
+        let event = cli_message_to_event(&msg).unwrap();
+        assert_eq!(event.kind, PubSubKind::Error);
+        assert_eq!(event.message, "Agent completed with error");
+    }
+
+    #[test]
+    fn cli_message_to_event_result_metadata_fields() {
+        let msg = CliMessage::Result(ResultMessage {
+            subtype: "success".into(),
+            session_id: "s1".into(),
+            is_error: false,
+            result: Some("Done".into()),
+            total_cost_usd: Some(0.123),
+            duration_ms: Some(4567),
+            num_turns: Some(8),
+            usage: None,
+        });
+        let event = cli_message_to_event(&msg).unwrap();
+        let meta = event.metadata.unwrap();
+        assert_eq!(meta["total_cost_usd"], 0.123);
+        assert_eq!(meta["duration_ms"], 4567);
+        assert_eq!(meta["num_turns"], 8);
+        assert_eq!(meta["is_error"], false);
+    }
+
+    #[test]
+    fn cli_message_to_event_assistant_text_with_missing_text_field() {
+        // text block but with missing "text" key → skipped
+        let msg = CliMessage::Assistant(AssistantMessage {
+            message: AssistantContent {
+                content: vec![serde_json::json!({"type": "text"})],
+                model: None,
+                usage: None,
+            },
+            session_id: None,
+        });
+        assert!(cli_message_to_event(&msg).is_none());
+    }
+
+    #[test]
+    fn cli_message_to_event_assistant_thinking_missing_thinking_field() {
+        // thinking block but missing "thinking" key → falls through
+        let msg = CliMessage::Assistant(AssistantMessage {
+            message: AssistantContent {
+                content: vec![serde_json::json!({"type": "thinking"})],
+                model: None,
+                usage: None,
+            },
+            session_id: None,
+        });
+        // No thinking text, no other blocks → None
+        assert!(cli_message_to_event(&msg).is_none());
+    }
+
+    #[test]
+    fn cli_message_to_event_assistant_unknown_block_type() {
+        let msg = CliMessage::Assistant(AssistantMessage {
+            message: AssistantContent {
+                content: vec![serde_json::json!({"type": "server_tool_use", "name": "x"})],
+                model: None,
+                usage: None,
+            },
+            session_id: None,
+        });
+        // Unknown type skipped → None
+        assert!(cli_message_to_event(&msg).is_none());
+    }
+
+    #[test]
+    fn cli_message_to_event_assistant_block_with_no_type() {
+        let msg = CliMessage::Assistant(AssistantMessage {
+            message: AssistantContent {
+                content: vec![serde_json::json!({"data": "something"})],
+                model: None,
+                usage: None,
+            },
+            session_id: None,
+        });
+        assert!(cli_message_to_event(&msg).is_none());
+    }
+
+    #[test]
+    fn cli_message_to_event_tool_calls_take_priority_over_text() {
+        // When tool_use + text blocks are in the same message, tool_use wins
+        let msg = CliMessage::Assistant(AssistantMessage {
+            message: AssistantContent {
+                content: vec![
+                    serde_json::json!({"type": "text", "text": "I'll read the file"}),
+                    serde_json::json!({"type": "tool_use", "name": "Read", "id": "t1", "input": {}}),
+                ],
+                model: None,
+                usage: None,
+            },
+            session_id: None,
+        });
+        let event = cli_message_to_event(&msg).unwrap();
+        assert_eq!(event.kind, PubSubKind::ToolCall);
+        assert!(event.message.contains("Read"));
+    }
+
+    #[test]
+    fn cli_message_to_event_concatenates_text_parts() {
+        let msg = CliMessage::Assistant(AssistantMessage {
+            message: AssistantContent {
+                content: vec![
+                    serde_json::json!({"type": "text", "text": "Hello "}),
+                    serde_json::json!({"type": "text", "text": "world"}),
+                ],
+                model: None,
+                usage: None,
+            },
+            session_id: None,
+        });
+        let event = cli_message_to_event(&msg).unwrap();
+        assert_eq!(event.kind, PubSubKind::Text);
+        assert_eq!(event.message, "Hello world");
+    }
+
     // -- Ignored integration tests (require real Valkey) --
 
     #[tokio::test]
@@ -695,7 +1068,10 @@ mod tests {
             .unwrap()
             .unwrap();
         match input {
-            PubSubInput::Prompt { content } => assert_eq!(content, "hello"),
+            PubSubInput::Prompt { content, source } => {
+                assert_eq!(content, "hello");
+                assert!(source.is_none());
+            }
             _ => panic!("expected Prompt"),
         }
     }

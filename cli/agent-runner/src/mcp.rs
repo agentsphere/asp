@@ -17,10 +17,7 @@ const MCP_SERVER_BASE_PATH: &str = "/opt/mcp/servers";
 /// Generate MCP config JSON for the agent's Claude CLI invocation.
 ///
 /// Returns `None` if `PLATFORM_API_TOKEN` or `PLATFORM_API_URL` are not set.
-pub fn generate_mcp_config(
-    platform_api_url: &str,
-    platform_api_token: &str,
-) -> serde_json::Value {
+pub fn generate_mcp_config(platform_api_url: &str, platform_api_token: &str) -> serde_json::Value {
     let mut servers = serde_json::Map::new();
 
     for server_name in MCP_SERVERS {
@@ -51,8 +48,12 @@ pub fn write_mcp_config(config_dir: &Path, config: &serde_json::Value) -> anyhow
 /// Resolve MCP config from environment variables.
 /// Returns `None` if either `PLATFORM_API_TOKEN` or `PLATFORM_API_URL` is missing or empty.
 pub fn resolve_mcp_config() -> Option<serde_json::Value> {
-    let api_url = std::env::var("PLATFORM_API_URL").ok().filter(|v| !v.is_empty())?;
-    let api_token = std::env::var("PLATFORM_API_TOKEN").ok().filter(|v| !v.is_empty())?;
+    let api_url = std::env::var("PLATFORM_API_URL")
+        .ok()
+        .filter(|v| !v.is_empty())?;
+    let api_token = std::env::var("PLATFORM_API_TOKEN")
+        .ok()
+        .filter(|v| !v.is_empty())?;
     Some(generate_mcp_config(&api_url, &api_token))
 }
 
@@ -125,5 +126,119 @@ mod tests {
         assert!(names.contains(&"platform-pipeline"));
         assert!(names.contains(&"platform-deploy"));
         assert!(names.contains(&"platform-observe"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_mcp_config_returns_some_when_both_set() {
+        let url_backup = std::env::var("PLATFORM_API_URL").ok();
+        let token_backup = std::env::var("PLATFORM_API_TOKEN").ok();
+        std::env::set_var("PLATFORM_API_URL", "http://platform:8080");
+        std::env::set_var("PLATFORM_API_TOKEN", "tok-abc");
+
+        let config = resolve_mcp_config();
+        assert!(config.is_some());
+        let servers = config.unwrap()["mcpServers"].as_object().unwrap().clone();
+        assert_eq!(servers.len(), 5);
+        // Verify env vars injected
+        let core = &servers["platform-core"];
+        assert_eq!(core["env"]["PLATFORM_API_URL"], "http://platform:8080");
+        assert_eq!(core["env"]["PLATFORM_API_TOKEN"], "tok-abc");
+
+        match url_backup {
+            Some(v) => std::env::set_var("PLATFORM_API_URL", v),
+            None => std::env::remove_var("PLATFORM_API_URL"),
+        }
+        match token_backup {
+            Some(v) => std::env::set_var("PLATFORM_API_TOKEN", v),
+            None => std::env::remove_var("PLATFORM_API_TOKEN"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_mcp_config_returns_none_when_url_missing() {
+        let url_backup = std::env::var("PLATFORM_API_URL").ok();
+        let token_backup = std::env::var("PLATFORM_API_TOKEN").ok();
+        std::env::remove_var("PLATFORM_API_URL");
+        std::env::set_var("PLATFORM_API_TOKEN", "tok-abc");
+
+        assert!(resolve_mcp_config().is_none());
+
+        match url_backup {
+            Some(v) => std::env::set_var("PLATFORM_API_URL", v),
+            None => std::env::remove_var("PLATFORM_API_URL"),
+        }
+        match token_backup {
+            Some(v) => std::env::set_var("PLATFORM_API_TOKEN", v),
+            None => std::env::remove_var("PLATFORM_API_TOKEN"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_mcp_config_returns_none_when_token_missing() {
+        let url_backup = std::env::var("PLATFORM_API_URL").ok();
+        let token_backup = std::env::var("PLATFORM_API_TOKEN").ok();
+        std::env::set_var("PLATFORM_API_URL", "http://platform:8080");
+        std::env::remove_var("PLATFORM_API_TOKEN");
+
+        assert!(resolve_mcp_config().is_none());
+
+        match url_backup {
+            Some(v) => std::env::set_var("PLATFORM_API_URL", v),
+            None => std::env::remove_var("PLATFORM_API_URL"),
+        }
+        match token_backup {
+            Some(v) => std::env::set_var("PLATFORM_API_TOKEN", v),
+            None => std::env::remove_var("PLATFORM_API_TOKEN"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_mcp_config_returns_none_when_url_empty() {
+        let url_backup = std::env::var("PLATFORM_API_URL").ok();
+        let token_backup = std::env::var("PLATFORM_API_TOKEN").ok();
+        std::env::set_var("PLATFORM_API_URL", "");
+        std::env::set_var("PLATFORM_API_TOKEN", "tok-abc");
+
+        assert!(resolve_mcp_config().is_none());
+
+        match url_backup {
+            Some(v) => std::env::set_var("PLATFORM_API_URL", v),
+            None => std::env::remove_var("PLATFORM_API_URL"),
+        }
+        match token_backup {
+            Some(v) => std::env::set_var("PLATFORM_API_TOKEN", v),
+            None => std::env::remove_var("PLATFORM_API_TOKEN"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_mcp_config_returns_none_when_token_empty() {
+        let url_backup = std::env::var("PLATFORM_API_URL").ok();
+        let token_backup = std::env::var("PLATFORM_API_TOKEN").ok();
+        std::env::set_var("PLATFORM_API_URL", "http://platform:8080");
+        std::env::set_var("PLATFORM_API_TOKEN", "");
+
+        assert!(resolve_mcp_config().is_none());
+
+        match url_backup {
+            Some(v) => std::env::set_var("PLATFORM_API_URL", v),
+            None => std::env::remove_var("PLATFORM_API_URL"),
+        }
+        match token_backup {
+            Some(v) => std::env::set_var("PLATFORM_API_TOKEN", v),
+            None => std::env::remove_var("PLATFORM_API_TOKEN"),
+        }
+    }
+
+    #[test]
+    fn test_write_mcp_config_to_nonexistent_dir_fails() {
+        let config = generate_mcp_config("http://platform:8080", "tok-123");
+        let result = write_mcp_config(Path::new("/nonexistent/dir/path"), &config);
+        assert!(result.is_err());
     }
 }

@@ -6,7 +6,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 /// Seed a bare repo with an initial commit so branches can be created.
-async fn seed_bare_repo(repo_path: &str) {
+fn seed_bare_repo(repo_path: &str) {
     let tmp = tempfile::tempdir().unwrap();
     let work = tmp.path().join("work");
     std::process::Command::new("git")
@@ -310,7 +310,7 @@ async fn create_merge_request(pool: PgPool) {
     let repo_path = row.0.unwrap();
 
     // Seed with an initial commit so branches can be created
-    seed_bare_repo(&repo_path).await;
+    seed_bare_repo(&repo_path);
 
     // Create a dummy branch in the bare repo
     tokio::process::Command::new("git")
@@ -352,7 +352,7 @@ async fn list_merge_requests(pool: PgPool) {
         .unwrap();
     let repo_path = row.0.unwrap();
 
-    seed_bare_repo(&repo_path).await;
+    seed_bare_repo(&repo_path);
 
     // Create two branches
     for branch in ["feat-1", "feat-2"] {
@@ -403,7 +403,7 @@ async fn update_merge_request(pool: PgPool) {
         .unwrap();
     let repo_path = row.0.unwrap();
 
-    seed_bare_repo(&repo_path).await;
+    seed_bare_repo(&repo_path);
 
     tokio::process::Command::new("git")
         .args(["branch", "upd-branch", "main"])
@@ -450,7 +450,7 @@ async fn add_mr_comment(pool: PgPool) {
         .unwrap();
     let repo_path = row.0.unwrap();
 
-    seed_bare_repo(&repo_path).await;
+    seed_bare_repo(&repo_path);
 
     tokio::process::Command::new("git")
         .args(["branch", "comment-branch", "main"])
@@ -1208,7 +1208,7 @@ async fn mr_create_same_branch_rejected(pool: PgPool) {
         .await
         .unwrap();
     let repo_path = row.0.unwrap();
-    seed_bare_repo(&repo_path).await;
+    seed_bare_repo(&repo_path);
 
     let (status, body) = helpers::post_json(
         &app,
@@ -1237,7 +1237,7 @@ async fn mr_create_nonexistent_source_branch(pool: PgPool) {
         .await
         .unwrap();
     let repo_path = row.0.unwrap();
-    seed_bare_repo(&repo_path).await;
+    seed_bare_repo(&repo_path);
 
     let (status, _) = helpers::post_json(
         &app,

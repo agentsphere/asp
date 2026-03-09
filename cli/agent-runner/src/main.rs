@@ -10,6 +10,9 @@ mod repl;
 #[allow(dead_code)] // Copied from platform crate — not all paths used in standalone binary
 mod transport;
 
+#[cfg(test)]
+mod llm_tests;
+
 use anyhow::{bail, Context};
 use clap::Parser;
 
@@ -246,7 +249,7 @@ async fn main() -> anyhow::Result<()> {
             let mcp_dir = config_dir
                 .as_ref()
                 .map(|d| d.path().to_path_buf())
-                .unwrap_or_else(|| std::env::temp_dir());
+                .unwrap_or_else(std::env::temp_dir);
             let path = mcp::write_mcp_config(&mcp_dir, &mcp_config)
                 .context("failed to write MCP config")?;
             eprintln!("[info] MCP config written to {}", path.display());
@@ -292,8 +295,20 @@ async fn main() -> anyhow::Result<()> {
     // 9. Spawn CLI subprocess
     let transport = SubprocessTransport::spawn(opts).context("failed to spawn Claude CLI")?;
 
-    // 10. Run REPL (initial prompt sent inside so response-reading picks it up)
-    repl::run(transport, pubsub, initial_prompt).await?;
+    // 10. Spawn stdin reader and pass channel to REPL
+    let (stdin_tx, stdin_rx) = tokio::sync::mpsc::channel::<String>(32);
+    tokio::spawn(async move {
+        let stdin = tokio::io::stdin();
+        let reader = tokio::io::BufReader::new(stdin);
+        let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
+        while let Ok(Some(line)) = lines.next_line().await {
+            if stdin_tx.send(line).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    repl::run(transport, pubsub, initial_prompt, stdin_rx).await?;
 
     // config_dir is dropped here (auto-cleanup)
     Ok(())
@@ -635,5 +650,134 @@ mod tests {
             let result = parse_extra_env(&[input]);
             assert!(result.is_err(), "expected {var} to be rejected");
         }
+    }
+
+    #[test]
+    fn parse_prompt_flag() {
+        let cli = Cli::try_parse_from(["agent-runner", "-p", "fix the bug"]).unwrap();
+        assert_eq!(cli.prompt.as_deref(), Some("fix the bug"));
+    }
+
+    #[test]
+    fn parse_prompt_long_flag() {
+        let cli = Cli::try_parse_from(["agent-runner", "--prompt", "analyze code"]).unwrap();
+        assert_eq!(cli.prompt.as_deref(), Some("analyze code"));
+    }
+
+    #[test]
+    fn parse_cli_path_flag() {
+        let cli =
+            Cli::try_parse_from(["agent-runner", "--cli-path", "/usr/local/bin/claude"]).unwrap();
+        assert_eq!(
+            cli.cli_path.as_deref(),
+            Some(std::path::Path::new("/usr/local/bin/claude"))
+        );
+    }
+
+    #[test]
+    fn parse_extra_env_flag() {
+        let cli = Cli::try_parse_from([
+            "agent-runner",
+            "--extra-env",
+            "FOO=bar",
+            "--extra-env",
+            "BAZ=qux",
+        ])
+        .unwrap();
+        assert_eq!(cli.extra_env, vec!["FOO=bar", "BAZ=qux"]);
+    }
+
+    #[test]
+    fn parse_all_flags_combined() {
+        let cli = Cli::try_parse_from([
+            "agent-runner",
+            "-p",
+            "hello",
+            "--model",
+            "opus",
+            "--system-prompt",
+            "be helpful",
+            "--max-turns",
+            "5",
+            "--permission-mode",
+            "bypassPermissions",
+            "--allowed-tools",
+            "Read,Write",
+            "--cwd",
+            "/tmp",
+            "--no-mcp",
+        ])
+        .unwrap();
+        assert_eq!(cli.prompt.as_deref(), Some("hello"));
+        assert_eq!(cli.model.as_deref(), Some("opus"));
+        assert_eq!(cli.system_prompt.as_deref(), Some("be helpful"));
+        assert_eq!(cli.max_turns, Some(5));
+        assert_eq!(cli.permission_mode.as_deref(), Some("bypassPermissions"));
+        assert_eq!(cli.allowed_tools.as_deref(), Some("Read,Write"));
+        assert!(cli.no_mcp);
+    }
+
+    #[test]
+    fn parse_defaults() {
+        let cli = Cli::try_parse_from(["agent-runner"]).unwrap();
+        assert!(cli.prompt.is_none());
+        assert!(cli.model.is_none());
+        assert!(cli.system_prompt.is_none());
+        assert!(cli.max_turns.is_none());
+        assert!(cli.permission_mode.is_none());
+        assert!(cli.allowed_tools.is_none());
+        assert!(cli.cwd.is_none());
+        assert!(cli.cli_path.is_none());
+        assert!(cli.extra_env.is_empty());
+        assert!(!cli.no_mcp);
+    }
+
+    // Extra env: multiple reserved vars in one call
+    #[test]
+    fn extra_env_rejects_first_reserved_in_list() {
+        let result = parse_extra_env(&[
+            "GOOD=ok".into(),
+            "HTTP_PROXY=evil.com".into(),
+            "ALSO_GOOD=fine".into(),
+        ]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("HTTP_PROXY"));
+    }
+
+    // Test reserved proxy vars specifically
+    #[test]
+    fn extra_env_proxy_vars_all_rejected() {
+        let proxy_vars = [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+        ];
+        for var in proxy_vars {
+            let result = parse_extra_env(&[format!("{var}=http://evil.com")]);
+            assert!(result.is_err(), "expected proxy var {var} to be rejected");
+        }
+    }
+
+    // Test Node.js security vars
+    #[test]
+    fn extra_env_node_vars_rejected() {
+        let result = parse_extra_env(&["NODE_OPTIONS=--inspect".into()]);
+        assert!(result.is_err());
+        let result = parse_extra_env(&["NODE_EXTRA_CA_CERTS=/tmp/evil.pem".into()]);
+        assert!(result.is_err());
+    }
+
+    // Test TLS vars
+    #[test]
+    fn extra_env_tls_vars_rejected() {
+        let result = parse_extra_env(&["SSL_CERT_FILE=/tmp/evil.pem".into()]);
+        assert!(result.is_err());
+        let result = parse_extra_env(&["SSL_CERT_DIR=/tmp/evil-certs".into()]);
+        assert!(result.is_err());
     }
 }

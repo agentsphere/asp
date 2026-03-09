@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // fields consumed by modules 03-09
+#[allow(dead_code, clippy::struct_excessive_bools)] // fields consumed by modules 03-09
 pub struct Config {
     pub listen: String,
     pub database_url: String,
@@ -55,6 +55,17 @@ pub struct Config {
     /// Claude CLI version for auto-setup in agent pods.
     /// Used by the setup init container: `npm install -g @anthropic-ai/claude-code@<version>`.
     pub claude_cli_version: String,
+    /// Optional namespace prefix for test isolation.
+    /// When set, project namespaces become `{ns_prefix}-{slug}-{env}` instead of `{slug}-{env}`.
+    pub ns_prefix: Option<String>,
+    /// Whether to spawn real CLI subprocesses (default `true`).
+    /// Set to `false` in integration tests to avoid spawning real `claude` processes.
+    pub cli_spawn_enabled: bool,
+    /// Registry URL as seen from K8s nodes (via `DaemonSet` proxy).
+    /// Falls back to `registry_url` if unset.
+    pub registry_node_url: Option<String>,
+    /// Directory containing OCI layout tarballs to seed into the registry on startup.
+    pub seed_images_path: PathBuf,
 }
 
 fn parse_cors_origins(s: &str) -> Vec<String> {
@@ -135,6 +146,20 @@ impl Config {
                 .map_or_else(|_| PathBuf::from("/data/agent-runner"), PathBuf::from),
             claude_cli_version: env::var("PLATFORM_CLAUDE_CLI_VERSION")
                 .unwrap_or_else(|_| "stable".into()),
+            ns_prefix: env::var("PLATFORM_NS_PREFIX").ok(),
+            cli_spawn_enabled: env::var("PLATFORM_CLI_SPAWN_ENABLED").ok().as_deref()
+                != Some("false"),
+            registry_node_url: env::var("PLATFORM_REGISTRY_NODE_URL").ok(),
+            seed_images_path: env::var("PLATFORM_SEED_IMAGES_PATH")
+                .map_or_else(|_| PathBuf::from("/data/seed-images"), PathBuf::from),
+        }
+    }
+
+    /// Derive a project's K8s namespace: `{ns_prefix}-{slug}-{env}` or `{slug}-{env}`.
+    pub fn project_namespace(&self, slug: &str, env: &str) -> String {
+        match &self.ns_prefix {
+            Some(prefix) => format!("{prefix}-{slug}-{env}"),
+            None => format!("{slug}-{env}"),
         }
     }
 }
@@ -191,6 +216,10 @@ impl Config {
             valkey_agent_host: "localhost:6379".into(),
             agent_runner_dir: "/tmp/test-agent-runner".into(),
             claude_cli_version: "stable".into(),
+            ns_prefix: None,
+            cli_spawn_enabled: true,
+            registry_node_url: None,
+            seed_images_path: "/tmp/seed-images".into(),
         }
     }
 }
@@ -388,6 +417,31 @@ mod tests {
         let config = Config::load();
         assert!(!config.claude_cli_version.is_empty());
         assert!(!config.agent_runner_dir.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn project_namespace_without_prefix() {
+        let config = Config::test_default();
+        assert_eq!(config.project_namespace("my-app", "dev"), "my-app-dev");
+        assert_eq!(config.project_namespace("my-app", "prod"), "my-app-prod");
+    }
+
+    #[test]
+    fn project_namespace_with_prefix() {
+        let config = Config {
+            ns_prefix: Some("platform-test-abc123".into()),
+            ..Config::test_default()
+        };
+        assert_eq!(
+            config.project_namespace("my-app", "dev"),
+            "platform-test-abc123-my-app-dev"
+        );
+    }
+
+    #[test]
+    fn test_default_ns_prefix_is_none() {
+        let config = Config::test_default();
+        assert!(config.ns_prefix.is_none());
     }
 
     #[test]

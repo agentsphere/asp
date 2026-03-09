@@ -2,7 +2,6 @@ use std::io::IsTerminal;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use tokio::io::AsyncBufReadExt;
 
 use crate::error::CliError;
 use crate::messages::{CliMessage, SystemMessage};
@@ -35,6 +34,7 @@ pub async fn run(
     transport: SubprocessTransport,
     pubsub: Option<PubSubClient>,
     initial_prompt: String,
+    mut stdin_rx: tokio::sync::mpsc::Receiver<String>,
 ) -> Result<()> {
     // 1. Register SIGTERM handler for K8s graceful shutdown
     #[cfg(unix)]
@@ -66,19 +66,8 @@ pub async fn run(
         None
     };
 
-    // 4. Spawn stdin reader
+    // 4. stdin channel is now injected via parameter
     let is_tty = std::io::stdin().is_terminal();
-    let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<String>(32);
-    tokio::spawn(async move {
-        let stdin = tokio::io::stdin();
-        let reader = tokio::io::BufReader::new(stdin);
-        let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if stdin_tx.send(line).await.is_err() {
-                break;
-            }
-        }
-    });
 
     // 4b. Spawn CLI output reader (cancel-safe: mpsc::recv is cancel-safe,
     // unlike transport.recv() which holds a Mutex<BufReader> lock during read_line —
@@ -113,7 +102,7 @@ pub async fn run(
                 eprint!("> ");
             }
 
-            // Wait for input from any source
+            // Wait for input from any source (also watch for CLI exit)
             let input_result = tokio::select! {
                 line = stdin_rx.recv() => {
                     match line {
@@ -147,6 +136,29 @@ pub async fn run(
                             Ok(true)
                         }
                         None => Ok(false), // pub/sub channel closed
+                    }
+                }
+                msg = cli_rx.recv() => {
+                    // CLI process exited or sent data while waiting for input
+                    match msg {
+                        Some(Ok(None)) | None => Ok(false), // EOF / channel closed
+                        Some(Ok(Some(ref m))) => {
+                            render::render_message(m);
+                            if let Some(ref ps) = pubsub {
+                                if let Some(event) = cli_message_to_event(m) {
+                                    ps.publish_event(&event).await.ok();
+                                }
+                            }
+                            if matches!(m, CliMessage::Result(_)) {
+                                Ok(false)
+                            } else {
+                                continue;
+                            }
+                        }
+                        Some(Err(e)) => {
+                            eprintln!("[error] CLI read error: {e}");
+                            Ok(false)
+                        }
                     }
                 }
                 _ = tokio::signal::ctrl_c() => {
@@ -361,6 +373,7 @@ mod tests {
         let transport = spawn_cat_transport().await;
         let input = PubSubInput::Prompt {
             content: "hello".into(),
+            source: None,
         };
         dispatch_input(&transport, input).await.unwrap();
 
@@ -460,5 +473,140 @@ mod tests {
         // Next recv should return None (EOF)
         let msg = transport.recv().await.unwrap();
         assert!(msg.is_none());
+    }
+
+    /// Test the full `run()` function with a mock process that emits init + result.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_completes_with_init_and_result() {
+        // This process:
+        // 1. Reads stdin (initial prompt), echoes it back (cat)
+        // 2. Then emits system init + assistant + result
+        let script = r#"
+            read -r line
+            echo '{"type":"system","subtype":"init","session_id":"run-test","model":"test"}'
+            echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}]}}'
+            echo '{"type":"result","subtype":"success","session_id":"run-test","is_error":false,"result":"done"}'
+        "#;
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let transport = SubprocessTransport {
+            child,
+            stdin: Mutex::new(BufWriter::new(stdin)),
+            stdout: Mutex::new(BufReader::new(stdout)),
+            stderr_task: None,
+            session_id: Mutex::new(None),
+            alive: std::sync::atomic::AtomicBool::new(true),
+        };
+
+        let (tx, stdin_rx) = tokio::sync::mpsc::channel::<String>(1);
+        drop(tx); // stdin immediately closed
+        let result = run(transport, None, "Hello agent".into(), stdin_rx).await;
+        assert!(result.is_ok());
+    }
+
+    /// Test run() exits cleanly when the process exits after init (EOF path).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_exits_on_eof_after_init() {
+        let script = r#"
+            read -r line
+            echo '{"type":"system","subtype":"init","session_id":"eof-test"}'
+        "#;
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let transport = SubprocessTransport {
+            child,
+            stdin: Mutex::new(BufWriter::new(stdin)),
+            stdout: Mutex::new(BufReader::new(stdout)),
+            stderr_task: None,
+            session_id: Mutex::new(None),
+            alive: std::sync::atomic::AtomicBool::new(true),
+        };
+
+        let (tx, stdin_rx) = tokio::sync::mpsc::channel::<String>(1);
+        drop(tx);
+        let result = run(transport, None, "test".into(), stdin_rx).await;
+        assert!(result.is_ok());
+    }
+
+    /// Test run() error when CLI exits before sending system init.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_fails_when_no_init() {
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "read -r line; exit 1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let transport = SubprocessTransport {
+            child,
+            stdin: Mutex::new(BufWriter::new(stdin)),
+            stdout: Mutex::new(BufReader::new(stdout)),
+            stderr_task: None,
+            session_id: Mutex::new(None),
+            alive: std::sync::atomic::AtomicBool::new(true),
+        };
+
+        let (tx, stdin_rx) = tokio::sync::mpsc::channel::<String>(1);
+        drop(tx);
+        let result = run(transport, None, "test".into(), stdin_rx).await;
+        assert!(result.is_err());
+    }
+
+    /// Test run() with error result from CLI.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_handles_error_result() {
+        let script = r#"
+            read -r line
+            echo '{"type":"system","subtype":"init","session_id":"err-test"}'
+            echo '{"type":"result","subtype":"error","session_id":"err-test","is_error":true,"result":"Rate limit"}'
+        "#;
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let transport = SubprocessTransport {
+            child,
+            stdin: Mutex::new(BufWriter::new(stdin)),
+            stdout: Mutex::new(BufReader::new(stdout)),
+            stderr_task: None,
+            session_id: Mutex::new(None),
+            alive: std::sync::atomic::AtomicBool::new(true),
+        };
+
+        // run() should complete without error even when CLI reports an error result
+        let (tx, stdin_rx) = tokio::sync::mpsc::channel::<String>(1);
+        drop(tx);
+        let result = run(transport, None, "test".into(), stdin_rx).await;
+        assert!(result.is_ok());
     }
 }

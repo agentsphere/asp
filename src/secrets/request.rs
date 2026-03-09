@@ -87,7 +87,9 @@ mod tests {
             description: "test".into(),
             environments: vec![],
             status: SecretRequestStatus::Completed,
-            created_at: Instant::now() - std::time::Duration::from_secs(600),
+            created_at: Instant::now()
+                .checked_sub(std::time::Duration::from_secs(600))
+                .unwrap(),
         };
         assert_eq!(req.effective_status(), SecretRequestStatus::Completed);
     }
@@ -99,10 +101,12 @@ mod tests {
             project_id: Uuid::new_v4(),
             session_id: Uuid::new_v4(),
             name: "KEY".into(),
-            description: "".into(),
+            description: String::new(),
             environments: vec![],
             status: SecretRequestStatus::Pending,
-            created_at: Instant::now() - std::time::Duration::from_secs(301),
+            created_at: Instant::now()
+                .checked_sub(std::time::Duration::from_secs(301))
+                .unwrap(),
         };
         assert!(req.is_timed_out());
         assert_eq!(req.effective_status(), SecretRequestStatus::TimedOut);

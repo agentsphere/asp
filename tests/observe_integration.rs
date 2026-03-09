@@ -592,7 +592,7 @@ async fn observe_logs_requires_permission(pool: PgPool) {
 // Parquet rotation tests
 // ---------------------------------------------------------------------------
 
-/// Rotate old logs to parquet — rows deleted from DB, bytes in MinIO.
+/// Rotate old logs to parquet — rows deleted from DB, bytes in `MinIO`.
 #[sqlx::test(migrations = "./migrations")]
 async fn rotate_logs_archives_old_data(pool: PgPool) {
     let (state, _admin_token) = test_state(pool.clone()).await;
@@ -707,7 +707,7 @@ async fn rotate_metrics_archives_old_data(pool: PgPool) {
 // Store — empty input early returns
 // ---------------------------------------------------------------------------
 
-/// write_spans with empty input is a no-op.
+/// `write_spans` with empty input is a no-op.
 #[sqlx::test(migrations = "./migrations")]
 async fn write_spans_empty_is_noop(pool: PgPool) {
     platform::observe::store::write_spans(&pool, &[])
@@ -715,7 +715,7 @@ async fn write_spans_empty_is_noop(pool: PgPool) {
         .expect("write_spans with empty input should succeed");
 }
 
-/// write_logs with empty input is a no-op.
+/// `write_logs` with empty input is a no-op.
 #[sqlx::test(migrations = "./migrations")]
 async fn write_logs_empty_is_noop(pool: PgPool) {
     platform::observe::store::write_logs(&pool, &[])
@@ -723,7 +723,7 @@ async fn write_logs_empty_is_noop(pool: PgPool) {
         .expect("write_logs with empty input should succeed");
 }
 
-/// write_metrics with empty input is a no-op.
+/// `write_metrics` with empty input is a no-op.
 #[sqlx::test(migrations = "./migrations")]
 async fn write_metrics_empty_is_noop(pool: PgPool) {
     platform::observe::store::write_metrics(&pool, &[])
@@ -735,7 +735,7 @@ async fn write_metrics_empty_is_noop(pool: PgPool) {
 // Correlation — resolve_session
 // ---------------------------------------------------------------------------
 
-/// resolve_session fills project_id and user_id from agent_sessions table.
+/// `resolve_session` fills `project_id` and `user_id` from `agent_sessions` table.
 #[sqlx::test(migrations = "./migrations")]
 async fn resolve_session_fills_project_and_user(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -774,7 +774,7 @@ async fn resolve_session_fills_project_and_user(pool: PgPool) {
     assert_eq!(envelope.user_id, Some(admin_id));
 }
 
-/// resolve_session is a no-op when project_id and user_id already set.
+/// `resolve_session` is a no-op when `project_id` and `user_id` already set.
 #[sqlx::test(migrations = "./migrations")]
 async fn resolve_session_no_op_when_already_set(pool: PgPool) {
     let proj_id = Uuid::new_v4();
@@ -797,7 +797,7 @@ async fn resolve_session_no_op_when_already_set(pool: PgPool) {
     assert_eq!(envelope.user_id, Some(user_id));
 }
 
-/// resolve_session is a no-op without session_id.
+/// `resolve_session` is a no-op without `session_id`.
 #[sqlx::test(migrations = "./migrations")]
 async fn resolve_session_no_op_without_session(pool: PgPool) {
     let mut envelope = platform::observe::correlation::CorrelationEnvelope::default();
@@ -814,14 +814,14 @@ async fn resolve_session_no_op_without_session(pool: PgPool) {
 // Session timeline
 // ---------------------------------------------------------------------------
 
-/// Helper: resolve admin user_id from token.
+/// Helper: resolve admin `user_id` from token.
 async fn get_admin_user_id(app: &axum::Router, token: &str) -> Uuid {
     let (status, body) = helpers::get_json(app, token, "/api/auth/me").await;
     assert_eq!(status, StatusCode::OK);
     Uuid::parse_str(body["id"].as_str().unwrap()).unwrap()
 }
 
-/// Insert an agent_session record directly into DB. Returns the session id.
+/// Insert an `agent_session` record directly into DB. Returns the session id.
 async fn insert_session(pool: &PgPool, project_id: Uuid, user_id: Uuid) -> Uuid {
     let session_id = Uuid::new_v4();
     sqlx::query(
@@ -837,7 +837,7 @@ async fn insert_session(pool: &PgPool, project_id: Uuid, user_id: Uuid) -> Uuid 
     session_id
 }
 
-/// Insert a log entry with a session_id.
+/// Insert a log entry with a `session_id`.
 async fn insert_session_log(pool: &PgPool, session_id: Uuid, message: &str) {
     sqlx::query(
         "INSERT INTO log_entries (session_id, service, level, message, timestamp)
@@ -850,7 +850,7 @@ async fn insert_session_log(pool: &PgPool, session_id: Uuid, message: &str) {
     .expect("insert session log");
 }
 
-/// Insert a span + trace with a session_id.
+/// Insert a span + trace with a `session_id`.
 async fn insert_session_span(pool: &PgPool, session_id: Uuid, span_name: &str) {
     let trace_id = format!("trace-{}", Uuid::new_v4());
     let span_id = format!("span-{}", Uuid::new_v4());
@@ -1789,7 +1789,7 @@ async fn observe_project_scoped_permission(pool: PgPool) {
     let project_id = helpers::create_project(&app, &admin_token, "priv-obs-proj", "private").await;
 
     // Create a user with NO roles — no observe:read, no project:read
-    let (_uid, user_token) = create_user(&app, &admin_token, "obs-user", "obsuser@test.com").await;
+    let (uid, user_token) = create_user(&app, &admin_token, "obs-user", "obsuser@test.com").await;
 
     // Without observe:read, user should get 403 on observe endpoints
     let (status, _) = helpers::get_json(
@@ -1815,7 +1815,7 @@ async fn observe_project_scoped_permission(pool: PgPool) {
 
     // With viewer role (which grants both observe:read AND project:read globally),
     // even a private project is accessible
-    helpers::assign_role(&app, &admin_token, _uid, "viewer", None, &pool).await;
+    helpers::assign_role(&app, &admin_token, uid, "viewer", None, &pool).await;
     let (status, _) = helpers::get_json(
         &app,
         &user_token,

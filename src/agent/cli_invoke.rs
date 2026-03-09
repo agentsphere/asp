@@ -12,6 +12,10 @@ use super::pubsub_bridge;
 /// Timeout for a single CLI invocation (5 minutes).
 const CLI_INVOKE_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Timeout for the CLI to emit its first NDJSON message (system init).
+/// Detects startup hangs (auth, config) in 30s instead of 300s.
+const CLI_FIRST_MESSAGE_TIMEOUT: Duration = Duration::from_secs(30);
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -77,25 +81,32 @@ pub async fn invoke_cli(
         anthropic_api_key: params.anthropic_api_key,
         max_turns: params.max_turns.or(Some(1)),
         permission_mode: Some("bypassPermissions".into()),
+        cwd: Some(std::path::PathBuf::from("/tmp")),
         ..Default::default()
     };
 
     let mut transport = SubprocessTransport::spawn(opts)
         .map_err(|e| AgentError::Other(anyhow::anyhow!("CLI spawn failed: {e}")))?;
 
-    let result = tokio::time::timeout(CLI_INVOKE_TIMEOUT, async {
-        read_cli_output(&mut transport, params.session_id, valkey).await
-    })
-    .await
-    .map_err(|_| {
-        AgentError::Other(anyhow::anyhow!(
-            "CLI invocation timed out ({}s)",
-            CLI_INVOKE_TIMEOUT.as_secs()
-        ))
-    })?;
+    // Close stdin — in -p mode the prompt is an argument, not piped input.
+    // Without closing, the CLI may block on stdin reads during startup.
+    transport.close_stdin().await;
 
-    // Always kill the process
+    let result = read_cli_output(&mut transport, params.session_id, valkey).await;
+
+    // Collect stderr before killing (helps diagnose failures)
+    let stderr = collect_stderr(&mut transport).await;
     let _ = transport.kill().await;
+
+    if let Err(ref e) = result
+        && !stderr.is_empty()
+    {
+        tracing::error!(
+            session_id = %params.session_id,
+            stderr = %stderr,
+            "CLI subprocess stderr on failure: {e}"
+        );
+    }
 
     let (result_msg, cli_session_id) = result?;
 
@@ -114,6 +125,9 @@ pub async fn invoke_cli(
 
 /// Read NDJSON messages from the CLI subprocess, publish progress events,
 /// and return the `ResultMessage`.
+///
+/// Uses a two-phase timeout: 30s for the first message (startup hang detection),
+/// then 300s for subsequent messages (normal operation).
 async fn read_cli_output(
     transport: &mut SubprocessTransport,
     session_id: Uuid,
@@ -121,12 +135,36 @@ async fn read_cli_output(
 ) -> Result<(ResultMessage, Option<String>), AgentError> {
     let mut result_msg: Option<ResultMessage> = None;
     let mut cli_session_id: Option<String> = None;
+    let mut first_message = true;
 
-    while let Some(msg) = transport
-        .recv()
-        .await
-        .map_err(|e| AgentError::Other(anyhow::anyhow!("CLI read error: {e}")))?
-    {
+    loop {
+        let timeout_dur = if first_message {
+            CLI_FIRST_MESSAGE_TIMEOUT
+        } else {
+            CLI_INVOKE_TIMEOUT
+        };
+
+        let msg = if let Ok(result) = tokio::time::timeout(timeout_dur, transport.recv()).await {
+            result.map_err(|e| AgentError::Other(anyhow::anyhow!("CLI read error: {e}")))?
+        } else if first_message {
+            return Err(AgentError::Other(anyhow::anyhow!(
+                "CLI startup timed out — no output within {}s (check stderr logs)",
+                CLI_FIRST_MESSAGE_TIMEOUT.as_secs()
+            )));
+        } else {
+            return Err(AgentError::Other(anyhow::anyhow!(
+                "CLI invocation timed out ({}s)",
+                CLI_INVOKE_TIMEOUT.as_secs()
+            )));
+        };
+
+        let Some(msg) = msg else {
+            // Process exited (stdout EOF)
+            break;
+        };
+
+        first_message = false;
+
         // Track CLI session ID from system init
         if let CliMessage::System(ref sys) = msg {
             cli_session_id = Some(sys.session_id.clone());
@@ -144,10 +182,25 @@ async fn read_cli_output(
         }
     }
 
-    let result = result_msg
-        .ok_or_else(|| AgentError::Other(anyhow::anyhow!("CLI exited without a result message")))?;
+    let result = result_msg.ok_or_else(|| {
+        AgentError::Other(anyhow::anyhow!(
+            "CLI process exited without a result message (check stderr logs)"
+        ))
+    })?;
 
     Ok((result, cli_session_id))
+}
+
+/// Collect stderr output from the transport's background task.
+async fn collect_stderr(transport: &mut SubprocessTransport) -> String {
+    if let Some(task) = transport.stderr_task.take() {
+        match tokio::time::timeout(Duration::from_secs(2), task).await {
+            Ok(Ok(stderr)) => stderr,
+            _ => String::new(),
+        }
+    } else {
+        String::new()
+    }
 }
 
 /// Parse the structured output from a `ResultMessage`.
@@ -201,7 +254,7 @@ pub fn create_app_schema() -> serde_json::Value {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "name": { "type": "string", "enum": ["create_project", "spawn_coding_agent"] },
+                        "name": { "type": "string", "enum": ["create_project", "spawn_coding_agent", "send_message_to_session", "check_session_progress"] },
                         "parameters": { "type": "object" }
                     },
                     "required": ["name", "parameters"]
@@ -299,6 +352,9 @@ mod tests {
             .collect();
         assert!(names.contains(&"create_project"));
         assert!(names.contains(&"spawn_coding_agent"));
+        assert!(names.contains(&"send_message_to_session"));
+        assert!(names.contains(&"check_session_progress"));
+        assert_eq!(names.len(), 4);
     }
 
     #[test]
@@ -396,5 +452,18 @@ mod tests {
         let resp = parse_structured_output(&result);
         assert_eq!(resp.text, "Fallback text");
         assert!(resp.tools.is_empty());
+    }
+
+    #[test]
+    fn first_message_timeout_shorter_than_invoke_timeout() {
+        assert!(
+            CLI_FIRST_MESSAGE_TIMEOUT < CLI_INVOKE_TIMEOUT,
+            "startup timeout must be shorter than full invocation timeout"
+        );
+    }
+
+    #[test]
+    fn first_message_timeout_is_30s() {
+        assert_eq!(CLI_FIRST_MESSAGE_TIMEOUT.as_secs(), 30);
     }
 }

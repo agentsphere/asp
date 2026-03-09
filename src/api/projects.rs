@@ -31,6 +31,10 @@ pub struct CreateProjectRequest {
     pub description: Option<String>,
     pub default_branch: Option<String>,
     pub workspace_id: Option<Uuid>,
+    /// Whether to set up K8s namespaces + ops repo. Defaults to `true`.
+    /// Set to `false` for DB-only project creation (infra can be set up later
+    /// on first deploy/pipeline/agent run via lazy `ensure_namespace()`).
+    pub setup_infra: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,38 +202,32 @@ pub async fn setup_project_infrastructure(
     namespace_slug: &str,
 ) -> Result<(), ApiError> {
     let project_id_str = project_id.to_string();
+    let dev_ns = state.config.project_namespace(namespace_slug, "dev");
+    let prod_ns = state.config.project_namespace(namespace_slug, "prod");
 
-    // 1. Create {slug}-dev namespace
-    if let Err(e) = crate::deployer::namespace::ensure_namespace(
-        &state.kube,
-        namespace_slug,
-        "dev",
-        &project_id_str,
-    )
-    .await
+    // 1. Create dev namespace
+    if let Err(e) =
+        crate::deployer::namespace::ensure_namespace(&state.kube, &dev_ns, "dev", &project_id_str)
+            .await
     {
         tracing::warn!(error = %e, "failed to create dev namespace (will retry)");
     }
 
-    // 2. Create {slug}-prod namespace
-    if let Err(e) = crate::deployer::namespace::ensure_namespace(
-        &state.kube,
-        namespace_slug,
-        "prod",
-        &project_id_str,
-    )
-    .await
+    // 2. Create prod namespace
+    if let Err(e) =
+        crate::deployer::namespace::ensure_namespace(&state.kube, &prod_ns, "prod", &project_id_str)
+            .await
     {
         tracing::warn!(error = %e, "failed to create prod namespace (will retry)");
     }
 
-    // 3. Apply NetworkPolicy to -dev namespace (agents only run in -dev; -prod
+    // 3. Apply NetworkPolicy to dev namespace (agents only run in dev; prod
     //    NetworkPolicy is intentionally omitted — deployer pods use their own RBAC).
     //    Skip in dev mode — pods need unrestricted egress to reach the platform on the host.
     if !state.config.dev_mode
         && let Err(e) = crate::deployer::namespace::ensure_network_policy(
             &state.kube,
-            namespace_slug,
+            &dev_ns,
             &state.config.platform_namespace,
         )
         .await
@@ -375,7 +373,7 @@ async fn init_project_repo_and_workspace(
     let repo_path_str = repo_path.to_string_lossy().to_string();
 
     // Workspace-scoped tokens must create projects in their workspace
-    let requested_workspace_id = if let Some(scope_wid) = auth.scope_workspace_id {
+    let requested_workspace_id = if let Some(scope_wid) = auth.boundary_workspace_id {
         if body.workspace_id.is_some() && body.workspace_id != Some(scope_wid) {
             return Err(ApiError::BadRequest(
                 "workspace_id does not match token scope".into(),
@@ -408,7 +406,7 @@ async fn create_project(
     Json(body): Json<CreateProjectRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     // Project-scoped tokens cannot create new projects
-    if auth.scope_project_id.is_some() {
+    if auth.boundary_project_id.is_some() {
         return Err(ApiError::Forbidden);
     }
 
@@ -448,7 +446,9 @@ async fn create_project(
     .await?;
 
     // Best-effort infra setup (namespaces, network policy, ops repo)
-    if let Err(e) = setup_project_infrastructure(&state, project.id, &project.namespace_slug).await
+    if body.setup_infra.unwrap_or(true)
+        && let Err(e) =
+            setup_project_infrastructure(&state, project.id, &project.namespace_slug).await
     {
         tracing::warn!(error = %e, project_id = %project.id, "project infra setup incomplete");
     }
@@ -558,7 +558,7 @@ async fn get_project(
     .ok_or_else(|| ApiError::NotFound("project".into()))?;
 
     // Enforce hard workspace scope from API token
-    if let Some(scope_wid) = auth.scope_workspace_id
+    if let Some(scope_wid) = auth.boundary_workspace_id
         && project.workspace_id != scope_wid
     {
         return Err(ApiError::NotFound("project".into()));
@@ -705,12 +705,13 @@ async fn delete_project(
     .ok_or_else(|| ApiError::NotFound("project".into()))?;
 
     if project_owner != auth.user_id {
-        let is_admin = resolver::has_permission(
+        let is_admin = resolver::has_permission_scoped(
             &state.pool,
             &state.valkey,
             auth.user_id,
             None,
             Permission::AdminUsers,
+            auth.token_scopes.as_deref(),
         )
         .await
         .map_err(ApiError::Internal)?;

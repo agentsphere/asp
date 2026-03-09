@@ -49,6 +49,7 @@ async fn registry_push_manifest(
     config_digest: &str,
     layer_digests: &[&str],
 ) -> String {
+    use sha2::Digest as _;
     let layers: Vec<serde_json::Value> = layer_digests
         .iter()
         .map(|d| {
@@ -85,7 +86,6 @@ async fn registry_push_manifest(
     let status = resp.status();
 
     // Compute the digest of the manifest body for return
-    use sha2::Digest as _;
     let hash = sha2::Sha256::digest(&body);
     let digest = format!("sha256:{}", hex::encode(hash));
 
@@ -515,9 +515,20 @@ async fn registry_requires_auth(pool: PgPool) {
     let (state, _admin_token) = test_state(pool).await;
     let app = test_router(state);
 
+    // /v2/ is publicly accessible per OCI spec (version check)
     let req = axum::http::Request::builder()
         .method("GET")
         .uri("/v2/")
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = tower::ServiceExt::oneshot(app.clone(), req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Push endpoints still require auth
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v2/some-project/blobs/uploads/")
         .body(axum::body::Body::empty())
         .unwrap();
 
@@ -528,6 +539,7 @@ async fn registry_requires_auth(pool: PgPool) {
 /// Chunked blob upload: POST (start) → PATCH (chunk) → PUT (complete).
 #[sqlx::test(migrations = "./migrations")]
 async fn chunked_blob_upload(pool: PgPool) {
+    use sha2::Digest as _;
     let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
@@ -576,7 +588,6 @@ async fn chunked_blob_upload(pool: PgPool) {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
     // Step 3: PUT complete with digest
-    use sha2::Digest as _;
     let hash = sha2::Sha256::digest(chunk);
     let digest = format!("sha256:{}", hex::encode(hash));
 
@@ -830,7 +841,7 @@ async fn manifest_invalid_json_rejected(pool: PgPool) {
 // Registry auth paths
 // ---------------------------------------------------------------------------
 
-/// Bearer token auth works for the registry (verifies lookup_api_token path).
+/// Bearer token auth works for the registry (verifies `lookup_api_token` path).
 #[sqlx::test(migrations = "./migrations")]
 async fn registry_auth_bearer_token(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -872,10 +883,17 @@ async fn registry_auth_invalid_token_401(pool: PgPool) {
     let (state, _admin_token) = test_state(pool).await;
     let app = test_router(state);
 
-    let (status, headers, _) =
-        registry_request(&app, "plat_bogus_token_12345", "GET", "/v2/").await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert!(headers.contains_key("www-authenticate"));
+    // Push endpoint rejects invalid tokens
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v2/some-project/blobs/uploads/")
+        .header("Authorization", "Bearer plat_bogus_token_12345")
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = tower::ServiceExt::oneshot(app, req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert!(resp.headers().contains_key("www-authenticate"));
 }
 
 /// Inactive user's token returns 401.
@@ -899,8 +917,294 @@ async fn registry_auth_inactive_user_401(pool: PgPool) {
         .await
         .expect("deactivate user");
 
-    // Token should now be rejected
-    let (status, headers, _) = registry_request(&app, &api_token, "GET", "/v2/").await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert!(headers.contains_key("www-authenticate"));
+    // Push endpoint rejects inactive user's token
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v2/some-project/blobs/uploads/")
+        .header("Authorization", format!("Bearer {api_token}"))
+        .body(axum::body::Body::empty())
+        .unwrap();
+
+    let resp = tower::ServiceExt::oneshot(app, req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert!(resp.headers().contains_key("www-authenticate"));
+}
+
+// ---------------------------------------------------------------------------
+// Registry seeding tests
+// ---------------------------------------------------------------------------
+
+/// Build a minimal OCI layout tarball in memory for testing.
+fn build_test_oci_tarball(config_json: &[u8], layer_data: &[u8]) -> (Vec<u8>, String) {
+    use sha2::Digest as _;
+
+    // Compute digests
+    let config_digest = format!("sha256:{}", hex::encode(sha2::Sha256::digest(config_json)));
+    let layer_digest = format!("sha256:{}", hex::encode(sha2::Sha256::digest(layer_data)));
+
+    // Build manifest
+    let manifest = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": config_digest,
+            "size": config_json.len()
+        },
+        "layers": [{
+            "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+            "digest": layer_digest,
+            "size": layer_data.len()
+        }]
+    });
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    let manifest_digest = format!(
+        "sha256:{}",
+        hex::encode(sha2::Sha256::digest(&manifest_bytes))
+    );
+
+    // Build index.json
+    let index = serde_json::json!({
+        "schemaVersion": 2,
+        "manifests": [{
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": manifest_digest,
+            "size": manifest_bytes.len()
+        }]
+    });
+    let index_bytes = serde_json::to_vec(&index).unwrap();
+
+    let oci_layout = br#"{"imageLayoutVersion":"1.0.0"}"#;
+
+    // Build tar
+    let mut builder = tar::Builder::new(Vec::new());
+
+    let mut add_file = |path: &str, data: &[u8]| {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, path, data).unwrap();
+    };
+
+    add_file("oci-layout", oci_layout);
+    add_file("index.json", &index_bytes);
+    // Add blobs by digest
+    add_file(
+        &format!(
+            "blobs/sha256/{}",
+            config_digest.strip_prefix("sha256:").unwrap()
+        ),
+        config_json,
+    );
+    add_file(
+        &format!(
+            "blobs/sha256/{}",
+            layer_digest.strip_prefix("sha256:").unwrap()
+        ),
+        layer_data,
+    );
+    add_file(
+        &format!(
+            "blobs/sha256/{}",
+            manifest_digest.strip_prefix("sha256:").unwrap()
+        ),
+        &manifest_bytes,
+    );
+
+    builder.finish().unwrap();
+    let tar_bytes = builder.into_inner().unwrap();
+
+    (tar_bytes, manifest_digest)
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn seed_image_imports_blobs_and_manifest(pool: PgPool) {
+    let (state, _token) = test_state(pool.clone()).await;
+
+    // Create a project and registry repo
+    let _project_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM projects WHERE name = 'platform-runner'")
+            .fetch_optional(&pool)
+            .await
+            .unwrap()
+            .expect("platform-runner project should exist after bootstrap");
+
+    let repo_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM registry_repositories WHERE name = 'platform-runner'")
+            .fetch_optional(&pool)
+            .await
+            .unwrap()
+            .expect("platform-runner repo should exist after bootstrap");
+
+    // Build test tarball
+    let config_json = br#"{"architecture":"amd64","os":"linux"}"#;
+    let layer_data = b"fake layer content for seed test";
+    let (tar_bytes, manifest_digest) = build_test_oci_tarball(config_json, layer_data);
+
+    // Write tarball to temp dir
+    let dir = tempfile::tempdir().unwrap();
+    let tar_path = dir.path().join("test.tar");
+    std::fs::write(&tar_path, &tar_bytes).unwrap();
+
+    // Seed the image (use unique tag — "latest" may already be seeded by test_state)
+    let test_tag = "seed-test";
+    let result =
+        platform::registry::seed::seed_image(&pool, &state.minio, repo_id, &tar_path, test_tag)
+            .await
+            .unwrap();
+
+    match result {
+        platform::registry::seed::SeedResult::Imported {
+            manifest_digest: digest,
+            blob_count,
+        } => {
+            assert_eq!(digest, manifest_digest);
+            assert_eq!(blob_count, 3); // config + layer + manifest
+        }
+        platform::registry::seed::SeedResult::AlreadyExists => {
+            panic!("expected Imported, got AlreadyExists");
+        }
+    }
+
+    // Verify tag exists in DB
+    let tag_exists: bool = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM registry_tags WHERE repository_id = $1 AND name = $2)",
+    )
+    .bind(repo_id)
+    .bind(test_tag)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(tag_exists, "tag should exist after seeding");
+
+    // Verify manifest exists
+    let manifest_exists: bool = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM registry_manifests WHERE repository_id = $1 AND digest = $2)",
+    )
+    .bind(repo_id)
+    .bind(&manifest_digest)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(manifest_exists, "manifest should exist after seeding");
+
+    // Verify our test blobs exist (at least 3: config + layer + manifest).
+    // The real seed images may have added more blobs to this repo.
+    let blob_link_count: i64 = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM registry_blob_links WHERE repository_id = $1",
+    )
+    .bind(repo_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        blob_link_count >= 3,
+        "expected at least 3 blob links, got {blob_link_count}"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn seed_image_is_idempotent(pool: PgPool) {
+    let (state, _token) = test_state(pool.clone()).await;
+
+    let repo_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM registry_repositories WHERE name = 'platform-runner'")
+            .fetch_optional(&pool)
+            .await
+            .unwrap()
+            .expect("platform-runner repo should exist");
+
+    let config_json = br#"{"architecture":"amd64","os":"linux"}"#;
+    let layer_data = b"idempotent seed test layer";
+    let (tar_bytes, _) = build_test_oci_tarball(config_json, layer_data);
+
+    let dir = tempfile::tempdir().unwrap();
+    let tar_path = dir.path().join("test.tar");
+    std::fs::write(&tar_path, &tar_bytes).unwrap();
+
+    // First seed
+    let result1 = platform::registry::seed::seed_image(
+        &pool,
+        &state.minio,
+        repo_id,
+        &tar_path,
+        "idempotent-tag",
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        result1,
+        platform::registry::seed::SeedResult::Imported { .. }
+    ));
+
+    // Second seed — should return AlreadyExists
+    let result2 = platform::registry::seed::seed_image(
+        &pool,
+        &state.minio,
+        repo_id,
+        &tar_path,
+        "idempotent-tag",
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        result2,
+        platform::registry::seed::SeedResult::AlreadyExists
+    ));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn seed_all_scans_directory(pool: PgPool) {
+    let (state, _token) = test_state(pool.clone()).await;
+
+    // Verify platform-runner repo exists (from bootstrap)
+    let repo_exists: bool = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM registry_repositories WHERE name = 'platform-runner')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        repo_exists,
+        "platform-runner repo should exist from bootstrap"
+    );
+
+    // Build a tarball named platform-runner.tar in a temp dir
+    let config_json = br#"{"architecture":"amd64","os":"linux"}"#;
+    let layer_data = b"seed_all test layer content";
+    let (tar_bytes, _) = build_test_oci_tarball(config_json, layer_data);
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("platform-runner.tar"), &tar_bytes).unwrap();
+
+    // Also add a file that should be skipped
+    std::fs::write(dir.path().join("readme.txt"), b"not a tarball").unwrap();
+
+    // Run seed_all
+    platform::registry::seed::seed_all(&pool, &state.minio, dir.path())
+        .await
+        .unwrap();
+
+    // Verify the tag was created
+    let tag_exists: bool = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM registry_tags t
+         JOIN registry_repositories r ON r.id = t.repository_id
+         WHERE r.name = 'platform-runner' AND t.name = 'latest')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(tag_exists, "latest tag should exist after seed_all");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn seed_all_skips_nonexistent_directory(pool: PgPool) {
+    let (state, _token) = test_state(pool.clone()).await;
+
+    // Should not error when directory doesn't exist
+    let nonexistent = std::path::Path::new("/tmp/platform-seed-nonexistent-xyz");
+    platform::registry::seed::seed_all(&pool, &state.minio, nonexistent)
+        .await
+        .unwrap();
 }

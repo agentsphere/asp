@@ -8,7 +8,7 @@ use uuid::Uuid;
 // E2E Pipeline Execution Tests (10 tests)
 //
 // These tests require a Kind cluster with real K8s, Postgres, Valkey, and
-// MinIO. All tests are #[ignore] so they don't run in normal CI.
+// MinIO. All tests are #[ignore = "requires Kind cluster"] so they don't run in normal CI.
 // Run with: just test-e2e
 //
 // Note: The pipeline trigger reads `.platform.yaml` from the git ref using
@@ -58,7 +58,7 @@ impl ExecutorGuard {
 
 /// Helper: create a project and set up a bare git repo wired to it.
 /// Also commits a `.platform.yaml` so the pipeline trigger can parse it.
-/// Returns (project_id, bare_path, work_path, _bare_dir, _work_dir).
+/// Returns (`project_id`, `bare_path`, `work_path`, _`bare_dir`, _`work_dir`).
 async fn setup_pipeline_project(
     state: &platform::store::AppState,
     app: &axum::Router,
@@ -73,8 +73,8 @@ async fn setup_pipeline_project(
 ) {
     let project_id = e2e_helpers::create_project(app, token, name, "private").await;
 
-    let (_bare_dir, bare_path) = e2e_helpers::create_bare_repo();
-    let (_work_dir, work_path) = e2e_helpers::create_working_copy(&bare_path);
+    let (bare_dir, bare_path) = e2e_helpers::create_bare_repo();
+    let (work_dir, work_path) = e2e_helpers::create_working_copy(&bare_path);
 
     // Commit a .platform.yaml so the pipeline trigger can find it at the ref
     std::fs::write(work_path.join(".platform.yaml"), DEFAULT_PIPELINE_YAML).unwrap();
@@ -89,11 +89,11 @@ async fn setup_pipeline_project(
         .await
         .unwrap();
 
-    (project_id, bare_path, work_path, _bare_dir, _work_dir)
+    (project_id, bare_path, work_path, bare_dir, work_dir)
 }
 
 /// Test 1: Full pipeline lifecycle: trigger -> run -> success.
-#[ignore]
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn pipeline_trigger_and_execute(pool: PgPool) {
     let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
@@ -145,7 +145,7 @@ async fn pipeline_trigger_and_execute(pool: PgPool) {
 }
 
 /// Test 2: Pipeline with 3 sequential steps.
-#[ignore]
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn pipeline_with_multiple_steps(pool: PgPool) {
     let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
@@ -216,7 +216,7 @@ pipeline:
 }
 
 /// Test 3: Step with exit 1 -> pipeline fails.
-#[ignore]
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn pipeline_step_failure(pool: PgPool) {
     let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
@@ -266,7 +266,7 @@ pipeline:
 }
 
 /// Test 4: Cancel a running pipeline.
-#[ignore]
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn pipeline_cancel(pool: PgPool) {
     let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
@@ -329,7 +329,7 @@ pipeline:
 }
 
 /// Test 5: After pipeline completes, step logs are available.
-#[ignore]
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn step_logs_captured(pool: PgPool) {
     let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
@@ -364,29 +364,29 @@ async fn step_logs_captured(pool: PgPool) {
     )
     .await;
 
-    if let Some(steps) = detail["steps"].as_array() {
-        if let Some(first_step) = steps.first() {
-            let step_id = first_step["id"].as_str().unwrap();
+    if let Some(steps) = detail["steps"].as_array()
+        && let Some(first_step) = steps.first()
+    {
+        let step_id = first_step["id"].as_str().unwrap();
 
-            // Fetch step logs
-            let (log_status, _log_bytes) = e2e_helpers::get_bytes(
-                &app,
-                &token,
-                &format!("/api/projects/{project_id}/pipelines/{pipeline_id}/steps/{step_id}/logs"),
-            )
-            .await;
-            // Logs endpoint should return 200 (even if empty)
-            assert_eq!(
-                log_status,
-                StatusCode::OK,
-                "logs endpoint should return 200"
-            );
-        }
+        // Fetch step logs
+        let (log_status, _log_bytes) = e2e_helpers::get_bytes(
+            &app,
+            &token,
+            &format!("/api/projects/{project_id}/pipelines/{pipeline_id}/steps/{step_id}/logs"),
+        )
+        .await;
+        // Logs endpoint should return 200 (even if empty)
+        assert_eq!(
+            log_status,
+            StatusCode::OK,
+            "logs endpoint should return 200"
+        );
     }
 }
 
-/// Test 6: Completed pipeline logs are stored in MinIO.
-#[ignore]
+/// Test 6: Completed pipeline logs are stored in `MinIO`.
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn step_logs_in_minio(pool: PgPool) {
     let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
@@ -439,7 +439,7 @@ async fn step_logs_in_minio(pool: PgPool) {
 }
 
 /// Test 7: Artifact upload and download round-trip.
-#[ignore]
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn artifact_upload_and_download(pool: PgPool) {
     let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
@@ -475,10 +475,11 @@ async fn artifact_upload_and_download(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     // If artifacts exist, try to download one
-    if let Some(artifacts_array) = artifacts.as_array() {
-        if let Some(first) = artifacts_array.first() {
-            let artifact_id = first["id"].as_str().unwrap();
-            let (dl_status, dl_bytes) = e2e_helpers::get_bytes(
+    if let Some(artifacts_array) = artifacts.as_array()
+        && let Some(first) = artifacts_array.first()
+    {
+        let artifact_id = first["id"].as_str().unwrap();
+        let (dl_status, dl_bytes) = e2e_helpers::get_bytes(
                 &app,
                 &token,
                 &format!(
@@ -486,21 +487,20 @@ async fn artifact_upload_and_download(pool: PgPool) {
                 ),
             )
             .await;
-            assert_eq!(
-                dl_status,
-                StatusCode::OK,
-                "artifact download should succeed"
-            );
-            assert!(
-                !dl_bytes.is_empty(),
-                "downloaded artifact should be non-empty"
-            );
-        }
+        assert_eq!(
+            dl_status,
+            StatusCode::OK,
+            "artifact download should succeed"
+        );
+        assert!(
+            !dl_bytes.is_empty(),
+            "downloaded artifact should be non-empty"
+        );
     }
 }
 
 /// Test 8: .platform.yaml in repo triggers pipeline with correct steps.
-#[ignore]
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn pipeline_definition_parsing(pool: PgPool) {
     let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
@@ -560,7 +560,7 @@ pipeline:
 }
 
 /// Test 9: Pipeline with branch filter only triggers for matching branches.
-#[ignore]
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn pipeline_branch_trigger_filter(pool: PgPool) {
     let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
@@ -601,7 +601,7 @@ async fn pipeline_branch_trigger_filter(pool: PgPool) {
 }
 
 /// Test 10: Max concurrent pipelines enforcement.
-#[ignore]
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn concurrent_pipeline_limit(pool: PgPool) {
     let (state, admin_token, _server) = e2e_helpers::start_pipeline_server(pool).await;
@@ -624,10 +624,10 @@ async fn concurrent_pipeline_limit(pool: PgPool) {
             }),
         )
         .await;
-        if status == StatusCode::CREATED {
-            if let Some(id) = body["id"].as_str() {
-                pipeline_ids.push(id.to_string());
-            }
+        if status == StatusCode::CREATED
+            && let Some(id) = body["id"].as_str()
+        {
+            pipeline_ids.push(id.to_string());
         }
     }
 

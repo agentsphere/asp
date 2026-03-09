@@ -820,7 +820,7 @@ mod tests {
 
     #[test]
     fn parse_log_normal() {
-        let output = "abc123\0Initial commit\0Alice\0alice@example.com\02026-02-19T10:00:00+00:00\0Alice\0alice@example.com\02026-02-19T10:00:00+00:00\n";
+        let output = "abc123\0Initial commit\0Alice\0alice@example.com\x002026-02-19T10:00:00+00:00\0Alice\0alice@example.com\x002026-02-19T10:00:00+00:00\n";
         let commits_list = parse_log(output);
         assert_eq!(commits_list.len(), 1);
         assert_eq!(commits_list[0].sha, "abc123");

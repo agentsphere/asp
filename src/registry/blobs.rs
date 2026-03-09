@@ -5,11 +5,11 @@ use fred::interfaces::KeysInterface;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::auth::RegistryUser;
+use super::auth::{OptionalRegistryUser, RegistryUser};
 use super::digest::{Digest, sha256_digest};
 use super::error::RegistryError;
 use super::types::UploadSession;
-use super::{RepoAccess, resolve_repo_with_access};
+use super::{RepoAccess, resolve_repo_with_access, resolve_repo_with_optional_access};
 use crate::store::AppState;
 
 // ---------------------------------------------------------------------------
@@ -18,13 +18,13 @@ use crate::store::AppState;
 
 pub async fn head_blob(
     State(state): State<AppState>,
-    user: RegistryUser,
+    OptionalRegistryUser(user): OptionalRegistryUser,
     Path((name, digest_str)): Path<(String, String)>,
 ) -> Result<Response, RegistryError> {
     let RepoAccess {
         repository_id,
         project_id: _,
-    } = resolve_repo_with_access(&state, &user, &name, false).await?;
+    } = resolve_repo_with_optional_access(&state, user.as_ref(), &name, false).await?;
 
     let digest = Digest::parse(&digest_str)?;
 
@@ -56,13 +56,13 @@ pub async fn head_blob(
 
 pub async fn get_blob(
     State(state): State<AppState>,
-    user: RegistryUser,
+    OptionalRegistryUser(user): OptionalRegistryUser,
     Path((name, digest_str)): Path<(String, String)>,
 ) -> Result<Response, RegistryError> {
     let RepoAccess {
         repository_id,
         project_id: _,
-    } = resolve_repo_with_access(&state, &user, &name, false).await?;
+    } = resolve_repo_with_optional_access(&state, user.as_ref(), &name, false).await?;
 
     let digest = Digest::parse(&digest_str)?;
 

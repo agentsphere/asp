@@ -10,7 +10,7 @@ use uuid::Uuid;
 // E2E SSH Git Operation Tests (5 tests)
 //
 // These tests require a Kind cluster with real Postgres, Valkey, and git + ssh
-// available on PATH. All tests are #[ignore] so they don't run in normal CI.
+// available on PATH. All tests are #[ignore = "requires Kind cluster"] so they don't run in normal CI.
 // Run with: just test-e2e
 // ---------------------------------------------------------------------------
 
@@ -35,14 +35,14 @@ fn generate_test_ssh_key(dir: &Path) -> std::path::PathBuf {
 /// Build the `GIT_SSH_COMMAND` string for connecting to our test SSH server.
 fn git_ssh_command(key_path: &Path, port: u16) -> String {
     format!(
-        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -i {} -p {}",
+        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o BatchMode=yes -o PreferredAuthentications=publickey -i {} -p {}",
         key_path.display(),
         port
     )
 }
 
 /// Set up an E2E SSH test environment:
-/// 1. Build state with e2e_state
+/// 1. Build state with `e2e_state`
 /// 2. Generate and register an SSH key
 /// 3. Create a project with a bare repo on disk
 /// 4. Start the SSH server on a random port
@@ -187,7 +187,7 @@ async fn setup_ssh_e2e(
 /// runtime is blocked by the git process.
 async fn git_ssh_cmd(dir: &Path, args: &[&str], ssh_cmd: &str) -> Result<String, String> {
     let dir = dir.to_path_buf();
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
     let ssh_cmd = ssh_cmd.to_string();
 
     tokio::task::spawn_blocking(move || {
@@ -218,7 +218,7 @@ async fn git_ssh_cmd(dir: &Path, args: &[&str], ssh_cmd: &str) -> Result<String,
 }
 
 /// Test 1: Full SSH clone succeeds.
-#[ignore]
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn test_ssh_clone_with_ed25519_key(pool: PgPool) {
     let (state, _app, _admin_token, project_name, ssh_port, key_path, _dirs, _shutdown) =
@@ -264,7 +264,7 @@ async fn test_ssh_clone_with_ed25519_key(pool: PgPool) {
 }
 
 /// Test 2: Full SSH push succeeds and post-receive hooks fire.
-#[ignore]
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn test_ssh_push_with_ed25519_key(pool: PgPool) {
     let (state, _app, _admin_token, project_name, ssh_port, key_path, _dirs, _shutdown) =
@@ -336,7 +336,7 @@ async fn test_ssh_push_with_ed25519_key(pool: PgPool) {
 }
 
 /// Test 3: SSH clone of a private repo denied without matching key.
-#[ignore]
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn test_ssh_clone_private_repo_denied_no_key(pool: PgPool) {
     let (_state, _app, _admin_token, project_name, ssh_port, _key_path, _dirs, _shutdown) =
@@ -359,8 +359,8 @@ async fn test_ssh_clone_private_repo_denied_no_key(pool: PgPool) {
     );
 }
 
-/// Test 4: SSH push without ProjectWrite permission denied.
-#[ignore]
+/// Test 4: SSH push without `ProjectWrite` permission denied.
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn test_ssh_push_no_write_perm_denied(pool: PgPool) {
     let (state, app, admin_token, project_name, ssh_port, _admin_key_path, _dirs, _shutdown) =
@@ -464,7 +464,7 @@ async fn test_ssh_push_no_write_perm_denied(pool: PgPool) {
 }
 
 /// Test 5: After SSH auth, `last_used_at` is updated.
-#[ignore]
+#[ignore = "requires Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn test_ssh_last_used_at_updated(pool: PgPool) {
     let (state, _app, _admin_token, project_name, ssh_port, key_path, _dirs, _shutdown) =

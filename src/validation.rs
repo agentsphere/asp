@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn labels_empty_string_rejected() {
-        let err = check_labels(&["".into()]).unwrap_err();
+        let err = check_labels(&[String::new()]).unwrap_err();
         assert!(
             matches!(err, ApiError::BadRequest(ref msg) if msg.contains("label")),
             "empty label should produce BadRequest, got: {err:?}"
@@ -612,7 +612,7 @@ mod tests {
     fn check_length_below_min_fails() {
         let err = check_length("f", "a", 2, 5).unwrap_err();
         assert!(
-            matches!(err, ApiError::BadRequest(ref msg) if msg.contains("f")),
+            matches!(err, ApiError::BadRequest(ref msg) if msg.contains('f')),
             "below-min should produce BadRequest with field name, got: {err:?}"
         );
     }
@@ -626,7 +626,7 @@ mod tests {
     fn check_length_above_max_fails() {
         let err = check_length("f", "abcdef", 2, 5).unwrap_err();
         assert!(
-            matches!(err, ApiError::BadRequest(ref msg) if msg.contains("f")),
+            matches!(err, ApiError::BadRequest(ref msg) if msg.contains('f')),
             "above-max should produce BadRequest with field name, got: {err:?}"
         );
     }
@@ -839,7 +839,7 @@ mod tests {
             "too many commands should produce BadRequest, got: {err:?}"
         );
         // Empty command
-        let err = check_setup_commands(&["".into()]).unwrap_err();
+        let err = check_setup_commands(&[String::new()]).unwrap_err();
         assert!(
             matches!(err, ApiError::BadRequest(ref msg) if msg.contains("setup_commands")),
             "empty command should produce BadRequest, got: {err:?}"

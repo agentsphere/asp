@@ -47,6 +47,11 @@ pub struct PodBuildParams<'a> {
     pub valkey_url: Option<&'a str>,
     /// Claude CLI version for auto-setup init container (e.g., "stable", "2.1.63").
     pub claude_cli_version: &'a str,
+    /// Host path to mount into the pod (e.g., `/tmp/platform-e2e` for test fixtures).
+    /// Only used in dev/test mode.
+    pub host_mount_path: Option<&'a str>,
+    /// Override CLI binary path inside the pod (for mock CLI in tests).
+    pub claude_cli_path: Option<&'a str>,
 }
 
 /// Resolves the container image for an agent pod.
@@ -61,8 +66,8 @@ fn resolve_image(
         return image.to_string();
     }
     match registry_url {
-        Some(reg) => format!("{reg}/platform-claude-runner:latest"),
-        None => "platform-claude-runner:latest".to_string(),
+        Some(reg) => format!("{reg}/platform-runner:latest"),
+        None => "platform-runner:latest".to_string(),
     }
 }
 
@@ -108,10 +113,9 @@ pub fn build_agent_pod(params: &PodBuildParams<'_>) -> Pod {
         params.registry_url,
     );
     let pull_policy = image_pull_policy(&resolved_image);
-    let main_container =
+    let mut main_container =
         build_main_container(agent_runner_args, env_vars, &resolved_image, &pull_policy);
 
-    let mut containers = vec![main_container];
     let mut volumes = vec![Volume {
         name: "workspace".into(),
         empty_dir: Some(EmptyDirVolumeSource {
@@ -120,6 +124,28 @@ pub fn build_agent_pod(params: &PodBuildParams<'_>) -> Pod {
         }),
         ..Default::default()
     }];
+
+    // Mount a host directory into the pod (e.g., /tmp/platform-e2e for test fixtures)
+    if let Some(host_path) = params.host_mount_path {
+        volumes.push(Volume {
+            name: "host-mount".into(),
+            host_path: Some(k8s_openapi::api::core::v1::HostPathVolumeSource {
+                path: host_path.into(),
+                type_: Some("DirectoryOrCreate".into()),
+            }),
+            ..Default::default()
+        });
+        if let Some(ref mut mounts) = main_container.volume_mounts {
+            mounts.push(VolumeMount {
+                name: "host-mount".into(),
+                mount_path: host_path.into(),
+                read_only: Some(true),
+                ..Default::default()
+            });
+        }
+    }
+
+    let mut containers = vec![main_container];
 
     // Add browser sidecar when browser config is present
     if let Some(ref browser) = params.config.browser {
@@ -165,9 +191,12 @@ pub fn build_agent_pod(params: &PodBuildParams<'_>) -> Pod {
 }
 
 fn build_agent_runner_args(params: &PodBuildParams<'_>) -> Vec<String> {
+    let cli_path = params
+        .claude_cli_path
+        .unwrap_or("/workspace/.platform/bin/claude");
     let mut args = vec![
         "--cli-path".to_owned(),
-        "/workspace/.platform/bin/claude".to_owned(),
+        cli_path.to_owned(),
         "--prompt".to_owned(),
         params.session.prompt.clone(),
         "--cwd".to_owned(),
@@ -196,6 +225,7 @@ const RESERVED_ENV_VARS: &[&str] = &[
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CONFIG_DIR",
     "CLAUDE_CLI_VERSION",
+    "CLAUDE_CLI_PATH",
     "VALKEY_URL",
     "BRANCH",
     "AGENT_ROLE",
@@ -246,6 +276,9 @@ fn build_env_vars(
     } else if let Some(api_key) = params.anthropic_api_key {
         vars.push(env_var("ANTHROPIC_API_KEY", api_key));
     }
+    if let Some(cli_path) = params.claude_cli_path {
+        vars.push(env_var("CLAUDE_CLI_PATH", cli_path));
+    }
     if let Some(valkey_url) = params.valkey_url {
         vars.push(env_var("VALKEY_URL", valkey_url));
     }
@@ -288,29 +321,34 @@ fn build_setup_tools_container(
 BIN_DIR=/workspace/.platform/bin
 mkdir -p "$BIN_DIR"
 
-# 1. Download agent-runner from platform server
+# 1. Setup agent-runner: prefer baked-in binary, fallback to download
 if [ ! -x "$BIN_DIR/agent-runner" ]; then
-  ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-  echo "[setup] Downloading agent-runner ($ARCH)..."
-  if command -v curl >/dev/null 2>&1; then
-    curl -sf -H "Authorization: Bearer $PLATFORM_API_TOKEN" \
-      "${{PLATFORM_API_URL}}/api/downloads/agent-runner?arch=${{ARCH}}" \
-      -o "$BIN_DIR/agent-runner"
-  elif command -v node >/dev/null 2>&1; then
-    node -e "
-      const fs = require('fs');
-      const url = process.env.PLATFORM_API_URL + '/api/downloads/agent-runner?arch=' + '${{ARCH}}';
-      fetch(url, {{headers:{{'Authorization':'Bearer '+process.env.PLATFORM_API_TOKEN}}}})
-        .then(r => {{ if(!r.ok) throw new Error('HTTP '+r.status); return r.arrayBuffer(); }})
-        .then(b => fs.writeFileSync('$BIN_DIR/agent-runner', Buffer.from(b)))
-        .catch(e => {{ console.error(e); process.exit(1); }});
-    "
+  if command -v agent-runner >/dev/null 2>&1; then
+    ln -sf "$(command -v agent-runner)" "$BIN_DIR/agent-runner"
+    echo "[setup] agent-runner found on PATH, symlinked"
   else
-    echo '[setup] ERROR: need curl or node to download agent-runner' >&2
-    exit 1
+    ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+    echo "[setup] Downloading agent-runner ($ARCH)..."
+    if command -v curl >/dev/null 2>&1; then
+      curl -sf -H "Authorization: Bearer $PLATFORM_API_TOKEN" \
+        "${{PLATFORM_API_URL}}/api/downloads/agent-runner?arch=${{ARCH}}" \
+        -o "$BIN_DIR/agent-runner"
+    elif command -v node >/dev/null 2>&1; then
+      node -e "
+        const fs = require('fs');
+        const url = process.env.PLATFORM_API_URL + '/api/downloads/agent-runner?arch=' + '${{ARCH}}';
+        fetch(url, {{headers:{{'Authorization':'Bearer '+process.env.PLATFORM_API_TOKEN}}}})
+          .then(r => {{ if(!r.ok) throw new Error('HTTP '+r.status); return r.arrayBuffer(); }})
+          .then(b => fs.writeFileSync('$BIN_DIR/agent-runner', Buffer.from(b)))
+          .catch(e => {{ console.error(e); process.exit(1); }});
+      "
+    else
+      echo '[setup] ERROR: need curl or node to download agent-runner' >&2
+      exit 1
+    fi
+    chmod +x "$BIN_DIR/agent-runner"
+    echo "[setup] agent-runner installed"
   fi
-  chmod +x "$BIN_DIR/agent-runner"
-  echo "[setup] agent-runner installed"
 fi
 
 # 2. Install Claude CLI (npm preferred, native installer fallback)
@@ -600,6 +638,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         assert_eq!(pod.metadata.name.as_deref(), Some("agent-12345678"));
         assert_eq!(pod.metadata.namespace.as_deref(), Some("platform-agents"));
@@ -623,6 +663,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let labels = pod.metadata.labels.unwrap();
         assert_eq!(labels["platform.io/component"], "agent-session");
@@ -651,6 +693,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let claude_container = &spec.containers[0];
@@ -677,6 +721,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -705,6 +751,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -732,6 +780,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -773,6 +823,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -803,6 +855,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let args = spec.containers[0].args.as_ref().unwrap();
@@ -832,6 +886,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let args = spec.containers[0].args.as_ref().unwrap();
@@ -859,6 +915,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -908,6 +966,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -937,6 +997,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -977,6 +1039,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let resources = spec.containers[0].resources.as_ref().unwrap();
@@ -1003,6 +1067,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.restart_policy.as_deref(), Some("Never"));
@@ -1031,10 +1097,7 @@ mod tests {
     #[test]
     fn resolve_image_platform_fallback() {
         let config = ProviderConfig::default();
-        assert_eq!(
-            resolve_image(&config, None, None),
-            "platform-claude-runner:latest"
-        );
+        assert_eq!(resolve_image(&config, None, None), "platform-runner:latest");
     }
 
     #[test]
@@ -1042,7 +1105,7 @@ mod tests {
         let config = ProviderConfig::default();
         assert_eq!(
             resolve_image(&config, None, Some("localhost:5001")),
-            "localhost:5001/platform-claude-runner:latest"
+            "localhost:5001/platform-runner:latest"
         );
     }
 
@@ -1063,7 +1126,7 @@ mod tests {
         assert_eq!(image_pull_policy("golang:latest"), "Always");
         assert_eq!(image_pull_policy("golang"), "Always"); // no tag = latest
         assert_eq!(
-            image_pull_policy("kind-registry:5000/platform-claude-runner:latest"),
+            image_pull_policy("kind-registry:5000/platform-runner:latest"),
             "Always"
         );
     }
@@ -1097,6 +1160,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let main = &spec.containers[0];
@@ -1122,6 +1187,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let main = &spec.containers[0];
@@ -1151,6 +1218,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1184,6 +1253,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1208,6 +1279,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1234,6 +1307,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1264,6 +1339,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "2.1.63",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1302,6 +1379,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "2.1.63",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1329,6 +1408,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1354,12 +1435,14 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
-        let spec = pod.spec.unwrap();
-        let init = spec.init_containers.unwrap();
+        let pod_spec = pod.spec.unwrap();
+        let init = pod_spec.init_containers.unwrap();
         let setup = init.iter().find(|c| c.name == "setup-tools").unwrap();
-        let sec = setup.security_context.as_ref().unwrap();
-        assert_eq!(sec.allow_privilege_escalation, Some(false));
+        let security = setup.security_context.as_ref().unwrap();
+        assert_eq!(security.allow_privilege_escalation, Some(false));
     }
 
     // -- Browser sidecar tests --
@@ -1393,6 +1476,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.containers.len(), 2, "should have claude + browser");
@@ -1418,6 +1503,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.containers.len(), 1, "should have only claude");
@@ -1442,6 +1529,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let volumes = spec.volumes.unwrap();
@@ -1474,6 +1563,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let volumes = spec.volumes.unwrap();
@@ -1499,6 +1590,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1532,6 +1625,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1564,6 +1659,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let browser = &spec.containers[1];
@@ -1592,6 +1689,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let browser = &spec.containers[1];
@@ -1622,6 +1721,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let psc = spec.security_context.unwrap();
@@ -1649,6 +1750,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let container = &spec.containers[0];
@@ -1677,6 +1780,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -1710,6 +1815,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1740,6 +1847,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod_without.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1774,6 +1883,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1818,6 +1929,8 @@ mod tests {
             registry_secret_name: Some("regpull-12345678"),
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let secrets = spec.image_pull_secrets.unwrap();
@@ -1843,6 +1956,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         assert!(
@@ -1871,6 +1986,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1899,6 +2016,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1926,6 +2045,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1974,6 +2095,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2008,6 +2131,8 @@ mod tests {
             registry_secret_name: None,
             valkey_url: None,
             claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();

@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn render_substitutes_vars() {
-        let template = r#"
+        let template = r"
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -66,7 +66,7 @@ spec:
       containers:
       - image: {{ image_ref }}
         replicas: {{ values.replicas }}
-"#;
+";
         let vars = RenderVars {
             image_ref: "registry/app:v1".into(),
             project_name: "myapp".into(),

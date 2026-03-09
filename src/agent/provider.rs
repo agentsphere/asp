@@ -165,6 +165,10 @@ pub struct BuildPodParams<'a> {
     pub valkey_url: Option<&'a str>,
     /// Claude CLI version for auto-setup init container (e.g., "stable", "2.1.63").
     pub claude_cli_version: &'a str,
+    /// Host path to mount into the pod (e.g., `/tmp/platform-e2e` for test fixtures).
+    pub host_mount_path: Option<&'a str>,
+    /// Override CLI binary path inside the pod (for mock CLI in tests).
+    pub claude_cli_path: Option<&'a str>,
 }
 
 /// Trait for agent provider implementations.

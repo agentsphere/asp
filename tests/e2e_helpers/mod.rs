@@ -14,6 +14,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+use fred::interfaces::ClientLike;
 use platform::config::Config;
 use platform::store::AppState;
 
@@ -66,6 +67,7 @@ pub async fn e2e_state(pool: PgPool) -> (AppState, String) {
 ///
 /// When `platform_api_url` is `None`, falls back to `PLATFORM_API_URL` env var
 /// or the default in-cluster URL.
+#[allow(clippy::too_many_lines)]
 pub async fn e2e_state_with_api_url(
     pool: PgPool,
     platform_api_url: Option<String>,
@@ -79,11 +81,14 @@ pub async fn e2e_state_with_api_url(
         .expect("bootstrap failed");
 
     // Connect to real Valkey — no FLUSHDB needed (see tests/helpers/mod.rs).
+    // Pool size 1 (not 4) to reduce connection count under parallel tests.
     let valkey_url =
         std::env::var("VALKEY_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
-    let valkey = platform::store::valkey::connect(&valkey_url)
-        .await
-        .expect("valkey connection failed");
+    let valkey_config =
+        fred::types::config::Config::from_url(&valkey_url).expect("invalid VALKEY_URL");
+    let valkey = fred::clients::Pool::new(valkey_config, None, None, None, 1)
+        .expect("valkey pool creation failed");
+    valkey.init().await.expect("valkey connection failed");
 
     // Real MinIO via S3 operator
     let minio_endpoint =
@@ -111,29 +116,26 @@ pub async fn e2e_state_with_api_url(
     // kube::Client::try_default() reads KUBECONFIG env var, but shell variable
     // expansion ($HOME) may not work correctly in all test harnesses. If it
     // fails, try resolving known kubeconfig paths explicitly.
-    let kube = match kube::Client::try_default().await {
-        Ok(client) => client,
-        Err(_) => {
-            // try_default failed — attempt to load kubeconfig from known paths
-            let candidates = resolve_kubeconfig_candidates();
-            let mut loaded = None;
-            for path in &candidates {
-                if let Ok(kubeconfig) = kube::config::Kubeconfig::read_from(path) {
-                    let opts = kube::config::KubeConfigOptions::default();
-                    if let Ok(kc) = kube::Config::from_custom_kubeconfig(kubeconfig, &opts).await {
-                        if let Ok(client) = kube::Client::try_from(kc) {
-                            loaded = Some(client);
-                            break;
-                        }
-                    }
+    let kube = if let Ok(client) = kube::Client::try_default().await {
+        client
+    } else {
+        // try_default failed — attempt to load kubeconfig from known paths
+        let candidates = resolve_kubeconfig_candidates();
+        let mut loaded = None;
+        for path in &candidates {
+            if let Ok(kubeconfig) = kube::config::Kubeconfig::read_from(path) {
+                let opts = kube::config::KubeConfigOptions::default();
+                if let Ok(kc) = kube::Config::from_custom_kubeconfig(kubeconfig, &opts).await
+                    && let Ok(client) = kube::Client::try_from(kc)
+                {
+                    loaded = Some(client);
+                    break;
                 }
             }
-            loaded.unwrap_or_else(|| {
-                eprintln!("[E2E] kube client unavailable — tried: {candidates:?}");
-                let cfg = kube::Config::new("https://127.0.0.1:1".parse().unwrap());
-                kube::Client::try_from(cfg).expect("dummy kube client")
-            })
         }
+        loaded.unwrap_or_else(|| {
+            panic!("[E2E] kube client unavailable — tried: {candidates:?}. Run `just cluster-up` first.");
+        })
     };
 
     let git_repos_path =
@@ -162,7 +164,7 @@ pub async fn e2e_state_with_api_url(
             .expect("PLATFORM_PIPELINE_NAMESPACE must be set — run via: just test-e2e"),
         agent_namespace: std::env::var("PLATFORM_AGENT_NAMESPACE")
             .expect("PLATFORM_AGENT_NAMESPACE must be set — run via: just test-e2e"),
-        registry_url: None,
+        registry_url: std::env::var("PLATFORM_REGISTRY_URL").ok(),
         secure_cookies: false,
         cors_origins: vec![],
         trust_proxy_headers: false,
@@ -181,10 +183,24 @@ pub async fn e2e_state_with_api_url(
         max_cli_subprocesses: 10,
         valkey_agent_host: std::env::var("PLATFORM_VALKEY_AGENT_HOST")
             .unwrap_or_else(|_| "localhost:6379".into()),
-        agent_runner_dir: std::env::temp_dir()
-            .join(format!("agent-runner-{}", uuid::Uuid::new_v4())),
+        agent_runner_dir: std::env::var("PLATFORM_AGENT_RUNNER_DIR").map_or_else(
+            |_| std::env::temp_dir().join(format!("agent-runner-{}", uuid::Uuid::new_v4())),
+            std::path::PathBuf::from,
+        ),
         claude_cli_version: "stable".into(),
+        ns_prefix: std::env::var("PLATFORM_NS_PREFIX").ok(),
+        cli_spawn_enabled: false,
+        registry_node_url: std::env::var("PLATFORM_REGISTRY_NODE_URL").ok(),
+        seed_images_path: std::env::var("PLATFORM_SEED_IMAGES_PATH")
+            .map_or_else(|_| "/tmp/seed-images".into(), std::path::PathBuf::from),
     };
+
+    // Seed registry images from OCI tarballs (idempotent, uses file-based cache)
+    if let Err(e) =
+        platform::registry::seed::seed_all(&pool, &minio, &config.seed_images_path).await
+    {
+        tracing::warn!(error = %e, "test registry seed failed (non-fatal)");
+    }
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");
 
@@ -291,7 +307,7 @@ pub async fn create_user(
     (user_id, token)
 }
 
-/// Create a project. Returns the project id.
+/// Create a project (DB only, no K8s namespaces). Returns the project id.
 pub async fn create_project(app: &Router, token: &str, name: &str, visibility: &str) -> Uuid {
     let (status, body) = post_json(
         app,
@@ -300,6 +316,29 @@ pub async fn create_project(app: &Router, token: &str, name: &str, visibility: &
         serde_json::json!({
             "name": name,
             "visibility": visibility,
+            "setup_infra": false,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "create project failed: {body}");
+    Uuid::parse_str(body["id"].as_str().unwrap()).unwrap()
+}
+
+/// Create a project with full infrastructure (K8s namespaces + ops repo).
+pub async fn create_project_with_infra(
+    app: &Router,
+    token: &str,
+    name: &str,
+    visibility: &str,
+) -> Uuid {
+    let (status, body) = post_json(
+        app,
+        token,
+        "/api/projects",
+        serde_json::json!({
+            "name": name,
+            "visibility": visibility,
+            "setup_infra": true,
         }),
     )
     .await;
@@ -438,34 +477,63 @@ pub async fn wait_for_pod(
     let pods: Api<Pod> = Api::namespaced(kube.clone(), namespace);
     let start = std::time::Instant::now();
     loop {
-        if start.elapsed().as_secs() > timeout_secs {
-            panic!("pod {name} did not complete within {timeout_secs}s");
-        }
-        if let Ok(pod) = pods.get(name).await {
-            if let Some(status) = &pod.status {
-                if let Some(phase) = &status.phase {
-                    if matches!(phase.as_str(), "Succeeded" | "Failed") {
-                        return phase.clone();
-                    }
-                }
-            }
+        assert!(
+            start.elapsed().as_secs() <= timeout_secs,
+            "pod {name} did not complete within {timeout_secs}s"
+        );
+        if let Ok(pod) = pods.get(name).await
+            && let Some(status) = &pod.status
+            && let Some(phase) = &status.phase
+            && matches!(phase.as_str(), "Succeeded" | "Failed")
+        {
+            return phase.clone();
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+/// Fetch logs from a specific container in a K8s pod.
+///
+/// Returns the log text, or an error message if fetching fails.
+pub async fn pod_logs_container(
+    kube: &kube::Client,
+    namespace: &str,
+    pod_name: &str,
+    container: &str,
+) -> String {
+    use k8s_openapi::api::core::v1::Pod;
+    use kube::Api;
+    use kube::api::LogParams;
+
+    let pods: Api<Pod> = Api::namespaced(kube.clone(), namespace);
+    pods.logs(
+        pod_name,
+        &LogParams {
+            container: Some(container.into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_or_else(|e| format!("[log fetch failed: {e}]"))
+}
+
+/// Fetch logs from the main "claude" container in a K8s pod.
+pub async fn pod_logs(kube: &kube::Client, namespace: &str, pod_name: &str) -> String {
+    pod_logs_container(kube, namespace, pod_name, "claude").await
 }
 
 /// Cleanup K8s resources by label selector.
 pub async fn cleanup_k8s(kube: &kube::Client, namespace: &str, label: &str) {
     use k8s_openapi::api::core::v1::Pod;
     use kube::Api;
-    use kube::api::ListParams;
+    use kube::api::{DeleteParams, ListParams};
 
     let pods: Api<Pod> = Api::namespaced(kube.clone(), namespace);
     let lp = ListParams::default().labels(label);
     if let Ok(list) = pods.list(&lp).await {
         for pod in list.items {
             if let Some(name) = pod.metadata.name {
-                let _ = pods.delete(&name, &Default::default()).await;
+                let _ = pods.delete(&name, &DeleteParams::default()).await;
             }
         }
     }
@@ -493,14 +561,15 @@ pub async fn poll_pipeline_status(
         if matches!(status.as_str(), "success" | "failure" | "cancelled") {
             return status;
         }
-        if start.elapsed().as_secs() > timeout_secs {
-            panic!("pipeline did not complete within {timeout_secs}s, last status: {status}");
-        }
+        assert!(
+            start.elapsed().as_secs() <= timeout_secs,
+            "pipeline did not complete within {timeout_secs}s, last status: {status}"
+        );
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
 }
 
-/// Poll a deployment's current_status until it matches the expected value.
+/// Poll a deployment's `current_status` until it matches the expected value.
 ///
 /// Returns the final status string.
 pub async fn poll_deployment_status(
@@ -526,12 +595,11 @@ pub async fn poll_deployment_status(
         if status == expected {
             return status;
         }
-        if status == "failed" {
-            panic!("deployment reached failed status");
-        }
-        if start.elapsed().as_secs() > timeout_secs {
-            panic!("deployment did not reach '{expected}' within {timeout_secs}s, last: {status}");
-        }
+        assert!(status != "failed", "deployment reached failed status");
+        assert!(
+            start.elapsed().as_secs() <= timeout_secs,
+            "deployment did not reach '{expected}' within {timeout_secs}s, last: {status}"
+        );
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
@@ -643,6 +711,7 @@ pub fn pipeline_test_router(state: AppState) -> Router {
         .route("/healthz", axum::routing::get(|| async { "ok" }))
         .merge(platform::api::router())
         .merge(platform::git::git_protocol_router())
+        .merge(platform::registry::router())
         .with_state(state)
 }
 
@@ -704,4 +773,59 @@ pub async fn get_bytes(app: &Router, token: &str, path: &str) -> (StatusCode, Ve
         .to_bytes()
         .to_vec();
     (status, bytes)
+}
+
+/// Poll an agent session's status until it matches one of the expected values.
+///
+/// Queries the DB directly (no reaper dependency). Returns the final status.
+pub async fn poll_session_status(
+    pool: &PgPool,
+    session_id: Uuid,
+    expected: &[&str],
+    timeout_secs: u64,
+) -> String {
+    let start = std::time::Instant::now();
+    loop {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT status FROM agent_sessions WHERE id = $1")
+                .bind(session_id)
+                .fetch_optional(pool)
+                .await
+                .unwrap();
+        if let Some((status,)) = row {
+            if expected.contains(&status.as_str()) {
+                return status;
+            }
+        }
+        assert!(
+            start.elapsed().as_secs() <= timeout_secs,
+            "session {session_id} did not reach expected status within {timeout_secs}s"
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// Start a real TCP server for agent E2E tests (with git routes for repo clone).
+///
+/// Binds to `PLATFORM_LISTEN_PORT` (set by `test-in-cluster.sh`) so that the
+/// registry DaemonSet proxy can forward image pull requests to this server.
+pub async fn start_agent_server(pool: PgPool) -> (AppState, String, tokio::task::JoinHandle<()>) {
+    let port: u16 = std::env::var("PLATFORM_LISTEN_PORT")
+        .expect("PLATFORM_LISTEN_PORT must be set — run via: just test-e2e")
+        .parse()
+        .expect("invalid PLATFORM_LISTEN_PORT");
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+        .await
+        .expect("bind listener");
+    let host = host_addr_for_kind();
+    let platform_api_url = format!("http://{host}:{port}");
+
+    let (state, token) = e2e_state_with_api_url(pool, Some(platform_api_url)).await;
+    let app = pipeline_test_router(state.clone());
+
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    (state, token, handle)
 }

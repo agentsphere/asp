@@ -16,6 +16,8 @@ use crate::rbac::{Permission, resolver};
 use crate::store::AppState;
 use crate::validation;
 
+use super::helpers::require_admin;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -159,12 +161,13 @@ async fn require_deploy_read(
     auth: &AuthUser,
     project_id: Uuid,
 ) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission(
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         Some(project_id),
         Permission::DeployRead,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;
@@ -180,29 +183,13 @@ async fn require_deploy_promote(
     auth: &AuthUser,
     project_id: Uuid,
 ) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission(
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         Some(project_id),
         Permission::DeployPromote,
-    )
-    .await
-    .map_err(ApiError::Internal)?;
-
-    if !allowed {
-        return Err(ApiError::Forbidden);
-    }
-    Ok(())
-}
-
-async fn require_admin(state: &AppState, auth: &AuthUser) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission(
-        &state.pool,
-        &state.valkey,
-        auth.user_id,
-        None,
-        Permission::AdminUsers,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;

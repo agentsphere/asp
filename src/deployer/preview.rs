@@ -134,7 +134,7 @@ async fn apply_preview_manifests(
     preview: &PendingPreview,
 ) -> Result<(), anyhow::Error> {
     let project_slug = crate::pipeline::slug(&preview.project_name);
-    let ns_name = build_namespace_name(&project_slug, &preview.branch_slug);
+    let ns_name = build_namespace_name(&state.config, &project_slug, &preview.branch_slug);
 
     // Ensure namespace exists
     ensure_namespace(&state.kube, &ns_name).await?;
@@ -151,8 +151,13 @@ async fn apply_preview_manifests(
 }
 
 /// Build the K8s namespace name for a preview, respecting the 63-char DNS label limit.
-fn build_namespace_name(project_slug: &str, branch_slug: &str) -> String {
-    let raw = format!("preview-{project_slug}-{branch_slug}");
+fn build_namespace_name(
+    config: &crate::config::Config,
+    project_slug: &str,
+    branch_slug: &str,
+) -> String {
+    let suffix = format!("preview-{branch_slug}");
+    let raw = config.project_namespace(project_slug, &suffix);
     if raw.len() > 63 {
         raw[..63].trim_end_matches('-').to_string()
     } else {
@@ -349,7 +354,7 @@ async fn cleanup_expired(state: &AppState) -> Result<(), anyhow::Error> {
                 .unwrap_or_default();
 
         let project_slug = crate::pipeline::slug(&project_name);
-        let ns_name = build_namespace_name(&project_slug, &row.branch_slug);
+        let ns_name = build_namespace_name(&state.config, &project_slug, &row.branch_slug);
 
         if let Err(e) = delete_namespace(&state.kube, &ns_name).await {
             tracing::warn!(error = %e, namespace = %ns_name, "failed to delete preview namespace");
@@ -405,23 +410,30 @@ pub async fn stop_preview_for_branch(pool: &sqlx::PgPool, project_id: Uuid, bran
 mod tests {
     use super::*;
 
+    fn test_config() -> crate::config::Config {
+        crate::config::Config::test_default()
+    }
+
     #[test]
     fn namespace_name_basic() {
-        let ns = build_namespace_name("my-project", "feature-login");
-        assert_eq!(ns, "preview-my-project-feature-login");
+        let config = test_config();
+        let ns = build_namespace_name(&config, "my-project", "feature-login");
+        assert_eq!(ns, "my-project-preview-feature-login");
     }
 
     #[test]
     fn namespace_name_truncates_to_63() {
-        let ns = build_namespace_name(&"a".repeat(30), &"b".repeat(30));
+        let config = test_config();
+        let ns = build_namespace_name(&config, &"a".repeat(30), &"b".repeat(30));
         assert!(ns.len() <= 63);
         assert!(!ns.ends_with('-'));
     }
 
     #[test]
     fn namespace_name_short_enough() {
-        let ns = build_namespace_name("proj", "br");
-        assert_eq!(ns, "preview-proj-br");
+        let config = test_config();
+        let ns = build_namespace_name(&config, "proj", "br");
+        assert_eq!(ns, "proj-preview-br");
     }
 
     #[test]
@@ -464,22 +476,22 @@ mod tests {
     }
 
     #[test]
-    fn namespace_name_exact_63_chars() {
-        // Build inputs that produce exactly 63 chars
-        // "preview-" = 8 chars, need 55 more
-        let project = "a".repeat(25);
-        let branch = "b".repeat(29); // 8 + 25 + 1 + 29 = 63
-        let ns = build_namespace_name(&project, &branch);
-        assert_eq!(ns.len(), 63);
+    fn namespace_name_truncates_long_input() {
+        let config = test_config();
+        let project = "a".repeat(30);
+        let branch = "b".repeat(30);
+        let ns = build_namespace_name(&config, &project, &branch);
+        assert!(ns.len() <= 63);
         assert!(!ns.ends_with('-'));
     }
 
     #[test]
     fn namespace_name_truncation_strips_trailing_dash() {
+        let config = test_config();
         // Create input where truncation to 63 chars ends with '-'
         let project = "a".repeat(25);
         let branch = format!("{}-{}", "b".repeat(28), "c".repeat(5));
-        let ns = build_namespace_name(&project, &branch);
+        let ns = build_namespace_name(&config, &project, &branch);
         assert!(ns.len() <= 63);
         assert!(!ns.ends_with('-'));
     }

@@ -15,9 +15,8 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
         .await
         .expect("bootstrap failed");
 
-    let setup_token = match result {
-        platform::store::bootstrap::BootstrapResult::SetupToken(t) => t,
-        _ => panic!("expected SetupToken from production bootstrap"),
+    let platform::store::bootstrap::BootstrapResult::SetupToken(setup_token) = result else {
+        panic!("expected SetupToken from production bootstrap")
     };
 
     let valkey_url =
@@ -46,12 +45,9 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
             .finish()
     };
 
-    let kube = if let Ok(c) = kube::Client::try_default().await {
-        c
-    } else {
-        let cfg = kube::Config::new("https://127.0.0.1:1".parse().unwrap());
-        kube::Client::try_from(cfg).expect("dummy kube client")
-    };
+    let kube = kube::Client::try_default()
+        .await
+        .expect("kube client required — run `just cluster-up` first");
 
     let config = platform::config::Config {
         listen: "127.0.0.1:0".into(),
@@ -88,6 +84,10 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
         valkey_agent_host: "localhost:6379".into(),
         agent_runner_dir: std::env::temp_dir().join("agent-runner-test"),
         claude_cli_version: "stable".into(),
+        ns_prefix: None,
+        cli_spawn_enabled: false,
+        registry_node_url: None,
+        seed_images_path: "/tmp/seed-images".into(),
     };
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");

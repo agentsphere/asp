@@ -67,12 +67,13 @@ async fn require_command_write(
     project_id: Option<Uuid>,
 ) -> Result<(), ApiError> {
     if let Some(pid) = project_id {
-        let allowed = resolver::has_permission(
+        let allowed = resolver::has_permission_scoped(
             &state.pool,
             &state.valkey,
             auth.user_id,
             Some(pid),
             Permission::ProjectWrite,
+            auth.token_scopes.as_deref(),
         )
         .await
         .map_err(ApiError::Internal)?;
@@ -81,12 +82,13 @@ async fn require_command_write(
             return Err(ApiError::NotFound("command".into()));
         }
     } else {
-        let allowed = resolver::has_permission(
+        let allowed = resolver::has_permission_scoped(
             &state.pool,
             &state.valkey,
             auth.user_id,
             None,
             Permission::AdminConfig,
+            auth.token_scopes.as_deref(),
         )
         .await
         .map_err(ApiError::Internal)?;

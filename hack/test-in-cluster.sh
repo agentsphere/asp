@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # test-in-cluster.sh — Run integration/E2E tests against ephemeral Kind services
 #
-# Creates a fresh K8s namespace, deploys Postgres + Valkey + MinIO,
-# port-forwards to dynamically chosen local ports, then runs tests
-# natively with cargo nextest. No Docker image build needed.
+# Creates isolated namespaces (platform-test-{id}-*), deploys PG + Valkey + MinIO
+# as NodePort services, deploys a DaemonSet registry proxy, then connects
+# directly to the Kind node IP (OrbStack makes it routable from macOS).
+# Runs tests natively with cargo nextest.
 #
 # Usage:
 #   bash hack/test-in-cluster.sh                          # integration tests
@@ -20,6 +21,7 @@ set -euo pipefail
 TEST_FILTER="*_integration"
 TEST_TYPE="integration"   # "integration", "e2e", or "total"
 TEST_THREADS=""
+FILTER_EXPR=""
 KIND_CLUSTER="platform"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -40,6 +42,7 @@ while [[ $# -gt 0 ]]; do
     --lcov)         LCOV_PATH="$2"; shift 2 ;;
     --cov-no-report) COV_NO_REPORT=true; COVERAGE_MODE=true; shift ;;
     --cov-clean)    COV_CLEAN=true; shift ;;
+    --expr)         FILTER_EXPR="$2"; shift 2 ;;
     *)              echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -56,32 +59,38 @@ if [[ "$TEST_TYPE" == "e2e" && "$TEST_FILTER" == "*_integration" ]]; then
 fi
 
 # ── Namespace ID ──────────────────────────────────────────────────────────
-RUN_ID="$(date +%s)-$(od -An -tx1 -N4 /dev/urandom | tr -d ' \n')"
-NS="test-${RUN_ID}"
-PIPELINE_NS="${NS}-pipelines"
-AGENT_NS="${NS}-agents"
+RUN_ID=$(openssl rand -hex 4)
+NS_PREFIX="platform-test-${RUN_ID}"
+SVC_NS="${NS_PREFIX}-services"
+PIPELINE_NS="${NS_PREFIX}-pipelines"
+AGENT_NS="${NS_PREFIX}-agents"
 
-# PIDs for port-forward processes
-PF_PIDS=()
+# Node IP for direct NodePort access (OrbStack makes Kind node IP-routable)
+NODE_IP=""
+
+# ── Detect host address ──────────────────────────────────────────────────
+if [[ "$(uname)" == "Darwin" ]]; then
+  PLATFORM_HOST="host.docker.internal"
+else
+  PLATFORM_HOST=$(docker network inspect kind \
+    -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || echo "172.18.0.1")
+fi
 
 # ── Cleanup on exit ───────────────────────────────────────────────────────
 cleanup() {
   echo ""
   echo "==> Cleaning up"
 
-  # Kill port-forward processes
-  for pid in "${PF_PIDS[@]}"; do
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-  done
+  # Delete all namespaces with our prefix
+  echo "  Deleting namespaces: ${NS_PREFIX}-*"
+  kubectl get namespaces -o name | grep "^namespace/${NS_PREFIX}" | \
+    xargs -r kubectl delete --wait=false 2>/dev/null || true
+  kubectl delete clusterrolebinding "${NS_PREFIX}-runner" 2>/dev/null || true
 
-  echo "  Deleting namespace: ${NS}"
-  kubectl delete namespace "${NS}" --wait=false 2>/dev/null || true
-  if [[ "$TEST_TYPE" == "e2e" || "$TEST_TYPE" == "total" ]]; then
-    kubectl delete namespace "${PIPELINE_NS}" --wait=false 2>/dev/null || true
-    kubectl delete namespace "${AGENT_NS}" --wait=false 2>/dev/null || true
-    kubectl delete clusterrolebinding "test-runner-${RUN_ID}" 2>/dev/null || true
-  fi
+  # DaemonSet cleanup happens automatically with namespace deletion
+
+  # Clean up seed cache/lock files scoped to this run
+  find "${SEED_DIR}" -name "*.${NS_PREFIX}.seed-cache.*" -delete 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -105,77 +114,119 @@ if [[ ! -f "$KUBECONFIG" ]]; then
 fi
 
 echo "  Kind cluster: ${KIND_CLUSTER}"
-echo "  Namespace:    ${NS}"
+echo "  NS prefix:    ${NS_PREFIX}"
 echo "  Test type:    ${TEST_TYPE}"
 echo "  Test filter:  ${TEST_FILTER}"
 
-# ── Find free local ports ────────────────────────────────────────────────
+# ── Get node IP (OrbStack makes Kind node directly routable) ────────────
+NODE_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${KIND_CLUSTER}-control-plane")
+if [[ -z "$NODE_IP" ]]; then
+  echo "ERROR: Could not determine node IP for ${KIND_CLUSTER}-control-plane"
+  exit 1
+fi
+echo "  Node IP:       ${NODE_IP}"
+
+# ── Find free ports (backend + registry only — PG/Valkey/MinIO use NodePort) ──
 find_free_port() {
   python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()"
 }
 
-PG_PORT=$(find_free_port)
-VALKEY_PORT=$(find_free_port)
-MINIO_PORT=$(find_free_port)
+# Find a free port inside the Kind node (for hostPort bindings like registry proxy)
+find_free_node_port() {
+  docker exec "${KIND_CLUSTER}-control-plane" \
+    python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()"
+}
+
+BACKEND_PORT=$(find_free_port)
+REGISTRY_NODE_PORT=$(find_free_node_port)
 
 echo ""
 echo "==> Local ports"
-echo "  Postgres: ${PG_PORT}"
-echo "  Valkey:   ${VALKEY_PORT}"
-echo "  MinIO:    ${MINIO_PORT}"
+echo "  Backend:  ${BACKEND_PORT}"
+echo "  Registry: ${REGISTRY_NODE_PORT} (node hostPort)"
 
-# ── Create namespace and deploy services ──────────────────────────────────
+# ── Build seed images (cached by Dockerfile checksum) ────────────────────
+SEED_DIR="/tmp/platform-e2e/seed-images"
+mkdir -p "${SEED_DIR}"
+
+# Ensure a buildx builder that supports OCI export exists
+if ! docker buildx inspect platform-oci &>/dev/null; then
+  docker buildx create --name platform-oci --driver docker-container --bootstrap 2>/dev/null || true
+fi
+
+# build_seed_image <name> <dockerfile> [extra_checksum_dirs...]
+# Builds OCI tarball if missing or Dockerfile/source changed.
+build_seed_image() {
+  local name="$1" dockerfile="$2"
+  shift 2
+  local tarball="${SEED_DIR}/${name}.tar"
+  local checksum_file="${SEED_DIR}/.${name}-checksum"
+  local current_checksum
+  # Include Dockerfile + all extra source dirs in checksum
+  current_checksum=$(
+    { shasum -a 256 "${dockerfile}"
+      for dir in "$@"; do
+        find "${PROJECT_DIR}/${dir}" -type f -exec shasum -a 256 {} +
+      done
+    } | sort | shasum -a 256 | awk '{print $1}'
+  )
+
+  if [[ -f "${tarball}" && -f "${checksum_file}" && "$(cat "${checksum_file}")" == "${current_checksum}" ]]; then
+    echo "  ${name}: cached"
+    return
+  fi
+
+  echo "  ${name}: building..."
+  docker buildx build \
+    --builder platform-oci \
+    --file "${dockerfile}" \
+    --output "type=oci,dest=${tarball}" \
+    "${PROJECT_DIR}"
+  echo "${current_checksum}" > "${checksum_file}"
+}
+
+echo "==> Seed images"
+build_seed_image "platform-runner" "${PROJECT_DIR}/docker/Dockerfile.platform-runner" \
+  "cli/agent-runner/src" "mcp"
+build_seed_image "platform-runner-bare" "${PROJECT_DIR}/docker/Dockerfile.platform-runner-bare"
+
+# ── Build agent-runner binaries (cached by source checksum) ───────────
+RUNNER_DIR="/tmp/platform-e2e/agent-runner"
+mkdir -p "${RUNNER_DIR}"
+RUNNER_CHECKSUM_FILE="${RUNNER_DIR}/.checksum"
+RUNNER_CURRENT_CHECKSUM=$(find cli/agent-runner/src -name '*.rs' -exec shasum -a 256 {} + | sort | shasum -a 256 | awk '{print $1}')
+
+if [[ -f "${RUNNER_DIR}/arm64" && -f "${RUNNER_DIR}/amd64" && \
+      -f "${RUNNER_CHECKSUM_FILE}" && "$(cat "${RUNNER_CHECKSUM_FILE}")" == "${RUNNER_CURRENT_CHECKSUM}" ]]; then
+  echo "  agent-runner: cached"
+else
+  echo "  agent-runner: building..."
+  just cli-cross "${RUNNER_DIR}"
+  echo "${RUNNER_CURRENT_CHECKSUM}" > "${RUNNER_CHECKSUM_FILE}"
+fi
+
+# ── Deploy services + registry proxy using shared script ──────────────────
+REGISTRY_BACKEND_HOST="${PLATFORM_HOST}" \
+  REGISTRY_BACKEND_PORT="${BACKEND_PORT}" \
+  REGISTRY_NODE_PORT="${REGISTRY_NODE_PORT}" \
+  bash "${SCRIPT_DIR}/deploy-services.sh" "${SVC_NS}"
+
+# ── Discover NodePorts (K8s auto-assigned) ──────────────────────────────
 echo ""
-echo "==> Creating namespace: ${NS}"
-kubectl create namespace "${NS}"
+echo "==> Discovering NodePorts"
+PG_PORT=$(kubectl get svc -n "${SVC_NS}" postgres -o jsonpath='{.spec.ports[0].nodePort}')
+VALKEY_PORT=$(kubectl get svc -n "${SVC_NS}" valkey -o jsonpath='{.spec.ports[0].nodePort}')
+MINIO_PORT=$(kubectl get svc -n "${SVC_NS}" minio -o jsonpath='{.spec.ports[0].nodePort}')
+echo "  Postgres: ${NODE_IP}:${PG_PORT}"
+echo "  Valkey:   ${NODE_IP}:${VALKEY_PORT}"
+echo "  MinIO:    ${NODE_IP}:${MINIO_PORT}"
 
-echo "==> Deploying services"
-kubectl apply -n "${NS}" -f "${SCRIPT_DIR}/test-manifests/postgres.yaml"
-kubectl apply -n "${NS}" -f "${SCRIPT_DIR}/test-manifests/valkey.yaml"
-kubectl apply -n "${NS}" -f "${SCRIPT_DIR}/test-manifests/minio.yaml"
-
-echo "==> Waiting for services to be ready"
-kubectl wait -n "${NS}" --for=condition=Ready pod/postgres --timeout=60s
-kubectl wait -n "${NS}" --for=condition=Ready pod/valkey --timeout=30s
-kubectl wait -n "${NS}" --for=condition=Ready pod/minio --timeout=30s
-echo "  All services ready"
-
-# ── Post-deploy setup ────────────────────────────────────────────────────
-echo "==> Post-deploy setup"
-
-# Verify Postgres is responsive
-kubectl exec -n "${NS}" postgres -- \
-  psql -U platform -d platform_dev -c "SELECT 1;" -q
-
-# Create MinIO bucket
-kubectl exec -n "${NS}" minio -- mkdir -p /data/platform-e2e
-
-echo "  Postgres ready, MinIO bucket created"
-
-# ── Port-forward services ────────────────────────────────────────────────
-echo ""
-echo "==> Setting up port-forwards"
-
-kubectl port-forward -n "${NS}" pod/postgres "${PG_PORT}:5432" &>/dev/null &
-PF_PIDS+=($!)
-
-kubectl port-forward -n "${NS}" pod/valkey "${VALKEY_PORT}:6379" &>/dev/null &
-PF_PIDS+=($!)
-
-kubectl port-forward -n "${NS}" pod/minio "${MINIO_PORT}:9000" &>/dev/null &
-PF_PIDS+=($!)
-
-# Wait for port-forwards to be ready
-echo -n "  Waiting for port-forwards"
+# Wait for NodePort connectivity (direct to Kind node — no port-forward)
+echo -n "  Waiting for NodePort connectivity"
 for i in $(seq 1 30); do
-  ALL_READY=true
-  for port in "$PG_PORT" "$VALKEY_PORT" "$MINIO_PORT"; do
-    if ! nc -z 127.0.0.1 "$port" 2>/dev/null; then
-      ALL_READY=false
-      break
-    fi
-  done
-  if $ALL_READY; then
+  if nc -z "$NODE_IP" "$PG_PORT" 2>/dev/null && \
+     nc -z "$NODE_IP" "$VALKEY_PORT" 2>/dev/null && \
+     nc -z "$NODE_IP" "$MINIO_PORT" 2>/dev/null; then
     break
   fi
   echo -n "."
@@ -183,33 +234,24 @@ for i in $(seq 1 30); do
 done
 echo " ready"
 
-# Verify port-forward processes are still alive
-for pid in "${PF_PIDS[@]}"; do
-  if ! kill -0 "$pid" 2>/dev/null; then
-    echo "ERROR: port-forward process $pid died unexpectedly"
-    exit 1
-  fi
-done
+# ── RBAC for all test types ───────────────────────────────────────────────
+echo ""
+echo "==> Setting up RBAC"
 
-# ── E2E-specific setup ───────────────────────────────────────────────────
-if [[ "$TEST_TYPE" == "e2e" || "$TEST_TYPE" == "total" ]]; then
-  echo ""
-  echo "==> E2E setup: creating pipeline/agent namespaces + RBAC"
+# Create pipeline/agent namespaces
+kubectl create namespace "${PIPELINE_NS}" --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace "${AGENT_NS}" --dry-run=client -o yaml | kubectl apply -f -
 
-  kubectl create namespace "${PIPELINE_NS}"
-  kubectl create namespace "${AGENT_NS}"
+# Apply the ClusterRole (idempotent)
+kubectl apply -f "${SCRIPT_DIR}/test-manifests/rbac.yaml"
 
-  # Apply the ClusterRole (idempotent)
-  kubectl apply -f "${SCRIPT_DIR}/test-manifests/rbac.yaml"
+# Create ServiceAccount in services namespace
+kubectl create serviceaccount test-runner -n "${SVC_NS}" 2>/dev/null || true
 
-  # Create ServiceAccount in test namespace
-  kubectl create serviceaccount test-runner -n "${NS}" 2>/dev/null || true
-
-  # Bind ClusterRole to the ServiceAccount
-  kubectl create clusterrolebinding "test-runner-${RUN_ID}" \
-    --clusterrole=test-runner \
-    --serviceaccount="${NS}:test-runner"
-fi
+# Bind ClusterRole to the ServiceAccount
+kubectl create clusterrolebinding "${NS_PREFIX}-runner" \
+  --clusterrole=test-runner \
+  --serviceaccount="${SVC_NS}:test-runner" 2>/dev/null || true
 
 # ── Run tests ─────────────────────────────────────────────────────────────
 echo ""
@@ -217,24 +259,41 @@ echo "==> Running tests"
 echo "────────────────────────────────────────────────────────────────"
 
 # Build env vars
-export DATABASE_URL="postgres://platform:dev@127.0.0.1:${PG_PORT}/platform_dev"
-export VALKEY_URL="redis://127.0.0.1:${VALKEY_PORT}"
-export MINIO_ENDPOINT="http://127.0.0.1:${MINIO_PORT}"
+export DATABASE_URL="postgres://platform:dev@${NODE_IP}:${PG_PORT}/platform_dev"
+export VALKEY_URL="redis://${NODE_IP}:${VALKEY_PORT}"
+export MINIO_ENDPOINT="http://${NODE_IP}:${MINIO_PORT}"
 export MINIO_ACCESS_KEY="platform"
 export MINIO_SECRET_KEY="devdevdev"
 export PLATFORM_MASTER_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 export PLATFORM_DEV=true
 export RUST_LOG="warn"
+export PLATFORM_NS_PREFIX="${NS_PREFIX}"
+export PLATFORM_LISTEN_PORT="${BACKEND_PORT}"
+export PLATFORM_REGISTRY_URL="${PLATFORM_HOST}:${BACKEND_PORT}"
+export PLATFORM_REGISTRY_NODE_URL="localhost:${REGISTRY_NODE_PORT}"
+export PLATFORM_API_URL="http://${PLATFORM_HOST}:${BACKEND_PORT}"
+export PLATFORM_PIPELINE_NAMESPACE="${PIPELINE_NS}"
+export PLATFORM_AGENT_NAMESPACE="${AGENT_NS}"
+export PLATFORM_VALKEY_AGENT_HOST="valkey.${SVC_NS}.svc.cluster.local:6379"
+export PLATFORM_SEED_IMAGES_PATH="/tmp/platform-e2e/seed-images"
+export PLATFORM_AGENT_RUNNER_DIR="${RUNNER_DIR}"
+export CLAUDE_CLI_PATH="${PROJECT_DIR}/tests/fixtures/mock-claude-cli.sh"
+
+# Copy mock CLI to shared mount so it's accessible inside Kind pods
+cp "${PROJECT_DIR}/tests/fixtures/mock-claude-cli.sh" "/tmp/platform-e2e/mock-claude-cli.sh"
+chmod +x "/tmp/platform-e2e/mock-claude-cli.sh"
+export PLATFORM_HOST_MOUNT_PATH="/tmp/platform-e2e"
+# Override CLAUDE_CLI_PATH for pod-accessible path (hostPath mount)
+export CLAUDE_CLI_PATH="/tmp/platform-e2e/mock-claude-cli.sh"
 
 # Always use offline sqlx cache — it contains pre-computed types needed by
 # sqlx::query! macros. Under coverage mode (--cfg=coverage), type inference
 # breaks without the offline cache.
 export SQLX_OFFLINE=true
 
-if [[ "$TEST_TYPE" == "e2e" || "$TEST_TYPE" == "total" ]]; then
-  export PLATFORM_PIPELINE_NAMESPACE="${PIPELINE_NS}"
-  export PLATFORM_AGENT_NAMESPACE="${AGENT_NS}"
-fi
+# Test report file — written after tests complete
+REPORT_FILE="${PROJECT_DIR}/test-report.txt"
+JUNIT_FILE="${PROJECT_DIR}/target/nextest/ci/junit.xml"
 
 # ── Coverage: clean previous data ────────────────────────────────────────
 if $COV_CLEAN; then
@@ -261,7 +320,7 @@ if [[ "$TEST_TYPE" == "total" ]]; then
   echo ""
   echo "==> Running integration tests (coverage, no report)"
   cargo llvm-cov nextest --no-report --test '*_integration' \
-    --profile ci --test-threads 16 \
+    --profile ci --test-threads 32 \
     --ignore-filename-regex "${COV_IGNORE_REGEX}" --no-fail-fast \
     || TIER_FAILURES=$((TIER_FAILURES + 1))
 
@@ -287,21 +346,26 @@ if [[ "$TEST_TYPE" == "total" ]]; then
   if [[ $TIER_FAILURES -gt 0 ]]; then
     echo ""
     echo "WARNING: ${TIER_FAILURES} test tier(s) had failures (see above)"
-    exit 1
+    TEST_EXIT=1
+  else
+    TEST_EXIT=0
   fi
 else
   # Single tier run
   NEXTEST_ARGS=(--test "${TEST_FILTER}")
+
+  if [[ -n "$FILTER_EXPR" ]]; then
+    NEXTEST_ARGS+=(-E "${FILTER_EXPR}")
+  fi
 
   if [[ -n "$TEST_THREADS" ]]; then
     NEXTEST_ARGS+=(--test-threads "${TEST_THREADS}")
   elif [[ "$TEST_TYPE" == "e2e" ]]; then
     NEXTEST_ARGS+=(--test-threads 2)
   elif [[ "$TEST_TYPE" == "integration" ]]; then
-    # Limit parallelism to avoid Postgres connection exhaustion.
-    # Each #[sqlx::test] creates a fresh DB + pool; too many concurrent
-    # tests overwhelm max_connections and cause "Connection reset by peer".
-    NEXTEST_ARGS+=(--test-threads 16)
+    # Each #[sqlx::test] creates a fresh DB + pool (~10 connections).
+    # Postgres max_connections=300 → safe up to ~30 concurrent tests.
+    NEXTEST_ARGS+=(--test-threads 32)
   fi
 
   if [[ "$TEST_TYPE" == "e2e" ]]; then
@@ -309,8 +373,9 @@ else
   fi
 
   # Use CI profile for retries on transient failures (e.g. DB connection resets)
-  NEXTEST_ARGS+=(--profile ci)
+  NEXTEST_ARGS+=(--profile ci --no-fail-fast)
 
+  TEST_EXIT=0
   if $COVERAGE_MODE; then
     COV_ARGS=(--ignore-filename-regex "${COV_IGNORE_REGEX}")
     if $COV_NO_REPORT; then
@@ -318,8 +383,87 @@ else
     elif [[ -n "$LCOV_PATH" ]]; then
       COV_ARGS+=(--lcov --output-path "${LCOV_PATH}")
     fi
-    cargo llvm-cov nextest "${COV_ARGS[@]}" "${NEXTEST_ARGS[@]}"
+    cargo llvm-cov nextest "${COV_ARGS[@]}" "${NEXTEST_ARGS[@]}" || TEST_EXIT=$?
   else
-    cargo nextest run "${NEXTEST_ARGS[@]}"
+    cargo nextest run "${NEXTEST_ARGS[@]}" || TEST_EXIT=$?
   fi
 fi
+
+# ── Generate test report ──────────────────────────────────────────────────
+generate_report() {
+  local junit="$1" report="$2"
+  if [[ ! -f "$junit" ]]; then
+    echo "No JUnit XML found at ${junit}" > "$report"
+    return
+  fi
+
+  # Parse JUnit XML with python3 (available on macOS + Kind node)
+  python3 - "$junit" "$report" <<'PYEOF'
+import sys, xml.etree.ElementTree as ET
+
+junit_path, report_path = sys.argv[1], sys.argv[2]
+tree = ET.parse(junit_path)
+root = tree.getroot()
+
+passed, failed, retried, errored = 0, 0, 0, 0
+failures = []
+
+for suite in root.iter("testsuite"):
+    for case in suite.findall("testcase"):
+        name = case.get("name", "?")
+        classname = case.get("classname", "")
+        failure = case.find("failure")
+        error = case.find("error")
+        rerun = case.find("flakyFailure") or case.find("rerunFailure")
+
+        if failure is not None:
+            failed += 1
+            msg = failure.get("message", "")
+            stderr = case.find("system-err")
+            detail = ""
+            if stderr is not None and stderr.text:
+                # Extract panic message (most useful part)
+                for line in stderr.text.splitlines():
+                    if "panicked at" in line or "assertion" in line:
+                        detail += line.strip() + "\n"
+                if not detail:
+                    # Fallback: first 5 lines of stderr
+                    detail = "\n".join(stderr.text.strip().splitlines()[:5])
+            failures.append((classname, name, msg, detail.strip()))
+        elif error is not None:
+            errored += 1
+            failures.append((classname, name, error.get("message", "error"), ""))
+        else:
+            passed += 1
+
+total = passed + failed + errored
+status = "PASS" if failed == 0 and errored == 0 else "FAIL"
+
+with open(report_path, "w") as f:
+    f.write(f"Test Report: {status}\n")
+    f.write(f"{'=' * 60}\n")
+    f.write(f"Total: {total}  Passed: {passed}  Failed: {failed}  Errors: {errored}\n")
+    f.write(f"\n")
+
+    if failures:
+        f.write(f"Failed Tests:\n")
+        f.write(f"{'-' * 60}\n")
+        for classname, name, msg, detail in failures:
+            f.write(f"\n  FAIL: {name}\n")
+            if classname:
+                f.write(f"  File: {classname}\n")
+            if msg:
+                f.write(f"  Message: {msg}\n")
+            if detail:
+                f.write(f"  Detail:\n")
+                for line in detail.splitlines():
+                    f.write(f"    {line}\n")
+    else:
+        f.write("All tests passed.\n")
+
+print(f"Test report: {report_path} ({status}: {passed}/{total} passed)")
+PYEOF
+}
+
+generate_report "${JUNIT_FILE}" "${REPORT_FILE}"
+exit "${TEST_EXIT:-0}"

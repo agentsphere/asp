@@ -1,6 +1,6 @@
-//! Integration tests for passkey (WebAuthn) credential management.
+//! Integration tests for passkey (`WebAuthn`) credential management.
 //! Tests list, rename, delete, begin/complete register, and begin/complete login.
-//! Full ceremony tests use webauthn-authenticator-rs SoftPasskey.
+//! Full ceremony tests use webauthn-authenticator-rs `SoftPasskey`.
 
 mod helpers;
 
@@ -464,8 +464,8 @@ async fn list_passkeys_unauthenticated(pool: PgPool) {
 // Additional coverage: complete_register error paths
 // ---------------------------------------------------------------------------
 
-/// complete_register with invalid/garbage credential JSON returns 422 (axum
-/// deserialization error) or 400 because the RegisterPublicKeyCredential
+/// `complete_register` with invalid/garbage credential JSON returns 422 (axum
+/// deserialization error) or 400 because the `RegisterPublicKeyCredential`
 /// struct cannot be parsed from arbitrary JSON.
 #[sqlx::test(migrations = "./migrations")]
 async fn complete_register_invalid_credential_json(pool: PgPool) {
@@ -488,7 +488,7 @@ async fn complete_register_invalid_credential_json(pool: PgPool) {
     );
 }
 
-/// complete_register without authentication should fail.
+/// `complete_register` without authentication should fail.
 #[sqlx::test(migrations = "./migrations")]
 async fn complete_register_unauthenticated(pool: PgPool) {
     let (state, _admin_token) = test_state(pool.clone()).await;
@@ -516,8 +516,8 @@ async fn complete_register_unauthenticated(pool: PgPool) {
 // Additional coverage: complete_login error paths
 // ---------------------------------------------------------------------------
 
-/// complete_login with no passkey credentials in DB at all returns 401
-/// (discoverable_keys is empty).
+/// `complete_login` with no passkey credentials in DB at all returns 401
+/// (`discoverable_keys` is empty).
 #[sqlx::test(migrations = "./migrations")]
 async fn complete_login_no_credentials_in_db(pool: PgPool) {
     let (state, _admin_token) = test_state(pool.clone()).await;
@@ -546,7 +546,7 @@ async fn complete_login_no_credentials_in_db(pool: PgPool) {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-/// complete_login with invalid credential JSON returns 422 (deserialization).
+/// `complete_login` with invalid credential JSON returns 422 (deserialization).
 #[sqlx::test(migrations = "./migrations")]
 async fn complete_login_invalid_credential_json(pool: PgPool) {
     let (state, _admin_token) = test_state(pool.clone()).await;
@@ -566,8 +566,8 @@ async fn complete_login_invalid_credential_json(pool: PgPool) {
     );
 }
 
-/// complete_login with credentials from a deactivated user returns 401.
-/// The discoverable_keys query filters for is_active = true, so inactive
+/// `complete_login` with credentials from a deactivated user returns 401.
+/// The `discoverable_keys` query filters for `is_active` = true, so inactive
 /// users' credentials are excluded.
 #[sqlx::test(migrations = "./migrations")]
 async fn complete_login_deactivated_user_credential(pool: PgPool) {
@@ -621,7 +621,7 @@ async fn complete_login_deactivated_user_credential(pool: PgPool) {
 // Additional coverage: begin_register edge cases
 // ---------------------------------------------------------------------------
 
-/// begin_register with empty name should be rejected (min length 1).
+/// `begin_register` with empty name should be rejected (min length 1).
 #[sqlx::test(migrations = "./migrations")]
 async fn begin_register_empty_name_rejected(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -637,7 +637,7 @@ async fn begin_register_empty_name_rejected(pool: PgPool) {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
-/// begin_register with max-length name (255) should succeed.
+/// `begin_register` with max-length name (255) should succeed.
 #[sqlx::test(migrations = "./migrations")]
 async fn begin_register_max_length_name_ok(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -658,7 +658,7 @@ async fn begin_register_max_length_name_ok(pool: PgPool) {
     );
 }
 
-/// begin_register with existing credentials excludes them in the challenge.
+/// `begin_register` with existing credentials excludes them in the challenge.
 /// We can't verify the exclude list directly, but we can verify the endpoint
 /// succeeds when credentials already exist.
 #[sqlx::test(migrations = "./migrations")]
@@ -703,7 +703,7 @@ async fn begin_register_with_existing_credentials(pool: PgPool) {
 // Additional coverage: list passkeys response fields
 // ---------------------------------------------------------------------------
 
-/// Verify list_passkeys response includes backup and last_used_at fields.
+/// Verify `list_passkeys` response includes backup and `last_used_at` fields.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_passkeys_response_fields(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -742,7 +742,7 @@ async fn list_passkeys_response_fields(pool: PgPool) {
     assert_eq!(transports[1], "nfc");
 }
 
-/// Verify list_passkeys only returns the current user's passkeys, not all.
+/// Verify `list_passkeys` only returns the current user's passkeys, not all.
 #[sqlx::test(migrations = "./migrations")]
 async fn list_passkeys_only_own_credentials(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -1063,7 +1063,7 @@ async fn register_multiple_passkeys(pool: PgPool) {
 // allowCredentials is just a client hint, not part of the signed data.
 // ---------------------------------------------------------------------------
 
-/// Helper: perform a full passkey login ceremony using SoftPasskey.
+/// Helper: perform a full passkey login ceremony using `SoftPasskey`.
 /// The authenticator must already have registered a credential.
 async fn login_passkey_ceremony(
     app: &axum::Router,

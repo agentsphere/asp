@@ -1,7 +1,11 @@
 # platform/Justfile
 
+set dotenv-filename := ".env.dev"
+set dotenv-load := true
+
 export DATABASE_URL := env("DATABASE_URL", "postgres://platform:dev@localhost:5432/platform_dev")
 export VALKEY_URL := env("VALKEY_URL", "redis://localhost:6379")
+export KUBECONFIG := env("KUBECONFIG", env("HOME", "/tmp") / ".kube/kind-platform")
 
 # Detect in-cluster environment (KUBERNETES_SERVICE_HOST is set automatically in pods)
 # Routes test commands to test-in-pod.sh (DNS) vs test-in-cluster.sh (port-forward)
@@ -21,10 +25,20 @@ cluster-down:
     bash hack/kind-down.sh
 
 # -- Dev ------------------------------------------------------------
+dev-env:
+    bash hack/dev-env.sh
+
+dev-env-stop:
+    @if [ -f /tmp/platform-dev-pf.pids ]; then while read -r pid; do kill "$pid" 2>/dev/null || true; done < /tmp/platform-dev-pf.pids; rm -f /tmp/platform-dev-pf.pids; echo "Port-forwards stopped"; else echo "No port-forwards running"; fi
+
+dev:
+    bash hack/dev-env.sh
+
 watch:
     bacon
 
 run:
+    @mkdir -p /tmp/platform-repos /tmp/platform-ops-repos /tmp/platform-e2e/seed-images
     cargo run
 
 ui:
@@ -54,16 +68,21 @@ test:
 
 test-unit:
     cargo nextest run --lib
+    cargo test --manifest-path cli/agent-runner/Cargo.toml --bin agent-runner
 
 test-doc:
     cargo test --doc
 
 # Ephemeral services (Kind cluster locally, K8s DNS in-cluster)
-test-integration:
-    bash {{test_script}} --filter '*_integration'
+test-integration filter="":
+    bash {{test_script}} --filter '*_integration' {{ if filter != "" { "--expr 'test(" + filter + ")'" } else { "" } }}
 
-test-e2e:
-    bash {{test_script}} --type e2e
+# Run a specific integration test binary (avoids enumerating all binaries)
+test-integration-bin bin filter="":
+    bash {{test_script}} --filter '{{bin}}' {{ if filter != "" { "--expr 'test(" + filter + ")'" } else { "" } }}
+
+test-e2e filter="":
+    bash {{test_script}} --type e2e {{ if filter != "" { "--expr 'test(" + filter + ")'" } else { "" } }}
 
 test-llm:
     cargo nextest run --test llm_create_app --run-ignored ignored-only
@@ -73,6 +92,7 @@ test-mcp:
 
 test-ui:
     @echo "Requires running server: just run"
+    @kubectl exec -n platform pod/valkey -- valkey-cli DEL rate:login:admin >/dev/null 2>&1 || true
     cd ui && npx playwright test
 
 # Start platform server, run Playwright tests, stop server
@@ -87,14 +107,18 @@ test-ui-headless port="8090":
       sleep 2
     done
     curl -sf "http://localhost:{{port}}/healthz" >/dev/null 2>&1 || { echo "Server failed to start"; kill "$SERVER_PID" 2>/dev/null; exit 1; }
+    kubectl exec -n platform pod/valkey -- valkey-cli DEL rate:login:admin >/dev/null 2>&1 || true
     cd ui && PLATFORM_URL="http://localhost:{{port}}" npx playwright test; STATUS=$?
     kill "$SERVER_PID" 2>/dev/null || true
     exit "$STATUS"
 
 # Cleanup stale test namespaces
 test-cleanup:
-    @echo "Deleting stale test-* namespaces..."
-    @kubectl get namespaces -o name | grep '^namespace/test-' | xargs -r kubectl delete --wait=false
+    @echo "Deleting stale platform-test-* namespaces..."
+    @kubectl get namespaces -o name | grep '^namespace/platform-test-' | xargs -r kubectl delete --wait=false
+
+# All tests except LLM (unit + integration + e2e)
+test-all: test-unit test-integration test-e2e
 
 # -- Coverage -------------------------------------------------------
 cov-unit:
@@ -152,18 +176,64 @@ build:
     just ui
     SQLX_OFFLINE=true cargo build --release
 
+# -- Agent Runner CLI -----------------------------------------------
 cli-build:
-    cargo build --release --manifest-path cli/platform-cli/Cargo.toml
+    cargo build --release --manifest-path cli/agent-runner/Cargo.toml
+
+# Cross-compile agent-runner for linux/amd64 and linux/arm64 (uses Docker)
+cli-cross dir="/tmp/platform-e2e/agent-runner":
+    mkdir -p {{ dir }}
+    docker run --rm \
+      -v "$(pwd)/cli/agent-runner:/src" \
+      -v "{{ dir }}:/out" \
+      rust:1.88-slim-bookworm sh -c '\
+        apt-get update && apt-get install -y --no-install-recommends \
+          gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+          gcc-x86-64-linux-gnu libc6-dev-amd64-cross && \
+        rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu && \
+        cd /src && \
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+          cargo build --release --target aarch64-unknown-linux-gnu && \
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
+          cargo build --release --target x86_64-unknown-linux-gnu && \
+        cp target/aarch64-unknown-linux-gnu/release/agent-runner /out/arm64 && \
+        cp target/x86_64-unknown-linux-gnu/release/agent-runner /out/amd64'
 
 cli-install:
-    cargo install --path cli/platform-cli
+    cargo install --path cli/agent-runner
+
+cli-test:
+    cargo test --manifest-path cli/agent-runner/Cargo.toml --bin agent-runner
+
+cli-lint:
+    cargo clippy --manifest-path cli/agent-runner/Cargo.toml --all-features -- -D warnings
+
+cli-fmt:
+    cargo fmt --manifest-path cli/agent-runner/Cargo.toml
+
+cli-test-pubsub:
+    bash hack/test-cli-incluster.sh
+
+cli-test-llm:
+    cargo test --manifest-path cli/agent-runner/Cargo.toml --bin agent-runner llm_ -- --ignored
+
+cli-cov:
+    cargo llvm-cov --manifest-path cli/agent-runner/Cargo.toml --bin agent-runner
 
 docker tag="platform:dev":
     docker build -f docker/Dockerfile -t {{ tag }} .
 
-agent-image:
-    docker build -f docker/Dockerfile.claude-runner -t localhost:8080/platform-runner/platform-claude-runner:latest .
-    docker push localhost:8080/platform-runner/platform-claude-runner:latest
+agent-image registry_url="${PLATFORM_REGISTRY_URL:-localhost:8080}":
+    docker build -f docker/Dockerfile.platform-runner -t {{registry_url}}/platform-runner:latest .
+    docker push {{registry_url}}/platform-runner:latest
+
+agent-image-bare registry_url="${PLATFORM_REGISTRY_URL:-localhost:8080}":
+    docker build -f docker/Dockerfile.platform-runner-bare -t {{registry_url}}/platform-runner:latest .
+    docker push {{registry_url}}/platform-runner:latest
+
+agent-images registry_url="${PLATFORM_REGISTRY_URL:-localhost:8080}":
+    just agent-image {{registry_url}}
+    just agent-image-bare {{registry_url}}
 
 registry-login:
     @echo "Login to the platform's built-in registry (admin/admin in dev mode):"
@@ -177,8 +247,8 @@ deploy-local tag="platform:dev":
     kubectl rollout status deployment/platform -n platform --timeout=60s
 
 # -- Full CI locally ------------------------------------------------
-ci: fmt lint deny test-unit test-mcp test-integration build
+ci: fmt lint deny test-unit cli-lint cli-test test-mcp test-integration build
     @echo "All checks passed"
 
-ci-full: fmt lint deny test-unit test-mcp test-integration test-e2e build
+ci-full: fmt lint deny test-unit cli-lint cli-test test-mcp test-integration test-e2e build
     @echo "All checks passed (including E2E tests)"

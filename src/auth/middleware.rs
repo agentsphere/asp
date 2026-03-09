@@ -24,18 +24,20 @@ pub struct AuthUser {
     pub token_scopes: Option<Vec<String>>,
     /// Hard workspace boundary from scoped API token.
     /// When set, all requests are restricted to this workspace's resources.
-    pub scope_workspace_id: Option<Uuid>,
+    /// Named "boundary" (not "scope") to distinguish from `token_scopes` which
+    /// filter permissions. Boundaries restrict *which resources* are visible.
+    pub boundary_workspace_id: Option<Uuid>,
     /// Hard project boundary from scoped API token.
     /// When set, all requests are restricted to this specific project.
-    pub scope_project_id: Option<Uuid>,
+    pub boundary_project_id: Option<Uuid>,
 }
 
 impl AuthUser {
     /// Verify this request is allowed to access the given project.
     /// Returns 404 for scope violations (don't leak resource existence).
     pub fn check_project_scope(&self, project_id: Uuid) -> Result<(), ApiError> {
-        if let Some(scope_pid) = self.scope_project_id
-            && scope_pid != project_id
+        if let Some(boundary_pid) = self.boundary_project_id
+            && boundary_pid != project_id
         {
             return Err(ApiError::NotFound("project".into()));
         }
@@ -46,8 +48,8 @@ impl AuthUser {
     /// Returns 404 for scope violations (don't leak resource existence).
     #[allow(dead_code)] // symmetric with check_project_scope; used by workspace-aware handlers
     pub fn check_workspace_scope(&self, workspace_id: Uuid) -> Result<(), ApiError> {
-        if let Some(scope_wid) = self.scope_workspace_id
-            && scope_wid != workspace_id
+        if let Some(boundary_wid) = self.boundary_workspace_id
+            && boundary_wid != workspace_id
         {
             return Err(ApiError::NotFound("workspace".into()));
         }
@@ -55,7 +57,17 @@ impl AuthUser {
     }
 }
 
+/// Parse `user_type` string from DB into the `UserType` enum.
+fn parse_user_type(s: &str) -> Result<UserType, ApiError> {
+    s.parse().map_err(|e: anyhow::Error| ApiError::Internal(e))
+}
+
 /// Row returned when looking up an API token.
+///
+/// Near-identical to `SessionAuthLookup` but includes `scopes`, `scope_project_id`,
+/// and `scope_workspace_id` fields from the `api_tokens` table. They can't be
+/// consolidated because `sqlx::query_as!` requires the struct to match the exact
+/// column set returned by each query.
 struct TokenAuthLookup {
     user_id: Uuid,
     user_name: String,
@@ -90,18 +102,17 @@ impl FromRequestParts<AppState> for AuthUser {
                 if !user.is_active {
                     return Err(ApiError::Unauthorized);
                 }
-                let user_type: UserType = user
-                    .user_type
-                    .parse()
-                    .map_err(|e: anyhow::Error| ApiError::Internal(e))?;
+                // API token auth intentionally does NOT check can_login() —
+                // agent users authenticate exclusively via API tokens, not sessions.
+                let user_type = parse_user_type(&user.user_type)?;
                 return Ok(Self {
                     user_id: user.user_id,
                     user_name: user.user_name,
                     user_type,
                     ip_addr,
                     token_scopes: Some(user.scopes),
-                    scope_workspace_id: user.scope_workspace_id,
-                    scope_project_id: user.scope_project_id,
+                    boundary_workspace_id: user.scope_workspace_id,
+                    boundary_project_id: user.scope_project_id,
                 });
             }
             // Bearer token not in api_tokens — try as session token
@@ -109,10 +120,7 @@ impl FromRequestParts<AppState> for AuthUser {
                 if !user.is_active {
                     return Err(ApiError::Unauthorized);
                 }
-                let user_type: UserType = user
-                    .user_type
-                    .parse()
-                    .map_err(|e: anyhow::Error| ApiError::Internal(e))?;
+                let user_type = parse_user_type(&user.user_type)?;
                 if !user_type.can_login() {
                     return Err(ApiError::Unauthorized);
                 }
@@ -122,8 +130,8 @@ impl FromRequestParts<AppState> for AuthUser {
                     user_type,
                     ip_addr,
                     token_scopes: None,
-                    scope_workspace_id: None,
-                    scope_project_id: None,
+                    boundary_workspace_id: None,
+                    boundary_project_id: None,
                 });
             }
         }
@@ -135,10 +143,7 @@ impl FromRequestParts<AppState> for AuthUser {
             if !user.is_active {
                 return Err(ApiError::Unauthorized);
             }
-            let user_type: UserType = user
-                .user_type
-                .parse()
-                .map_err(|e: anyhow::Error| ApiError::Internal(e))?;
+            let user_type = parse_user_type(&user.user_type)?;
             // Non-human users cannot use session-based auth
             if !user_type.can_login() {
                 return Err(ApiError::Unauthorized);
@@ -149,8 +154,8 @@ impl FromRequestParts<AppState> for AuthUser {
                 user_type,
                 ip_addr,
                 token_scopes: None,
-                scope_workspace_id: None,
-                scope_project_id: None,
+                boundary_workspace_id: None,
+                boundary_project_id: None,
             });
         }
 
@@ -297,8 +302,8 @@ impl AuthUser {
             user_type: UserType::Human,
             ip_addr: Some("127.0.0.1".into()),
             token_scopes: None,
-            scope_workspace_id: None,
-            scope_project_id: None,
+            boundary_workspace_id: None,
+            boundary_project_id: None,
         }
     }
 
@@ -310,8 +315,8 @@ impl AuthUser {
             user_type: UserType::Human,
             ip_addr: Some("127.0.0.1".into()),
             token_scopes: None,
-            scope_workspace_id: None,
-            scope_project_id: None,
+            boundary_workspace_id: None,
+            boundary_project_id: None,
         }
     }
 
@@ -323,12 +328,12 @@ impl AuthUser {
             user_type: UserType::Human,
             ip_addr: Some("127.0.0.1".into()),
             token_scopes: Some(scopes),
-            scope_workspace_id: None,
-            scope_project_id: None,
+            boundary_workspace_id: None,
+            boundary_project_id: None,
         }
     }
 
-    /// Create a test `AuthUser` with a project scope boundary.
+    /// Create a test `AuthUser` with a project boundary.
     pub fn test_with_project_scope(user_id: Uuid, project_id: Uuid) -> Self {
         Self {
             user_id,
@@ -336,12 +341,12 @@ impl AuthUser {
             user_type: UserType::Human,
             ip_addr: Some("127.0.0.1".into()),
             token_scopes: None,
-            scope_workspace_id: None,
-            scope_project_id: Some(project_id),
+            boundary_workspace_id: None,
+            boundary_project_id: Some(project_id),
         }
     }
 
-    /// Create a test `AuthUser` with a workspace scope boundary.
+    /// Create a test `AuthUser` with a workspace boundary.
     pub fn test_with_workspace_scope(user_id: Uuid, workspace_id: Uuid) -> Self {
         Self {
             user_id,
@@ -349,8 +354,8 @@ impl AuthUser {
             user_type: UserType::Human,
             ip_addr: Some("127.0.0.1".into()),
             token_scopes: None,
-            scope_workspace_id: Some(workspace_id),
-            scope_project_id: None,
+            boundary_workspace_id: Some(workspace_id),
+            boundary_project_id: None,
         }
     }
 }
@@ -365,7 +370,7 @@ mod tests {
         for &(k, v) in headers {
             builder = builder.header(k, v);
         }
-        let (parts, _) = builder.body(()).unwrap().into_parts();
+        let (parts, ()) = builder.body(()).unwrap().into_parts();
         parts
     }
 
@@ -593,25 +598,25 @@ mod tests {
     }
 
     #[test]
-    fn test_human_has_none_scopes() {
+    fn test_human_has_none_boundaries() {
         let auth = AuthUser::test_human(Uuid::new_v4());
-        assert!(auth.scope_workspace_id.is_none());
-        assert!(auth.scope_project_id.is_none());
+        assert!(auth.boundary_workspace_id.is_none());
+        assert!(auth.boundary_project_id.is_none());
     }
 
     #[test]
     fn test_with_project_scope_constructor_sets_field() {
         let project_id = Uuid::new_v4();
         let auth = AuthUser::test_with_project_scope(Uuid::new_v4(), project_id);
-        assert_eq!(auth.scope_project_id, Some(project_id));
-        assert!(auth.scope_workspace_id.is_none());
+        assert_eq!(auth.boundary_project_id, Some(project_id));
+        assert!(auth.boundary_workspace_id.is_none());
     }
 
     #[test]
     fn test_with_workspace_scope_constructor_sets_field() {
         let ws_id = Uuid::new_v4();
         let auth = AuthUser::test_with_workspace_scope(Uuid::new_v4(), ws_id);
-        assert_eq!(auth.scope_workspace_id, Some(ws_id));
-        assert!(auth.scope_project_id.is_none());
+        assert_eq!(auth.boundary_workspace_id, Some(ws_id));
+        assert!(auth.boundary_project_id.is_none());
     }
 }

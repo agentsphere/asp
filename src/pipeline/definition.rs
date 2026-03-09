@@ -206,7 +206,7 @@ fn match_pattern(pattern: &str, value: &str) -> bool {
 mod tests {
     use super::*;
 
-    const VALID_YAML: &str = r#"
+    const VALID_YAML: &str = r"
 pipeline:
   steps:
     - name: test
@@ -230,7 +230,7 @@ pipeline:
       branches: [main, develop]
     mr:
       actions: [opened, synchronized]
-"#;
+";
 
     #[test]
     fn parse_valid_yaml() {
@@ -248,14 +248,14 @@ pipeline:
 
     #[test]
     fn parse_minimal_yaml() {
-        let yaml = r#"
+        let yaml = r"
 pipeline:
   steps:
     - name: hello
       image: alpine
       commands:
         - echo hello
-"#;
+";
         let def = parse(yaml).unwrap();
         assert_eq!(def.steps.len(), 1);
         assert!(def.artifacts.is_empty());
@@ -264,10 +264,10 @@ pipeline:
 
     #[test]
     fn parse_missing_steps() {
-        let yaml = r#"
+        let yaml = r"
 pipeline:
   steps: []
-"#;
+";
         let err = parse(yaml).unwrap_err();
         assert!(
             matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("at least one step")),
@@ -411,7 +411,7 @@ pipeline:
 
     #[test]
     fn matches_push_empty_branches_matches_all() {
-        let yaml = r#"
+        let yaml = r"
 pipeline:
   steps:
     - name: test
@@ -419,14 +419,14 @@ pipeline:
   on:
     push:
       branches: []
-"#;
+";
         let def = parse(yaml).unwrap();
         assert!(matches_push(def.trigger.as_ref(), "any-branch"));
     }
 
     #[test]
     fn matches_mr_empty_actions_matches_all() {
-        let yaml = r#"
+        let yaml = r"
 pipeline:
   steps:
     - name: test
@@ -434,7 +434,7 @@ pipeline:
   on:
     mr:
       actions: []
-"#;
+";
         let def = parse(yaml).unwrap();
         assert!(matches_mr(def.trigger.as_ref(), "any-action"));
     }
@@ -481,7 +481,7 @@ pipeline:
 
     #[test]
     fn matches_push_multiple_branches_any_match() {
-        let yaml = r#"
+        let yaml = r"
 pipeline:
   steps:
     - name: test
@@ -489,7 +489,7 @@ pipeline:
   on:
     push:
       branches: [main, develop, staging]
-"#;
+";
         let def = parse(yaml).unwrap();
         assert!(matches_push(def.trigger.as_ref(), "main"));
         assert!(matches_push(def.trigger.as_ref(), "develop"));
@@ -517,7 +517,7 @@ pipeline:
     #[test]
     fn matches_push_no_push_trigger_matches_all() {
         // Only MR trigger configured, no push trigger
-        let yaml = r#"
+        let yaml = r"
 pipeline:
   steps:
     - name: test
@@ -525,7 +525,7 @@ pipeline:
   on:
     mr:
       actions: [opened]
-"#;
+";
         let def = parse(yaml).unwrap();
         // No push trigger means all branches match
         assert!(matches_push(def.trigger.as_ref(), "any-branch"));
@@ -534,7 +534,7 @@ pipeline:
     #[test]
     fn matches_mr_no_mr_trigger_matches_all() {
         // Only push trigger configured, no MR trigger
-        let yaml = r#"
+        let yaml = r"
 pipeline:
   steps:
     - name: test
@@ -542,7 +542,7 @@ pipeline:
   on:
     push:
       branches: [main]
-"#;
+";
         let def = parse(yaml).unwrap();
         // No MR trigger means all actions match
         assert!(matches_mr(def.trigger.as_ref(), "any-action"));
@@ -607,7 +607,7 @@ pipeline:
 
     #[test]
     fn parse_dev_image_config() {
-        let yaml = r#"
+        let yaml = r"
 pipeline:
   steps:
     - name: build
@@ -616,7 +616,7 @@ pipeline:
         - /kaniko/executor --context=. --dockerfile=Dockerfile
   dev_image:
     dockerfile: Dockerfile.dev
-"#;
+";
         let def = parse(yaml).unwrap();
         let dev = def.dev_image.as_ref().unwrap();
         assert_eq!(dev.dockerfile, "Dockerfile.dev");
@@ -624,14 +624,14 @@ pipeline:
 
     #[test]
     fn parse_dev_image_custom_path() {
-        let yaml = r#"
+        let yaml = r"
 pipeline:
   steps:
     - name: build
       image: alpine
   dev_image:
     dockerfile: docker/Dockerfile.agent
-"#;
+";
         let def = parse(yaml).unwrap();
         let dev = def.dev_image.as_ref().unwrap();
         assert_eq!(dev.dockerfile, "docker/Dockerfile.agent");
@@ -639,12 +639,12 @@ pipeline:
 
     #[test]
     fn parse_dev_image_optional() {
-        let yaml = r#"
+        let yaml = r"
 pipeline:
   steps:
     - name: build
       image: alpine
-"#;
+";
         let def = parse(yaml).unwrap();
         assert!(def.dev_image.is_none());
     }
@@ -685,14 +685,14 @@ pipeline:
 
     #[test]
     fn validate_dev_image_absolute_path() {
-        let yaml = r#"
+        let yaml = r"
 pipeline:
   steps:
     - name: build
       image: alpine
   dev_image:
     dockerfile: /etc/Dockerfile
-"#;
+";
         let err = parse(yaml).unwrap_err();
         assert!(
             matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("relative path")),

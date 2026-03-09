@@ -118,6 +118,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # URL parsing (webhook SSRF validation)
 url = "2"
 
+# OCI image tarball parsing (registry seeding)
+tar = "0.4"
+flate2 = "1"
+fs2 = "0.4"
+
 # Embedded UI
 rust-embed = { version = "8", features = ["compression"] }
 

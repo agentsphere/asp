@@ -15,9 +15,9 @@ use helpers::{assign_role, create_project, create_user, test_router, test_state}
 async fn setup_deployment(pool: &PgPool, project_id: Uuid, env: &str, image_ref: &str) -> Uuid {
     let id = Uuid::new_v4();
     sqlx::query(
-        r#"INSERT INTO deployments
+        r"INSERT INTO deployments
            (id, project_id, environment, image_ref, desired_status, current_status)
-           VALUES ($1, $2, $3, $4, 'active', 'pending')"#,
+           VALUES ($1, $2, $3, $4, 'active', 'pending')",
     )
     .bind(id)
     .bind(project_id)
@@ -38,11 +38,11 @@ async fn setup_preview(
     let id = Uuid::new_v4();
     let branch = format!("feature/{branch_slug}");
     sqlx::query(
-        r#"INSERT INTO preview_deployments
+        r"INSERT INTO preview_deployments
            (id, project_id, branch, branch_slug, image_ref, desired_status, current_status,
             expires_at)
            VALUES ($1, $2, $3, $4, $5, 'active', 'pending',
-                   now() + interval '1 hour')"#,
+                   now() + interval '1 hour')",
     )
     .bind(id)
     .bind(project_id)
@@ -57,9 +57,9 @@ async fn setup_preview(
 
 async fn setup_history(pool: &PgPool, deployment_id: Uuid, image_ref: &str, action: &str) {
     sqlx::query(
-        r#"INSERT INTO deployment_history
+        r"INSERT INTO deployment_history
            (deployment_id, image_ref, action, status)
-           VALUES ($1, $2, $3, 'success')"#,
+           VALUES ($1, $2, $3, 'success')",
     )
     .bind(deployment_id)
     .bind(image_ref)
@@ -418,7 +418,7 @@ async fn list_and_get_ops_repo(pool: PgPool) {
     // List — returns a plain array, not {"items": [...]}
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/admin/ops-repos").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.as_array().unwrap().len() >= 1);
+    assert!(!body.as_array().unwrap().is_empty());
 
     // Get by ID
     let (status, body) = helpers::get_json(
@@ -435,7 +435,7 @@ async fn list_and_get_ops_repo(pool: PgPool) {
 // Reconciler DB function tests
 // ---------------------------------------------------------------------------
 
-/// finalize_success updates deployment to healthy and writes history.
+/// `finalize_success` updates deployment to healthy and writes history.
 #[sqlx::test(migrations = "./migrations")]
 async fn finalize_success_updates_deployment(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -487,7 +487,7 @@ async fn finalize_success_updates_deployment(pool: PgPool) {
     assert_eq!(h_status, "success");
 }
 
-/// mark_failed updates deployment to failed and writes failure history.
+/// `mark_failed` updates deployment to failed and writes failure history.
 #[sqlx::test(migrations = "./migrations")]
 async fn mark_failed_updates_status(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -519,4 +519,156 @@ async fn mark_failed_updates_status(pool: PgPool) {
 
     assert_eq!(h_status, "failure");
     assert_eq!(h_message.as_deref(), Some("manifest apply error"));
+}
+
+// ---------------------------------------------------------------------------
+// Preview lifecycle tests (moved from e2e_deployer.rs)
+// ---------------------------------------------------------------------------
+
+/// Preview deployment lifecycle: insert → list → get → delete → verify gone.
+#[sqlx::test(migrations = "./migrations")]
+async fn preview_deployment_lifecycle(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state.clone());
+
+    let project_id = create_project(&app, &admin_token, "deploy-preview", "private").await;
+
+    // Insert a preview deployment directly
+    sqlx::query(
+        r"INSERT INTO preview_deployments
+           (project_id, branch, branch_slug, image_ref, desired_status, current_status, ttl_hours, expires_at)
+           VALUES ($1, 'feature/cool', 'feature-cool', 'nginx:preview', 'active', 'pending', 24, now() + interval '24 hours')",
+    )
+    .bind(project_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // List previews
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/previews"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let total = body["total"].as_i64().unwrap_or(0);
+    assert!(total >= 1, "should have at least one preview");
+
+    // Get specific preview
+    let (status, preview) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/previews/feature-cool"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(preview["branch"], "feature/cool");
+    assert_eq!(preview["branch_slug"], "feature-cool");
+    assert_eq!(preview["image_ref"], "nginx:preview");
+
+    // Delete preview
+    let (status, _) = helpers::delete_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/previews/feature-cool"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Verify it's gone (desired_status = stopped, filtered out of list)
+    let (status, _) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/previews/feature-cool"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// MR merge triggers preview cleanup.
+#[sqlx::test(migrations = "./migrations")]
+async fn preview_cleanup_on_mr_merge(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state.clone());
+
+    let project_id = create_project(&app, &admin_token, "preview-mr-cleanup", "private").await;
+
+    // Set up git repo with main + feature branch
+    let (_bare_dir, bare_path) = helpers::create_bare_repo();
+    let (_work_dir, work_path) = helpers::create_working_copy(&bare_path);
+
+    helpers::git_cmd(&work_path, &["checkout", "-b", "feature-preview"]);
+    std::fs::write(work_path.join("preview.txt"), "preview content\n").unwrap();
+    helpers::git_cmd(&work_path, &["add", "."]);
+    helpers::git_cmd(&work_path, &["commit", "-m", "preview feature"]);
+    helpers::git_cmd(&work_path, &["push", "origin", "feature-preview"]);
+
+    sqlx::query("UPDATE projects SET repo_path = $1 WHERE id = $2")
+        .bind(bare_path.to_str().unwrap())
+        .bind(project_id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+    // Create preview deployment for the feature branch
+    sqlx::query(
+        r"INSERT INTO preview_deployments
+           (project_id, branch, branch_slug, image_ref, desired_status, current_status, ttl_hours, expires_at)
+           VALUES ($1, 'feature-preview', 'feature-preview', 'nginx:preview', 'active', 'pending', 24, now() + interval '24 hours')",
+    )
+    .bind(project_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // Verify preview exists
+    let (status, _) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/previews/feature-preview"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Create MR
+    let (status, mr_body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/merge-requests"),
+        serde_json::json!({
+            "source_branch": "feature-preview",
+            "target_branch": "main",
+            "title": "Merge feature-preview",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "MR create failed: {mr_body}");
+    let mr_number = mr_body["number"].as_i64().unwrap();
+
+    // Merge MR (should trigger preview cleanup via stop_preview_for_branch)
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/merge-requests/{mr_number}/merge"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Give some time for the async cleanup
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // Preview should now be stopped (404 because list filters desired_status='active')
+    let (status, _) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/previews/feature-preview"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "preview should be stopped after MR merge"
+    );
 }

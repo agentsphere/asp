@@ -34,7 +34,7 @@ pub async fn require_project_read(
     .ok_or_else(|| ApiError::NotFound("project".into()))?;
 
     // If workspace-scoped, verify project belongs to that workspace
-    if let Some(scope_wid) = auth.scope_workspace_id
+    if let Some(scope_wid) = auth.boundary_workspace_id
         && project.workspace_id != scope_wid
     {
         return Err(ApiError::NotFound("project".into()));
@@ -64,6 +64,25 @@ pub async fn require_project_read(
     Ok(())
 }
 
+/// Check the caller has admin:users permission (scope-aware), return Forbidden otherwise.
+pub async fn require_admin(state: &AppState, auth: &AuthUser) -> Result<(), ApiError> {
+    let allowed = resolver::has_permission_scoped(
+        &state.pool,
+        &state.valkey,
+        auth.user_id,
+        None,
+        Permission::AdminUsers,
+        auth.token_scopes.as_deref(),
+    )
+    .await
+    .map_err(ApiError::Internal)?;
+
+    if !allowed {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(())
+}
+
 /// Check project-level write access via scope + RBAC.
 pub async fn require_project_write(
     state: &AppState,
@@ -74,7 +93,7 @@ pub async fn require_project_write(
     auth.check_project_scope(project_id)?;
 
     // If workspace-scoped, verify project belongs to that workspace
-    if let Some(scope_wid) = auth.scope_workspace_id {
+    if let Some(scope_wid) = auth.boundary_workspace_id {
         let in_workspace = sqlx::query_scalar!(
             r#"SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1 AND workspace_id = $2 AND is_active = true) as "exists!: bool""#,
             project_id, scope_wid,

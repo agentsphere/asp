@@ -17,7 +17,7 @@ use super::messages::{CliMessage, CliUserInput, parse_cli_message};
 /// messages over stdin/stdout.
 pub struct SubprocessTransport {
     pub(crate) child: Child,
-    pub(crate) stdin: Mutex<BufWriter<ChildStdin>>,
+    pub(crate) stdin: Mutex<Option<BufWriter<ChildStdin>>>,
     pub(crate) stdout: Mutex<BufReader<ChildStdout>>,
     pub(crate) stderr_task: Option<JoinHandle<String>>,
     pub(crate) session_id: Mutex<Option<String>>,
@@ -82,6 +82,15 @@ impl SubprocessTransport {
         let args = build_args(&opts);
         let env_vars = build_env(&opts);
 
+        let env_keys: Vec<&str> = env_vars.iter().map(|(k, _)| k.as_str()).collect();
+        tracing::info!(
+            cli_path = %cli_path.display(),
+            args = ?args,
+            env_keys = ?env_keys,
+            cwd = ?opts.cwd,
+            "spawning Claude CLI subprocess"
+        );
+
         let mut cmd = tokio::process::Command::new(&cli_path);
         cmd.args(&args)
             .stdin(Stdio::piped())
@@ -112,7 +121,7 @@ impl SubprocessTransport {
                 let mut collected = String::new();
                 while let Ok(Some(line)) = lines.next_line().await {
                     if !line.is_empty() {
-                        tracing::debug!(target: "claude_cli_stderr", "{}", line);
+                        tracing::warn!(target: "claude_cli_stderr", "{}", line);
                         if collected.len() < 4096 && !collected.is_empty() {
                             collected.push('\n');
                         }
@@ -127,7 +136,7 @@ impl SubprocessTransport {
 
         Ok(Self {
             child,
-            stdin: Mutex::new(BufWriter::new(stdin)),
+            stdin: Mutex::new(Some(BufWriter::new(stdin))),
             stdout: Mutex::new(BufReader::new(stdout)),
             stderr_task,
             session_id: Mutex::new(None),
@@ -145,6 +154,16 @@ impl SubprocessTransport {
     pub async fn send_structured(&self, content: serde_json::Value) -> Result<(), CliError> {
         let input = CliUserInput::structured(content);
         self.write_json(&input).await
+    }
+
+    /// Close stdin, signaling EOF to the child process.
+    ///
+    /// Call this in `-p` (one-shot prompt) mode where stdin is not needed,
+    /// to prevent the CLI from blocking on stdin reads. Dropping the
+    /// `ChildStdin` handle closes the pipe fd, delivering EOF.
+    pub async fn close_stdin(&self) {
+        let mut guard = self.stdin.lock().await;
+        drop(guard.take());
     }
 
     /// Read the next NDJSON message from stdout.
@@ -242,13 +261,22 @@ impl SubprocessTransport {
             CliError::StdinWrite(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
         })?;
         json.push('\n');
-        let mut stdin = self.stdin.lock().await;
+        let mut guard = self.stdin.lock().await;
+        let stdin = guard.as_mut().ok_or(CliError::NotRunning)?;
         stdin
             .write_all(json.as_bytes())
             .await
             .map_err(CliError::StdinWrite)?;
         stdin.flush().await.map_err(CliError::StdinWrite)?;
         Ok(())
+    }
+}
+
+impl Drop for SubprocessTransport {
+    fn drop(&mut self) {
+        self.alive
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let _ = self.child.start_kill();
     }
 }
 
@@ -399,6 +427,25 @@ pub(crate) fn build_env(opts: &CliSpawnOptions) -> Vec<(String, String)> {
     }
     if let Ok(tmpdir) = std::env::var("TMPDIR") {
         env.push(("TMPDIR".to_owned(), tmpdir));
+    }
+
+    // Non-interactive mode signal
+    env.push(("TERM".to_owned(), "dumb".to_owned()));
+
+    // Skip all interactive prompts (permission dialogs, onboarding, etc.)
+    env.push(("CI".to_owned(), "true".to_owned()));
+
+    // Identity — some tools need USER
+    if let Ok(user) = std::env::var("USER") {
+        env.push(("USER".to_owned(), user));
+    }
+
+    // XDG dirs — CLI may use these for config/data discovery
+    if let Ok(val) = std::env::var("XDG_CONFIG_HOME") {
+        env.push(("XDG_CONFIG_HOME".to_owned(), val));
+    }
+    if let Ok(val) = std::env::var("XDG_DATA_HOME") {
+        env.push(("XDG_DATA_HOME".to_owned(), val));
     }
 
     // Auth: prefer OAuth token, fall back to API key
@@ -686,9 +733,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_env_includes_ci_true() {
+        let opts = CliSpawnOptions::default();
+        let env = build_env(&opts);
+        assert!(
+            env.iter().any(|(k, v)| k == "CI" && v == "true"),
+            "CI=true should always be set to skip interactive prompts"
+        );
+    }
+
+    #[test]
+    fn build_env_includes_term_dumb() {
+        let opts = CliSpawnOptions::default();
+        let env = build_env(&opts);
+        assert!(
+            env.iter().any(|(k, v)| k == "TERM" && v == "dumb"),
+            "TERM=dumb should always be set for non-interactive mode"
+        );
+    }
+
+    #[test]
+    fn build_env_includes_user_when_set() {
+        // USER is typically set in test environments
+        if std::env::var("USER").is_ok() {
+            let opts = CliSpawnOptions::default();
+            let env = build_env(&opts);
+            assert!(
+                env.iter().any(|(k, _)| k == "USER"),
+                "USER should be forwarded when set"
+            );
+        }
+    }
+
     /// Helper: spawn `sh -c 'exec cat'` as a mock transport.
     /// Uses shell so that CLI args are ignored — `cat` reads pure stdin.
-    async fn spawn_cat_transport() -> SubprocessTransport {
+    fn spawn_cat_transport() -> SubprocessTransport {
         let mut child = tokio::process::Command::new("sh")
             .args(["-c", "exec cat"])
             .stdin(Stdio::piped())
@@ -702,7 +782,7 @@ mod tests {
 
         SubprocessTransport {
             child,
-            stdin: Mutex::new(BufWriter::new(stdin)),
+            stdin: Mutex::new(Some(BufWriter::new(stdin))),
             stdout: Mutex::new(BufReader::new(stdout)),
             stderr_task: None,
             session_id: Mutex::new(None),
@@ -711,8 +791,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn close_stdin_sends_eof() {
+        let transport = spawn_cat_transport();
+        transport.close_stdin().await;
+        // cat should exit after stdin EOF → recv returns None
+        let result = transport.recv().await.unwrap();
+        assert!(result.is_none(), "cat should exit after stdin close");
+    }
+
+    #[tokio::test]
     async fn spawn_and_kill() {
-        let mut transport = spawn_cat_transport().await;
+        let mut transport = spawn_cat_transport();
         assert!(transport.is_alive());
         transport.kill().await.unwrap();
         assert!(!transport.is_alive());
@@ -720,12 +809,13 @@ mod tests {
 
     #[tokio::test]
     async fn send_and_recv_with_cat() {
-        let transport = spawn_cat_transport().await;
+        let transport = spawn_cat_transport();
 
         // Write a valid NDJSON system message — cat echoes it back
         let msg = r#"{"type":"system","subtype":"init","session_id":"test-123"}"#;
         {
-            let mut stdin = transport.stdin.lock().await;
+            let mut guard = transport.stdin.lock().await;
+            let stdin = guard.as_mut().unwrap();
             stdin
                 .write_all(format!("{msg}\n").as_bytes())
                 .await
@@ -748,7 +838,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_writes_ndjson() {
-        let transport = spawn_cat_transport().await;
+        let transport = spawn_cat_transport();
 
         // send_message writes CliUserInput JSON — cat echoes it back
         transport.send_message("hello world").await.unwrap();
@@ -779,7 +869,7 @@ mod tests {
 
         let transport = SubprocessTransport {
             child,
-            stdin: Mutex::new(BufWriter::new(stdin)),
+            stdin: Mutex::new(Some(BufWriter::new(stdin))),
             stdout: Mutex::new(BufReader::new(stdout)),
             stderr_task: None,
             session_id: Mutex::new(None),
@@ -794,11 +884,12 @@ mod tests {
 
     #[tokio::test]
     async fn recv_skips_invalid_json() {
-        let transport = spawn_cat_transport().await;
+        let transport = spawn_cat_transport();
 
         // Write invalid JSON then valid JSON
         {
-            let mut stdin = transport.stdin.lock().await;
+            let mut guard = transport.stdin.lock().await;
+            let stdin = guard.as_mut().unwrap();
             stdin.write_all(b"not json\n").await.unwrap();
             stdin
                 .write_all(br#"{"type":"system","subtype":"init","session_id":"after-invalid"}"#)
@@ -818,10 +909,32 @@ mod tests {
 
     #[tokio::test]
     async fn write_json_to_not_running_fails() {
-        let mut transport = spawn_cat_transport().await;
+        let mut transport = spawn_cat_transport();
         transport.kill().await.unwrap();
 
         let result = transport.send_message("hello").await;
         assert!(matches!(result, Err(CliError::NotRunning)));
+    }
+
+    #[tokio::test]
+    async fn drop_kills_child_process() {
+        let pid = {
+            let transport = spawn_cat_transport();
+            let pid = transport.child.id().expect("child should have a pid");
+            assert!(transport.is_alive());
+            pid
+            // transport is dropped here — Drop should kill the child
+        };
+        // Give the OS a moment to clean up
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Verify the process is gone using `kill -0 <pid>` (checks existence without unsafe)
+        let output = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .expect("kill -0 command failed");
+        assert!(
+            !output.status.success(),
+            "child process should be killed after drop"
+        );
     }
 }

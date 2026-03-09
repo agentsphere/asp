@@ -86,15 +86,15 @@ async fn batch(
     let project =
         super::smart_http::resolve_project(&state.pool, &state.config, &owner, &repo).await?;
 
-    // Enforce hard project scope from API token
-    if let Some(scope_pid) = git_user.scope_project_id
-        && scope_pid != project.project_id
+    // Enforce hard project boundary from API token
+    if let Some(boundary_pid) = git_user.boundary_project_id
+        && boundary_pid != project.project_id
     {
         return Err(ApiError::NotFound("repository".into()));
     }
 
-    // Enforce hard workspace scope from API token
-    if let Some(scope_wid) = git_user.scope_workspace_id {
+    // Enforce hard workspace boundary from API token
+    if let Some(scope_wid) = git_user.boundary_workspace_id {
         let in_workspace = sqlx::query_scalar!(
             r#"SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1 AND workspace_id = $2 AND is_active = true) as "exists!: bool""#,
             project.project_id, scope_wid,

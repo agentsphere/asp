@@ -1,0 +1,6 @@
+[
+  {
+    "text": "I'll create a blog project for you.",
+    "tools": [{"name": "create_project", "parameters": {"name": "my-blog"}}]
+  }
+]

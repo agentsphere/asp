@@ -38,12 +38,9 @@ pub fn slugify_namespace(name: &str) -> String {
 }
 
 /// Build a Namespace JSON object for server-side apply.
-pub fn build_namespace_object(
-    namespace_slug: &str,
-    env: &str,
-    project_id: &str,
-) -> serde_json::Value {
-    let ns_name = format!("{namespace_slug}-{env}");
+///
+/// `ns_name` is the full namespace name (e.g. `my-app-dev` or `prefix-my-app-dev`).
+pub fn build_namespace_object(ns_name: &str, env: &str, project_id: &str) -> serde_json::Value {
     json!({
         "apiVersion": "v1",
         "kind": "Namespace",
@@ -65,8 +62,9 @@ pub fn build_namespace_object(
 /// - Egress to kube-system DNS (port 53 UDP+TCP)
 /// - Egress to internet (blocking cluster-internal CIDRs)
 /// - Ingress: deny all (no ingress rules)
-pub fn build_network_policy(namespace_slug: &str, platform_namespace: &str) -> serde_json::Value {
-    let ns_name = format!("{namespace_slug}-dev");
+///
+/// `ns_name` is the full namespace name (e.g. `my-app-dev` or `prefix-my-app-dev`).
+pub fn build_network_policy(ns_name: &str, platform_namespace: &str) -> serde_json::Value {
     json!({
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
@@ -130,15 +128,16 @@ pub fn build_network_policy(namespace_slug: &str, platform_namespace: &str) -> s
 }
 
 /// Ensure a K8s namespace exists using server-side apply (idempotent).
-#[tracing::instrument(skip(kube_client), fields(%namespace_slug, %env), err)]
+///
+/// `ns_name` is the full namespace name (e.g. `my-app-dev` or `prefix-my-app-dev`).
+#[tracing::instrument(skip(kube_client), fields(%ns_name, %env), err)]
 pub async fn ensure_namespace(
     kube_client: &kube::Client,
-    namespace_slug: &str,
+    ns_name: &str,
     env: &str,
     project_id: &str,
 ) -> Result<(), super::error::DeployerError> {
-    let ns_json = build_namespace_object(namespace_slug, env, project_id);
-    let ns_name = format!("{namespace_slug}-{env}");
+    let ns_json = build_namespace_object(ns_name, env, project_id);
 
     let ar = kube::discovery::ApiResource {
         group: String::new(),
@@ -153,22 +152,23 @@ pub async fn ensure_namespace(
         .map_err(|e| super::error::DeployerError::InvalidManifest(e.to_string()))?;
 
     let patch_params = kube::api::PatchParams::apply("platform-deployer").force();
-    api.patch(&ns_name, &patch_params, &kube::api::Patch::Apply(&obj))
+    api.patch(ns_name, &patch_params, &kube::api::Patch::Apply(&obj))
         .await?;
 
     tracing::info!(%ns_name, "namespace ensured");
     Ok(())
 }
 
-/// Ensure the `NetworkPolicy` exists in the `-dev` namespace (idempotent).
-#[tracing::instrument(skip(kube_client), fields(%namespace_slug), err)]
+/// Ensure the `NetworkPolicy` exists in the given namespace (idempotent).
+///
+/// `ns_name` is the full namespace name (e.g. `my-app-dev` or `prefix-my-app-dev`).
+#[tracing::instrument(skip(kube_client), fields(%ns_name), err)]
 pub async fn ensure_network_policy(
     kube_client: &kube::Client,
-    namespace_slug: &str,
+    ns_name: &str,
     platform_namespace: &str,
 ) -> Result<(), super::error::DeployerError> {
-    let np_json = build_network_policy(namespace_slug, platform_namespace);
-    let ns_name = format!("{namespace_slug}-dev");
+    let np_json = build_network_policy(ns_name, platform_namespace);
 
     let ar = kube::discovery::ApiResource {
         group: "networking.k8s.io".into(),
@@ -178,7 +178,7 @@ pub async fn ensure_network_policy(
         plural: "networkpolicies".into(),
     };
     let api: kube::Api<kube::api::DynamicObject> =
-        kube::Api::namespaced_with(kube_client.clone(), &ns_name, &ar);
+        kube::Api::namespaced_with(kube_client.clone(), ns_name, &ar);
 
     let obj: kube::api::DynamicObject = serde_json::from_value(np_json)
         .map_err(|e| super::error::DeployerError::InvalidManifest(e.to_string()))?;
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn namespace_object_has_correct_labels() {
-        let ns = build_namespace_object("my-app", "dev", "abc-123");
+        let ns = build_namespace_object("my-app-dev", "dev", "abc-123");
         let labels = ns["metadata"]["labels"].as_object().unwrap();
         assert_eq!(labels["platform.io/project"], "abc-123");
         assert_eq!(labels["platform.io/env"], "dev");
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn namespace_object_prod_env() {
-        let ns = build_namespace_object("my-app", "prod", "abc-123");
+        let ns = build_namespace_object("my-app-prod", "prod", "abc-123");
         assert_eq!(ns["metadata"]["name"], "my-app-prod");
         assert_eq!(ns["metadata"]["labels"]["platform.io/env"], "prod");
     }
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn network_policy_namespace_is_dev() {
-        let np = build_network_policy("my-app", "platform");
+        let np = build_network_policy("my-app-dev", "platform");
         assert_eq!(np["metadata"]["namespace"], "my-app-dev");
     }
 }

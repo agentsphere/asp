@@ -171,7 +171,7 @@ mod tests {
     use super::*;
 
     // Real ED25519 GPG key generated for testing (UID: Test User <admin@example.com>)
-    const TEST_ED25519_GPG_KEY: &str = r#"-----BEGIN PGP PUBLIC KEY BLOCK-----
+    const TEST_ED25519_GPG_KEY: &str = r"-----BEGIN PGP PUBLIC KEY BLOCK-----
 
 mDMEaaB09RYJKwYBBAHaRw8BAQdA7TymMz+S0gh0Y2hF6sibwc7ny6K6/1TqEWIN
 zCEkavy0HVRlc3QgVXNlciA8YWRtaW5AZXhhbXBsZS5jb20+iJMEExYKADsWIQRh
@@ -179,10 +179,10 @@ zCEkavy0HVRlc3QgVXNlciA8YWRtaW5AZXhhbXBsZS5jb20+iJMEExYKADsWIQRh
 AQIeBwIXgAAKCRBZs2OrURhzdWrvAP4/RbWPq4cqTCYW5AE1PykC3tPONCfZTmgQ
 GbJMcvAAYQD+K9FoComHTJ3ikIjmpLswwdwi0JHTIZhhVqxm2tVsaAc=
 =WQ0b
------END PGP PUBLIC KEY BLOCK-----"#;
+-----END PGP PUBLIC KEY BLOCK-----";
 
     // Real RSA GPG key generated for testing (UID: RSA Test <admin@example.com>)
-    const TEST_RSA_GPG_KEY: &str = r#"-----BEGIN PGP PUBLIC KEY BLOCK-----
+    const TEST_RSA_GPG_KEY: &str = r"-----BEGIN PGP PUBLIC KEY BLOCK-----
 
 mQENBGmgdP0BCAC5eNWqWxkb6CdCGLb2p4Cd9SnTeLNG7LIXOE2KFvoYsiINDWUE
 RdMUegWmCY/nv3aZsVqmskGJ+o0N759F/cP2JDD1fAvwkMR+YE6IbTDb9qzAKxWx
@@ -199,10 +199,11 @@ JvUoqJ+rAnPegllEprhHe8+tZb42efKv+QVtBGE8WSPtocukwK0xRCyHT1CBMOWy
 2BXebdJ7fgSlGtOIMSCQk9uTD+7jVjqu4KWhJq2SxzdrkPLQo9jtnxrimuqjYdZH
 t34e5KyD8HPtb0eMGeChvbcH
 =L//0
------END PGP PUBLIC KEY BLOCK-----"#;
+-----END PGP PUBLIC KEY BLOCK-----";
 
     // GPG key with different email (UID: Other User <other@example.com>)
-    const TEST_MISMATCH_GPG_KEY: &str = r#"-----BEGIN PGP PUBLIC KEY BLOCK-----
+    #[allow(dead_code)]
+    const TEST_MISMATCH_GPG_KEY: &str = r"-----BEGIN PGP PUBLIC KEY BLOCK-----
 
 mDMEaaB1BRYJKwYBBAHaRw8BAQdARLy3pnfpC9xZzFm0p3C3yowaUJwkgae2DgGI
 WZivJWu0Hk90aGVyIFVzZXIgPG90aGVyQGV4YW1wbGUuY29tPoiTBBMWCgA7FiEE
@@ -210,7 +211,7 @@ FxWKwBZlJmIu0Nq+boJqgnwdY00FAmmgdQUCGwMFCwkIBwICIgIGFQoJCAsCBBYC
 AwECHgcCF4AACgkQboJqgnwdY00PygD+OyssgX52vWyzUQmZUXOKrGW8RT0OXfQB
 LR+IPE/XK6cA/j6YvUkcTSPKKxlR8cf8PQKdl8Y/k9BqLZmX8rsNI7cG
 =ivG3
------END PGP PUBLIC KEY BLOCK-----"#;
+-----END PGP PUBLIC KEY BLOCK-----";
 
     #[test]
     fn test_parse_gpg_key_valid_ed25519() {

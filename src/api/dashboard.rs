@@ -56,9 +56,11 @@ pub struct AuditLogParams {
 
 #[derive(Debug, Serialize, TS)]
 #[ts(export)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct OnboardingStatus {
     pub has_projects: bool,
     pub has_provider_key: bool,
+    pub has_cli_credentials: bool,
     pub needs_onboarding: bool,
 }
 
@@ -208,12 +210,21 @@ async fn onboarding_status(
     .await
     .unwrap_or(Some(0));
 
+    let cli_creds_count: Option<i64> =
+        sqlx::query_scalar("SELECT COUNT(*) FROM cli_credentials WHERE user_id = $1")
+            .bind(auth.user_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(Some(0));
+
+    let has_cli_credentials = cli_creds_count.unwrap_or(0) > 0;
     let has_projects = project_count.unwrap_or(0) > 0;
-    let has_provider_key = key_count.unwrap_or(0) > 0;
+    let has_provider_key = key_count.unwrap_or(0) > 0 || has_cli_credentials;
 
     Ok(Json(OnboardingStatus {
         has_projects,
         has_provider_key,
+        has_cli_credentials,
         needs_onboarding: !has_projects,
     }))
 }

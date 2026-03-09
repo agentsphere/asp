@@ -609,7 +609,7 @@ async fn deactivated_user_session_token_returns_401(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
-    let (_user_id, user_token) =
+    let (user_id, user_token) =
         helpers::create_user(&app, &admin_token, "deact-sess", "deactsess@test.com").await;
 
     // Verify session works
@@ -618,7 +618,7 @@ async fn deactivated_user_session_token_returns_401(pool: PgPool) {
 
     // Deactivate the user
     let (status, _) =
-        helpers::delete_json(&app, &admin_token, &format!("/api/users/{_user_id}")).await;
+        helpers::delete_json(&app, &admin_token, &format!("/api/users/{user_id}")).await;
     assert_eq!(status, StatusCode::OK);
 
     // Session token for deactivated user should now return 401
@@ -665,7 +665,7 @@ async fn deactivated_user_session_cookie_returns_401(pool: PgPool) {
 // Non-human user: session auth blocked
 // ---------------------------------------------------------------------------
 
-/// A service_account with a valid session should be blocked by can_login() check.
+/// A `service_account` with a valid session should be blocked by `can_login()` check.
 #[sqlx::test(migrations = "./migrations")]
 async fn service_account_bearer_session_blocked(pool: PgPool) {
     let (state, _admin_token) = helpers::test_state(pool.clone()).await;
@@ -705,7 +705,7 @@ async fn service_account_bearer_session_blocked(pool: PgPool) {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-/// A service_account with a session cookie should also be blocked.
+/// A `service_account` with a session cookie should also be blocked.
 #[sqlx::test(migrations = "./migrations")]
 async fn service_account_cookie_session_blocked(pool: PgPool) {
     let (state, _admin_token) = helpers::test_state(pool.clone()).await;
@@ -747,8 +747,8 @@ async fn service_account_cookie_session_blocked(pool: PgPool) {
 // API token: service account CAN use API tokens (no can_login check)
 // ---------------------------------------------------------------------------
 
-/// A service_account with a valid API token should authenticate successfully.
-/// The middleware only checks can_login() for session auth, not for API tokens.
+/// A `service_account` with a valid API token should authenticate successfully.
+/// The middleware only checks `can_login()` for session auth, not for API tokens.
 #[sqlx::test(migrations = "./migrations")]
 async fn service_account_api_token_succeeds(pool: PgPool) {
     let (state, _admin_token) = helpers::test_state(pool.clone()).await;
@@ -795,7 +795,7 @@ async fn service_account_api_token_succeeds(pool: PgPool) {
 // ---------------------------------------------------------------------------
 
 /// A session token used as Bearer header (not cookie) should also work.
-/// The middleware tries api_tokens first, then falls back to auth_sessions.
+/// The middleware tries `api_tokens` first, then falls back to `auth_sessions`.
 #[sqlx::test(migrations = "./migrations")]
 async fn session_token_as_bearer_fallback(pool: PgPool) {
     let (state, _admin_token) = helpers::test_state(pool.clone()).await;
@@ -821,7 +821,7 @@ async fn session_token_as_bearer_fallback(pool: PgPool) {
 // API token: last_used_at gets updated
 // ---------------------------------------------------------------------------
 
-/// Using an API token should update its last_used_at.
+/// Using an API token should update its `last_used_at`.
 #[sqlx::test(migrations = "./migrations")]
 async fn api_token_updates_last_used_at(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -884,7 +884,7 @@ async fn api_token_updates_last_used_at(pool: PgPool) {
 // API token scopes are preserved in AuthUser
 // ---------------------------------------------------------------------------
 
-/// Scoped API token should have token_scopes set.
+/// Scoped API token should have `token_scopes` set.
 /// We verify indirectly by creating a scoped token and attempting an action.
 #[sqlx::test(migrations = "./migrations")]
 async fn scoped_api_token_authenticates(pool: PgPool) {

@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(json["fields"][1], "email invalid");
     }
 
-    /// Minimal implementation of sqlx::DatabaseError for testing From<sqlx::Error>.
+    /// Minimal implementation of `sqlx::DatabaseError` for testing From<sqlx::Error>.
     #[derive(Debug)]
     struct TestDbError {
         code: Option<String>,

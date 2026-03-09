@@ -20,9 +20,9 @@ async fn create_app_session(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let (_user_id, token) = create_user(&app, &admin_token, "dev1", "dev1@test.com").await;
-    assign_role(&app, &admin_token, _user_id, "developer", None, &pool).await;
-    set_user_api_key(&pool, _user_id).await;
+    let (user_id, token) = create_user(&app, &admin_token, "dev1", "dev1@test.com").await;
+    assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
+    set_user_api_key(&pool, user_id).await;
 
     let (status, body) = post_json(
         &app,
@@ -138,8 +138,8 @@ async fn update_session_non_owner_forbidden(pool: PgPool) {
     let (user_id, token) = create_user(&app, &admin_token, "dev4", "dev4@test.com").await;
     assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
     set_user_api_key(&pool, user_id).await;
-    let (_other_id, other_token) = create_user(&app, &admin_token, "dev5", "dev5@test.com").await;
-    assign_role(&app, &admin_token, _other_id, "developer", None, &pool).await;
+    let (other_id, other_token) = create_user(&app, &admin_token, "dev5", "dev5@test.com").await;
+    assign_role(&app, &admin_token, other_id, "developer", None, &pool).await;
 
     // dev4 creates session
     let (status, session_body) = post_json(
@@ -235,7 +235,7 @@ async fn create_app_without_api_key_fails(pool: PgPool) {
     );
 }
 
-/// After create-app, session uses cli_subprocess execution mode with no pod.
+/// After create-app, session uses `cli_subprocess` execution mode with no pod.
 #[sqlx::test(migrations = "./migrations")]
 async fn create_app_session_is_cli_subprocess(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;

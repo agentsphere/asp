@@ -100,7 +100,7 @@ async fn list_audit_log(pool: PgPool) {
 // Onboarding status
 // ---------------------------------------------------------------------------
 
-/// Fresh user with no projects or provider keys → needs_onboarding = true.
+/// Fresh user with no projects or provider keys → `needs_onboarding` = true.
 #[sqlx::test(migrations = "./migrations")]
 async fn onboarding_status_fresh_user(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -116,7 +116,7 @@ async fn onboarding_status_fresh_user(pool: PgPool) {
     assert_eq!(body["needs_onboarding"], true);
 }
 
-/// User with a project → has_projects = true.
+/// User with a project → `has_projects` = true.
 #[sqlx::test(migrations = "./migrations")]
 async fn onboarding_status_with_project(pool: PgPool) {
     let (state, admin_token) = test_state(pool).await;
@@ -131,7 +131,7 @@ async fn onboarding_status_with_project(pool: PgPool) {
     assert_eq!(body["has_projects"], true);
 }
 
-/// User with API key but no projects → needs_onboarding = true (new behavior).
+/// User with API key but no projects → `needs_onboarding` = true (new behavior).
 #[sqlx::test(migrations = "./migrations")]
 async fn onboarding_status_with_key_but_no_projects(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -150,7 +150,7 @@ async fn onboarding_status_with_key_but_no_projects(pool: PgPool) {
     assert_eq!(body["needs_onboarding"], true);
 }
 
-/// User with API key AND a project → needs_onboarding = false.
+/// User with API key AND a project → `needs_onboarding` = false.
 #[sqlx::test(migrations = "./migrations")]
 async fn onboarding_status_with_key_and_project(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;

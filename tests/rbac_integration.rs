@@ -469,3 +469,143 @@ async fn list_permissions_and_roles(pool: PgPool) {
     assert!(role_names.contains(&"developer"));
     assert!(role_names.contains(&"viewer"));
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn self_delegation_rejected(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    // Get admin user ID
+    let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
+    let admin_id = me["id"].as_str().unwrap();
+
+    // Attempt to delegate to self — should be rejected
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/admin/delegations",
+        serde_json::json!({
+            "delegate_id": admin_id,
+            "permission": "project:read",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn delegation_audit_logged(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+
+    let (user_id, _) =
+        helpers::create_user(&app, &admin_token, "auditdel", "auditdel@test.com").await;
+
+    // Create delegation
+    let (status, deleg_body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/admin/delegations",
+        serde_json::json!({
+            "delegate_id": user_id,
+            "permission": "project:read",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Verify audit log for create
+    let create_audit: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE action = 'delegation.create'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(create_audit.0 >= 1, "delegation.create audit entry missing");
+
+    // Revoke delegation
+    let deleg_id = deleg_body["id"].as_str().unwrap();
+    let (status, _) = helpers::delete_json(
+        &app,
+        &admin_token,
+        &format!("/api/admin/delegations/{deleg_id}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Verify audit log for revoke
+    let revoke_audit: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE action = 'delegation.revoke'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(revoke_audit.0 >= 1, "delegation.revoke audit entry missing");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn scoped_token_enforces_permission_boundary(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+
+    // Create a project
+    let project_id = helpers::create_project(&app, &admin_token, "scope-test", "private").await;
+
+    // Create user with developer role (has project:read + project:write)
+    let (user_id, user_token) =
+        helpers::create_user(&app, &admin_token, "scopeuser", "scope@test.com").await;
+    helpers::assign_role(
+        &app,
+        &admin_token,
+        user_id,
+        "developer",
+        Some(project_id),
+        &pool,
+    )
+    .await;
+
+    // User can create issues with full session token
+    let (status, _) = helpers::post_json(
+        &app,
+        &user_token,
+        &format!("/api/projects/{project_id}/issues"),
+        serde_json::json!({
+            "title": "session issue",
+            "body": "created with session"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Create a scoped token with only project:read (must include project_id
+    // so validate_token_scopes checks project-level permissions)
+    let (status, token_body) = helpers::post_json(
+        &app,
+        &user_token,
+        "/api/tokens",
+        serde_json::json!({
+            "name": "read-only-token",
+            "scopes": ["project:read"],
+            "project_id": project_id,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let scoped_token = token_body["token"].as_str().unwrap();
+
+    // Scoped token can read the project
+    let (status, _) =
+        helpers::get_json(&app, scoped_token, &format!("/api/projects/{project_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Scoped token CANNOT create issues (requires project:write, not in scope)
+    let (status, _) = helpers::post_json(
+        &app,
+        scoped_token,
+        &format!("/api/projects/{project_id}/issues"),
+        serde_json::json!({
+            "title": "scoped issue",
+            "body": "should fail"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}

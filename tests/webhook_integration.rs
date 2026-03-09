@@ -1,8 +1,12 @@
 mod helpers;
 
+use std::time::Duration;
+
 use axum::http::StatusCode;
 use sqlx::PgPool;
 use uuid::Uuid;
+use wiremock::matchers;
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ---------------------------------------------------------------------------
 // E7: Webhook Integration Tests (22 tests)
@@ -832,4 +836,268 @@ async fn update_webhook_ssrf_url_rejected(pool: PgPool) {
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ---------------------------------------------------------------------------
+// Webhook dispatch integration tests (moved from e2e_webhook.rs)
+//
+// These test single-endpoint webhook dispatch behavior using wiremock.
+// Webhooks are inserted directly into the DB to bypass SSRF validation
+// (wiremock binds to 127.0.0.1).
+// ---------------------------------------------------------------------------
+
+/// Creating an issue fires the webhook.
+#[sqlx::test(migrations = "./migrations")]
+async fn webhook_fires_on_issue_create(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state.clone());
+
+    let mock_server = MockServer::start().await;
+
+    Mock::given(matchers::method("POST"))
+        .and(matchers::path("/webhook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-issue-fire", "private").await;
+
+    insert_webhook(
+        &state.pool,
+        project_id,
+        &format!("{}/webhook", mock_server.uri()),
+        &["issue"],
+    )
+    .await;
+
+    let (issue_status, issue_body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/issues"),
+        serde_json::json!({
+            "title": "Test issue for webhook",
+        }),
+    )
+    .await;
+    assert_eq!(
+        issue_status,
+        StatusCode::CREATED,
+        "issue create failed: {issue_body}"
+    );
+
+    // Wait for async webhook delivery
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    mock_server.verify().await;
+}
+
+/// Webhook with secret sends HMAC-SHA256 signature header.
+#[sqlx::test(migrations = "./migrations")]
+async fn webhook_hmac_signature(pool: PgPool) {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state.clone());
+
+    let mock_server = MockServer::start().await;
+
+    Mock::given(matchers::method("POST"))
+        .and(matchers::header_exists("X-Platform-Signature"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-hmac", "private").await;
+
+    // Insert webhook with secret directly in DB
+    let wh_url = format!("{}/webhook", mock_server.uri());
+    let wh_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO webhooks (id, project_id, url, events, secret, active) VALUES ($1,$2,$3,$4,$5,true)",
+    )
+    .bind(wh_id)
+    .bind(project_id)
+    .bind(&wh_url)
+    .bind(&["issue"] as &[&str])
+    .bind(Some("test-secret-key"))
+    .execute(&state.pool)
+    .await
+    .expect("insert webhook with secret");
+
+    helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/issues"),
+        serde_json::json!({ "title": "HMAC test issue" }),
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    mock_server.verify().await;
+
+    let requests = mock_server.received_requests().await.unwrap();
+    assert!(
+        !requests.is_empty(),
+        "should have received at least one request"
+    );
+    let req = &requests[0];
+
+    let signature = req
+        .headers
+        .get("X-Platform-Signature")
+        .expect("should have X-Platform-Signature header")
+        .to_str()
+        .unwrap();
+    assert!(
+        signature.starts_with("sha256="),
+        "signature should start with sha256=, got: {signature}"
+    );
+
+    // Verify the HMAC by computing it ourselves
+    let mut mac = Hmac::<Sha256>::new_from_slice(b"test-secret-key").expect("HMAC key");
+    mac.update(&req.body);
+    let expected = hex::encode(mac.finalize().into_bytes());
+    assert_eq!(
+        signature,
+        format!("sha256={expected}"),
+        "HMAC signature should match"
+    );
+}
+
+/// Webhook without secret does not send signature header.
+#[sqlx::test(migrations = "./migrations")]
+async fn webhook_no_signature_without_secret(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state.clone());
+
+    let mock_server = MockServer::start().await;
+
+    Mock::given(matchers::method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-nosig", "private").await;
+
+    insert_webhook(
+        &state.pool,
+        project_id,
+        &format!("{}/webhook", mock_server.uri()),
+        &["issue"],
+    )
+    .await;
+
+    helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/issues"),
+        serde_json::json!({ "title": "No-sig test" }),
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    mock_server.verify().await;
+
+    let requests = mock_server.received_requests().await.unwrap();
+    assert!(!requests.is_empty(), "should receive the webhook");
+    let req = &requests[0];
+    assert!(
+        req.headers.get("X-Platform-Signature").is_none(),
+        "should NOT have X-Platform-Signature header when no secret"
+    );
+}
+
+/// Slow webhook target times out without blocking the platform.
+#[sqlx::test(migrations = "./migrations")]
+async fn webhook_timeout_doesnt_block(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state.clone());
+
+    let mock_server = MockServer::start().await;
+
+    // Server takes 15s to respond (longer than the 10s webhook timeout)
+    Mock::given(matchers::method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(15)))
+        .mount(&mock_server)
+        .await;
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-timeout", "private").await;
+
+    insert_webhook(
+        &state.pool,
+        project_id,
+        &format!("{}/webhook", mock_server.uri()),
+        &["issue"],
+    )
+    .await;
+
+    let start = std::time::Instant::now();
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/issues"),
+        serde_json::json!({ "title": "Timeout test" }),
+    )
+    .await;
+    let elapsed = start.elapsed();
+    assert_eq!(status, StatusCode::CREATED);
+
+    // The issue creation should return quickly (webhook is async)
+    assert!(
+        elapsed.as_secs() < 5,
+        "issue creation should not block on slow webhook, took {elapsed:?}"
+    );
+}
+
+/// Webhook concurrency limit — excess deliveries are dropped.
+#[sqlx::test(migrations = "./migrations")]
+async fn webhook_concurrent_limit(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state.clone());
+
+    let mock_server = MockServer::start().await;
+
+    // Slow server to keep connections open (simulating concurrency pressure)
+    Mock::given(matchers::method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(3)))
+        .mount(&mock_server)
+        .await;
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-concurrent", "private").await;
+
+    insert_webhook(
+        &state.pool,
+        project_id,
+        &format!("{}/webhook", mock_server.uri()),
+        &["issue"],
+    )
+    .await;
+
+    // Create many issues rapidly to overwhelm the semaphore
+    for i in 0..60 {
+        let _ = helpers::post_json(
+            &app,
+            &admin_token,
+            &format!("/api/projects/{project_id}/issues"),
+            serde_json::json!({ "title": format!("Concurrent issue {i}") }),
+        )
+        .await;
+    }
+
+    // Wait for deliveries to complete
+    tokio::time::sleep(Duration::from_secs(8)).await;
+
+    let requests = mock_server.received_requests().await.unwrap();
+    let received = requests.len();
+
+    // We should receive at most 50 (semaphore limit)
+    assert!(
+        received <= 50,
+        "should receive at most 50 concurrent webhooks, got {received}"
+    );
+    // We should receive at least some (not all dropped)
+    assert!(received > 0, "should receive at least some webhooks, got 0");
 }

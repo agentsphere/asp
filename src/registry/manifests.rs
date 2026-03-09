@@ -3,11 +3,11 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use uuid::Uuid;
 
-use super::auth::RegistryUser;
+use super::auth::{OptionalRegistryUser, RegistryUser};
 use super::digest::{Digest, sha256_digest};
 use super::error::RegistryError;
 use super::types::OciManifest;
-use super::{RepoAccess, resolve_repo_with_access};
+use super::{RepoAccess, resolve_repo_with_access, resolve_repo_with_optional_access};
 use crate::store::AppState;
 
 // ---------------------------------------------------------------------------
@@ -16,13 +16,13 @@ use crate::store::AppState;
 
 pub async fn head_manifest(
     State(state): State<AppState>,
-    user: RegistryUser,
+    OptionalRegistryUser(user): OptionalRegistryUser,
     Path((name, reference)): Path<(String, String)>,
 ) -> Result<Response, RegistryError> {
     let RepoAccess {
         repository_id,
         project_id: _,
-    } = resolve_repo_with_access(&state, &user, &name, false).await?;
+    } = resolve_repo_with_optional_access(&state, user.as_ref(), &name, false).await?;
 
     let manifest = resolve_manifest(&state.pool, repository_id, &reference).await?;
 
@@ -43,13 +43,13 @@ pub async fn head_manifest(
 
 pub async fn get_manifest(
     State(state): State<AppState>,
-    user: RegistryUser,
+    OptionalRegistryUser(user): OptionalRegistryUser,
     Path((name, reference)): Path<(String, String)>,
 ) -> Result<Response, RegistryError> {
     let RepoAccess {
         repository_id,
         project_id: _,
-    } = resolve_repo_with_access(&state, &user, &name, false).await?;
+    } = resolve_repo_with_optional_access(&state, user.as_ref(), &name, false).await?;
 
     let manifest = resolve_manifest(&state.pool, repository_id, &reference).await?;
 

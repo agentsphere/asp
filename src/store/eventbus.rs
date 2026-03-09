@@ -686,6 +686,7 @@ async fn spawn_ops_agent(
         None,
         None,
         crate::agent::AgentRoleName::Ops,
+        None, // Alert-triggered sessions have no parent
     )
     .await
     {
@@ -978,24 +979,24 @@ mod tests {
         match (event, parsed) {
             (
                 PlatformEvent::AlertFired {
-                    rule_id: a_rid,
-                    project_id: a_pid,
+                    rule_id: a_rule,
+                    project_id: a_proj,
                     severity: a_sev,
                     value: a_val,
                     message: a_msg,
                     alert_name: a_name,
                 },
                 PlatformEvent::AlertFired {
-                    rule_id: b_rid,
-                    project_id: b_pid,
+                    rule_id: b_rule,
+                    project_id: b_proj,
                     severity: b_sev,
                     value: b_val,
                     message: b_msg,
                     alert_name: b_name,
                 },
             ) => {
-                assert_eq!(a_rid, b_rid);
-                assert_eq!(a_pid, b_pid);
+                assert_eq!(a_rule, b_rule);
+                assert_eq!(a_proj, b_proj);
                 assert_eq!(a_sev, b_sev);
                 assert_eq!(a_val, b_val);
                 assert_eq!(a_msg, b_msg);

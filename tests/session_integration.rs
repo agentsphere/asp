@@ -1,6 +1,5 @@
 //! Integration tests for agent session CRUD — list, get, stop, spawn, children.
-//! NOTE: create_session requires K8s and is tested in E2E. Here we test the
-//! read/write paths by inserting session data directly.
+//! Includes a pod-creation smoke test that verifies the real K8s API path.
 
 mod helpers;
 
@@ -1052,6 +1051,74 @@ async fn list_children_nonexistent_parent_returns_empty(pool: PgPool) {
 }
 
 // ---------------------------------------------------------------------------
+// Spawn lineage and user preservation
+// ---------------------------------------------------------------------------
+
+/// Parent-child chain: human → parent → child tracks lineage (`parent_session_id`, `spawn_depth`).
+#[sqlx::test(migrations = "./migrations")]
+async fn spawn_chain_tracks_lineage(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let (user_id, token) =
+        helpers::create_user(&app, &admin_token, "dev-lineage", "lineage@test.com").await;
+    helpers::assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
+    let project_id = create_project(&app, &token, "chain-test", "private").await;
+
+    // Parent at depth 0
+    let parent_id = insert_session(&pool, project_id, user_id, "test prompt", "running").await;
+
+    // Spawn child (depth 1)
+    let (status, child_body) = helpers::post_json(
+        &app,
+        &token,
+        &format!("/api/projects/{project_id}/sessions/{parent_id}/spawn"),
+        serde_json::json!({ "prompt": "First child" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let child_id = Uuid::parse_str(child_body["id"].as_str().unwrap()).unwrap();
+
+    // Verify child in DB has correct parent and depth
+    let row: (Option<Uuid>, i32) =
+        sqlx::query_as("SELECT parent_session_id, spawn_depth FROM agent_sessions WHERE id = $1")
+            .bind(child_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    assert_eq!(row.0, Some(parent_id));
+    assert_eq!(row.1, 1);
+}
+
+/// Spawn preserves parent's `user_id` (original human).
+#[sqlx::test(migrations = "./migrations")]
+async fn spawn_preserves_original_user(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let (user_id, token) =
+        helpers::create_user(&app, &admin_token, "dev-preserve", "preserve@test.com").await;
+    helpers::assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
+    let project_id = create_project(&app, &token, "user-test", "private").await;
+
+    let parent_id = insert_session(&pool, project_id, user_id, "test prompt", "running").await;
+
+    let (status, child_body) = helpers::post_json(
+        &app,
+        &token,
+        &format!("/api/projects/{project_id}/sessions/{parent_id}/spawn"),
+        serde_json::json!({ "prompt": "Child task" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Child should have the same user_id as parent (original human)
+    let child_user_id = child_body["user_id"].as_str().unwrap();
+    assert_eq!(child_user_id, user_id.to_string());
+}
+
+// ---------------------------------------------------------------------------
 // Validate provider config edge cases
 // ---------------------------------------------------------------------------
 
@@ -1116,4 +1183,94 @@ async fn create_session_browser_test_role_ok(pool: PgPool) {
     // This either succeeds (CREATED) or fails with 500 at K8s pod creation —
     // but NOT 400, because the config validation passes.
     assert_ne!(status, StatusCode::BAD_REQUEST);
+}
+
+// ---------------------------------------------------------------------------
+// Pod-creation smoke test (real K8s API)
+// ---------------------------------------------------------------------------
+
+/// Verify that `create_session` actually spawns a K8s pod.
+///
+/// Sets up a project with a bare git repo (required by `create_session`),
+/// then calls the session creation API and asserts a pod was created.
+#[sqlx::test(migrations = "./migrations")]
+async fn create_session_spawns_k8s_pod(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state.clone());
+
+    let project_id = create_project(&app, &admin_token, "pod-smoke", "private").await;
+
+    // create_session requires the project to have a repo_path
+    let bare_dir = tempfile::tempdir().unwrap();
+    let bare_path = bare_dir.path().join("repo.git");
+    std::process::Command::new("git")
+        .args(["init", "--bare", bare_path.to_str().unwrap()])
+        .output()
+        .expect("git init --bare");
+    sqlx::query("UPDATE projects SET repo_path = $1 WHERE id = $2")
+        .bind(bare_path.to_str().unwrap())
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Ensure the project namespace exists so pod creation doesn't fail on 404
+    let ns_slug: String = sqlx::query_scalar("SELECT namespace_slug FROM projects WHERE id = $1")
+        .bind(project_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let namespace = state.config.project_namespace(&ns_slug, "dev");
+    let ns_api: kube::Api<k8s_openapi::api::core::v1::Namespace> =
+        kube::Api::all(state.kube.clone());
+    let ns_obj = serde_json::from_value(serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": { "name": namespace }
+    }))
+    .unwrap();
+    let _ = ns_api
+        .create(&kube::api::PostParams::default(), &ns_obj)
+        .await; // ignore AlreadyExists
+
+    // Call create_session directly to get the real error (API returns opaque 500)
+    let (_, me) = helpers::get_json(&app, &admin_token, "/api/auth/me").await;
+    let admin_id = Uuid::parse_str(me["id"].as_str().unwrap()).unwrap();
+
+    let result = platform::agent::service::create_session(
+        &state,
+        admin_id,
+        project_id,
+        "smoke test: verify pod creation",
+        "claude-code",
+        None,
+        None,
+        platform::agent::AgentRoleName::Dev,
+        None,
+    )
+    .await;
+
+    let session = result.expect("create_session should succeed");
+    assert_eq!(session.status, "running");
+    let pod_name = session
+        .pod_name
+        .as_deref()
+        .expect("pod_name should be set after successful creation");
+    assert!(!pod_name.is_empty());
+
+    // Verify the pod actually exists in K8s
+    let pods: kube::Api<k8s_openapi::api::core::v1::Pod> =
+        kube::Api::namespaced(state.kube.clone(), &namespace);
+    let pod = pods.get(pod_name).await;
+    assert!(pod.is_ok(), "pod {pod_name} should exist in K8s");
+
+    // Cleanup: delete the pod
+    let _ = pods
+        .delete(pod_name, &kube::api::DeleteParams::default())
+        .await;
+
+    // Cleanup: delete the namespace
+    let _ = ns_api
+        .delete(&namespace, &kube::api::DeleteParams::default())
+        .await;
 }

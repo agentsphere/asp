@@ -12,7 +12,7 @@ const TEST_ED25519_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKjB6KC6pSWW
 // check_access_for_user tests
 // ---------------------------------------------------------------------------
 
-/// Helper to create a project for access tests, returning (project_id, owner_id).
+/// Helper to create a project for access tests, returning (`project_id`, `owner_id`).
 async fn setup_project(
     state: &platform::store::AppState,
     admin_token: &str,
@@ -48,8 +48,8 @@ fn make_git_user(user_id: Uuid) -> GitUser {
         user_id,
         user_name: "test-user".into(),
         ip_addr: None,
-        scope_project_id: None,
-        scope_workspace_id: None,
+        boundary_project_id: None,
+        boundary_workspace_id: None,
     }
 }
 
@@ -173,8 +173,8 @@ async fn test_check_access_for_user_scope_project_mismatch(pool: PgPool) {
         user_id: admin_id,
         user_name: "admin".into(),
         ip_addr: None,
-        scope_project_id: Some(other_project_id),
-        scope_workspace_id: None,
+        boundary_project_id: Some(other_project_id),
+        boundary_workspace_id: None,
     };
     let project = make_resolved_project(project_id, "public");
 
@@ -194,8 +194,8 @@ async fn test_check_access_for_user_scope_workspace_mismatch(pool: PgPool) {
         user_id: admin_id,
         user_name: "admin".into(),
         ip_addr: None,
-        scope_project_id: None,
-        scope_workspace_id: Some(other_workspace_id),
+        boundary_project_id: None,
+        boundary_workspace_id: Some(other_workspace_id),
     };
     let project = make_resolved_project(project_id, "public");
 

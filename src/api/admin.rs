@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use ts_rs::TS;
 
-use crate::api::helpers::ListResponse;
+use crate::api::helpers::{ListResponse, require_admin};
 use crate::api::users::{CreateTokenResponse, ListParams, TokenResponse, UserResponse};
 use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
@@ -130,25 +130,6 @@ pub fn router() -> Router<AppState> {
             "/api/admin/service-accounts/{id}",
             delete(deactivate_service_account),
         )
-}
-
-/// Check the caller has admin:users permission (scope-aware), return Forbidden otherwise.
-async fn require_admin(state: &AppState, auth: &AuthUser) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission_scoped(
-        &state.pool,
-        &state.valkey,
-        auth.user_id,
-        None,
-        Permission::AdminUsers,
-        auth.token_scopes.as_deref(),
-    )
-    .await
-    .map_err(ApiError::Internal)?;
-
-    if !allowed {
-        return Err(ApiError::Forbidden);
-    }
-    Ok(())
 }
 
 /// Check admin:delegate permission (scope-aware).

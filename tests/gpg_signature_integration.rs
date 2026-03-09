@@ -237,6 +237,8 @@ async fn test_commit_detail_invalid_sha_returns_400(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn test_signature_cache_hit(pool: PgPool) {
+    use fred::interfaces::KeysInterface;
+
     let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state.clone());
 
@@ -253,7 +255,6 @@ async fn test_signature_cache_hit(pool: PgPool) {
     assert_eq!(body1["signature"]["status"], "no_signature");
 
     // Verify cache key exists in Valkey
-    use fred::interfaces::KeysInterface;
     let cache_key = format!("gpg:sig:{project_id}:{sha}");
     let exists: bool = state.valkey.exists(&cache_key).await.unwrap();
     assert!(exists, "cache key should exist after first verification");
@@ -308,7 +309,7 @@ fn run_cmd_env(program: &str, args: &[&str], env: &[(&str, &str)]) -> String {
 }
 
 /// Generate a GPG key pair in a temp GNUPGHOME.
-/// Returns (gnupghome, armor_pub_key, fingerprint).
+/// Returns (gnupghome, `armor_pub_key`, fingerprint).
 fn generate_gpg_key(email: &str, name: &str) -> (tempfile::TempDir, String, String) {
     let gnupghome = tempfile::tempdir().unwrap();
     let home = gnupghome.path().to_str().unwrap();
@@ -366,7 +367,7 @@ fn generate_gpg_key(email: &str, name: &str) -> (tempfile::TempDir, String, Stri
 
 /// Create a project with a bare repo and a GPG-signed commit.
 /// `signing_fingerprint` tells git which key to sign with (avoids GPG email mismatch).
-/// Returns (project_id, commit_sha).
+/// Returns (`project_id`, `commit_sha`).
 async fn setup_project_with_signed_commit(
     app: &axum::Router,
     admin_token: &str,
@@ -485,7 +486,7 @@ async fn test_gpg_signed_commit_verified(pool: PgPool) {
     assert!(body["signature"]["signer_fingerprint"].is_string());
 }
 
-/// UnverifiedSigner: register GPG key, but commit author email differs → unverified_signer
+/// `UnverifiedSigner`: register GPG key, but commit author email differs → `unverified_signer`
 #[sqlx::test(migrations = "./migrations")]
 async fn test_gpg_signed_commit_unverified_signer(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool).await;
@@ -534,7 +535,7 @@ async fn test_gpg_signed_commit_unverified_signer(pool: PgPool) {
     assert!(body["signature"]["signer_fingerprint"].is_string());
 }
 
-/// BadSignature: sign commit with unregistered GPG key → bad_signature
+/// `BadSignature`: sign commit with unregistered GPG key → `bad_signature`
 #[sqlx::test(migrations = "./migrations")]
 async fn test_gpg_signed_commit_bad_signature(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool).await;

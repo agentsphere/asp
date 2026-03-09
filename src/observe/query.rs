@@ -247,8 +247,8 @@ async fn require_project_read(
     let visibility: String = project.get("visibility");
     let owner_id: Uuid = project.get("owner_id");
 
-    // Enforce hard workspace scope from API token
-    if let Some(scope_wid) = auth.scope_workspace_id {
+    // Enforce hard workspace boundary from API token
+    if let Some(scope_wid) = auth.boundary_workspace_id {
         let ws_id: Uuid = project.get("workspace_id");
         if ws_id != scope_wid {
             return Err(ApiError::NotFound("project".into()));

@@ -154,6 +154,11 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Seed registry images from OCI layout tarballs (idempotent)
+    if let Err(e) = registry::seed::seed_all(&pool, &state.minio, &cfg.seed_images_path).await {
+        tracing::warn!(error = %e, "registry image seeding failed");
+    }
+
     let (shutdown_tx, observe_channels) = spawn_background_tasks(&state, &pool);
 
     // Build router

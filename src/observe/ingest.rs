@@ -628,7 +628,6 @@ mod tests {
             value: Some(proto::number_data_point::Value::AsDouble(42.5)),
             time_unix_nano: 1_700_000_000_000_000_000,
             attributes: vec![],
-            ..Default::default()
         };
         let env = empty_envelope();
         let rec = number_point_to_record(&dp, "cpu", "gauge", Some("percent"), &env).unwrap();
@@ -644,7 +643,6 @@ mod tests {
             value: Some(proto::number_data_point::Value::AsInt(100)),
             time_unix_nano: 1_700_000_000_000_000_000,
             attributes: vec![],
-            ..Default::default()
         };
         let env = empty_envelope();
         let rec = number_point_to_record(&dp, "requests", "counter", None, &env).unwrap();
@@ -658,7 +656,6 @@ mod tests {
             value: None,
             time_unix_nano: 1_700_000_000_000_000_000,
             attributes: vec![],
-            ..Default::default()
         };
         let env = empty_envelope();
         assert!(number_point_to_record(&dp, "x", "gauge", None, &env).is_none());
@@ -697,7 +694,6 @@ mod tests {
             time_unix_nano: 1_700_000_000_000_000_000,
             name: "exception".into(),
             attributes: vec![],
-            ..Default::default()
         }];
         let json = events_to_json(&events).unwrap();
         let arr = json.as_array().unwrap();
@@ -712,13 +708,11 @@ mod tests {
                 time_unix_nano: 1_700_000_000_000_000_000,
                 name: "e1".into(),
                 attributes: vec![],
-                ..Default::default()
             },
             proto::SpanEvent {
                 time_unix_nano: 1_700_000_001_000_000_000,
                 name: "e2".into(),
                 attributes: vec![],
-                ..Default::default()
             },
         ];
         let json = events_to_json(&events).unwrap();
@@ -736,7 +730,6 @@ mod tests {
             value: Some(proto::number_data_point::Value::AsDouble(1.0)),
             time_unix_nano: 1_700_000_000_000_000_000,
             attributes: vec![],
-            ..Default::default()
         };
         let env = empty_envelope();
         let rec = number_point_to_record(&dp, "temp", "gauge", None, &env).unwrap();
@@ -751,7 +744,6 @@ mod tests {
             value: Some(proto::number_data_point::Value::AsInt(42)),
             time_unix_nano: 1_700_000_000_000_000_000,
             attributes: vec![],
-            ..Default::default()
         };
         let env = empty_envelope();
         let rec = number_point_to_record(&dp, "requests_total", "counter", None, &env).unwrap();
@@ -765,7 +757,6 @@ mod tests {
             value: Some(proto::number_data_point::Value::AsDouble(99.5)),
             time_unix_nano: 1_700_000_000_000_000_000,
             attributes: vec![],
-            ..Default::default()
         };
         let env = empty_envelope();
         let rec = number_point_to_record(&dp, "mem", "gauge", Some("bytes"), &env).unwrap();
@@ -783,7 +774,6 @@ mod tests {
                     value: Some(proto::any_value::Value::StringValue("GET".into())),
                 }),
             }],
-            ..Default::default()
         };
         let env = empty_envelope();
         let rec = number_point_to_record(&dp, "http_requests", "counter", None, &env).unwrap();
@@ -796,7 +786,6 @@ mod tests {
             value: Some(proto::number_data_point::Value::AsInt(i64::MAX)),
             time_unix_nano: 1_700_000_000_000_000_000,
             attributes: vec![],
-            ..Default::default()
         };
         let env = empty_envelope();
         let rec = number_point_to_record(&dp, "big", "gauge", None, &env).unwrap();
@@ -809,7 +798,6 @@ mod tests {
             value: Some(proto::number_data_point::Value::AsDouble(-42.5)),
             time_unix_nano: 1_700_000_000_000_000_000,
             attributes: vec![],
-            ..Default::default()
         };
         let env = empty_envelope();
         let rec = number_point_to_record(&dp, "temp", "gauge", None, &env).unwrap();
@@ -822,7 +810,6 @@ mod tests {
             value: Some(proto::number_data_point::Value::AsDouble(0.0)),
             time_unix_nano: 1_700_000_000_000_000_000,
             attributes: vec![],
-            ..Default::default()
         };
         let env = empty_envelope();
         let rec = number_point_to_record(&dp, "idle", "gauge", None, &env).unwrap();
@@ -835,7 +822,6 @@ mod tests {
             value: Some(proto::number_data_point::Value::AsDouble(1.0)),
             time_unix_nano: 1_700_000_000_000_000_000,
             attributes: vec![],
-            ..Default::default()
         };
         let env = correlation::CorrelationEnvelope {
             project_id: Some(Uuid::nil()),
@@ -885,7 +871,6 @@ mod tests {
                     value: Some(proto::any_value::Value::StringValue("RuntimeError".into())),
                 }),
             }],
-            ..Default::default()
         }];
         let json = events_to_json(&events).unwrap();
         let event = &json.as_array().unwrap()[0];

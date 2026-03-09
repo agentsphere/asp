@@ -23,7 +23,7 @@ async fn handle_event_unknown_type(pool: PgPool) {
     assert!(result.is_err());
 }
 
-/// ImageBuilt with no existing deployment → creates default deployment.
+/// `ImageBuilt` with no existing deployment → creates default deployment.
 #[sqlx::test(migrations = "./migrations")]
 async fn image_built_no_deployment_creates_default(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -56,7 +56,7 @@ async fn image_built_no_deployment_creates_default(pool: PgPool) {
     assert_eq!(status, "pending");
 }
 
-/// ImageBuilt with existing deployment but no ops repo → updates image_ref directly.
+/// `ImageBuilt` with existing deployment but no ops repo → updates `image_ref` directly.
 #[sqlx::test(migrations = "./migrations")]
 async fn image_built_deployment_no_ops_repo(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -97,7 +97,7 @@ async fn image_built_deployment_no_ops_repo(pool: PgPool) {
     assert_eq!(status, "pending");
 }
 
-/// OpsRepoUpdated → updates deployment row and marks pending.
+/// `OpsRepoUpdated` → updates deployment row and marks pending.
 #[sqlx::test(migrations = "./migrations")]
 async fn ops_repo_updated_marks_pending(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -139,7 +139,7 @@ async fn ops_repo_updated_marks_pending(pool: PgPool) {
     assert_eq!(sha.as_deref(), Some("abc123"));
 }
 
-/// DeployRequested delegates to ImageBuilt logic → creates deployment.
+/// `DeployRequested` delegates to `ImageBuilt` logic → creates deployment.
 #[sqlx::test(migrations = "./migrations")]
 async fn deploy_requested_creates_deployment(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -168,7 +168,7 @@ async fn deploy_requested_creates_deployment(pool: PgPool) {
     assert_eq!(row.unwrap().0, "deploy:v1");
 }
 
-/// RollbackRequested with no deployment → graceful skip (no error).
+/// `RollbackRequested` with no deployment → graceful skip (no error).
 #[sqlx::test(migrations = "./migrations")]
 async fn rollback_no_deployment_graceful(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool).await;
@@ -189,7 +189,7 @@ async fn rollback_no_deployment_graceful(pool: PgPool) {
     );
 }
 
-/// RollbackRequested with deployment but no ops repo → sets desired_status = 'rollback'.
+/// `RollbackRequested` with deployment but no ops repo → sets `desired_status` = 'rollback'.
 #[sqlx::test(migrations = "./migrations")]
 async fn rollback_no_ops_repo_legacy_path(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -228,7 +228,7 @@ async fn rollback_no_ops_repo_legacy_path(pool: PgPool) {
     assert_eq!(current, "pending");
 }
 
-/// ImageBuilt on conflict upserts existing deployment.
+/// `ImageBuilt` on conflict upserts existing deployment.
 #[sqlx::test(migrations = "./migrations")]
 async fn image_built_upserts_on_conflict(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -272,7 +272,7 @@ async fn image_built_upserts_on_conflict(pool: PgPool) {
     assert_eq!(image_ref, "app:v2");
 }
 
-/// ImageBuilt then OpsRepoUpdated sequence → both handlers execute in order.
+/// `ImageBuilt` then `OpsRepoUpdated` sequence → both handlers execute in order.
 #[sqlx::test(migrations = "./migrations")]
 async fn image_built_then_ops_repo_updated(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -398,7 +398,7 @@ async fn handle_event_wrong_type_value(pool: PgPool) {
 // AlertFired Integration Tests
 // ---------------------------------------------------------------------------
 
-/// AlertFired with no project_id → handler skips gracefully (no sessions created).
+/// `AlertFired` with no `project_id` → handler skips gracefully (no sessions created).
 #[sqlx::test(migrations = "./migrations")]
 async fn alert_fired_no_project_skips_spawn(pool: PgPool) {
     let (state, _admin_token) = helpers::test_state(pool.clone()).await;
@@ -428,7 +428,7 @@ async fn alert_fired_no_project_skips_spawn(pool: PgPool) {
     );
 }
 
-/// AlertFired with info severity → handler skips (only warning/critical spawn agents).
+/// `AlertFired` with info severity → handler skips (only warning/critical spawn agents).
 #[sqlx::test(migrations = "./migrations")]
 async fn alert_fired_info_severity_skips_spawn(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -457,7 +457,7 @@ async fn alert_fired_info_severity_skips_spawn(pool: PgPool) {
     assert_eq!(count, 0, "no session should be created for info severity");
 }
 
-/// AlertFired with active cooldown → handler skips duplicate spawn.
+/// `AlertFired` with active cooldown → handler skips duplicate spawn.
 #[sqlx::test(migrations = "./migrations")]
 async fn alert_fired_cooldown_prevents_spawn(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -506,7 +506,7 @@ async fn alert_fired_cooldown_prevents_spawn(pool: PgPool) {
     );
 }
 
-/// AlertFired with 3 active ops sessions → concurrent limit prevents spawn.
+/// `AlertFired` with 3 active ops sessions → concurrent limit prevents spawn.
 #[sqlx::test(migrations = "./migrations")]
 async fn alert_fired_concurrent_limit_skips_spawn(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -593,7 +593,7 @@ async fn alert_fired_concurrent_limit_skips_spawn(pool: PgPool) {
     );
 }
 
-/// AlertFired with valid critical alert → handler runs full path and sets cooldown.
+/// `AlertFired` with valid critical alert → handler runs full path and sets cooldown.
 #[sqlx::test(migrations = "./migrations")]
 async fn alert_fired_sets_cooldown_on_attempt(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -634,7 +634,7 @@ async fn alert_fired_sets_cooldown_on_attempt(pool: PgPool) {
     // Both outcomes are valid — we just verify the handler didn't error.
 }
 
-/// AlertFired with "warning" severity → handler proceeds past severity gate.
+/// `AlertFired` with "warning" severity → handler proceeds past severity gate.
 #[sqlx::test(migrations = "./migrations")]
 async fn alert_fired_warning_severity_proceeds(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -673,7 +673,7 @@ async fn alert_fired_warning_severity_proceeds(pool: PgPool) {
     );
 }
 
-/// AlertFired when admin user is deactivated → handler skips gracefully.
+/// `AlertFired` when admin user is deactivated → handler skips gracefully.
 #[sqlx::test(migrations = "./migrations")]
 async fn alert_fired_no_admin_user_skips_spawn(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -711,7 +711,7 @@ async fn alert_fired_no_admin_user_skips_spawn(pool: PgPool) {
     assert_eq!(count, 0, "no session when admin is deactivated");
 }
 
-/// Cooldown is per-rule: setting cooldown for rule_A does not block rule_B on same project.
+/// Cooldown is per-rule: setting cooldown for `rule_A` does not block `rule_B` on same project.
 #[sqlx::test(migrations = "./migrations")]
 async fn alert_fired_cooldown_is_per_rule(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -765,7 +765,7 @@ async fn alert_fired_cooldown_is_per_rule(pool: PgPool) {
     );
 }
 
-/// DeployRequested with existing deployment → upserts (not duplicates).
+/// `DeployRequested` with existing deployment → upserts (not duplicates).
 #[sqlx::test(migrations = "./migrations")]
 async fn deploy_requested_upserts_existing(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;

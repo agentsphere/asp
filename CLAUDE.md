@@ -17,6 +17,7 @@ just test           # cargo nextest run (all tests)
 just test-unit      # cargo nextest run --lib (unit only, no DB)
 just test-integration  # integration tests (ephemeral Kind services)
 just test-e2e       # E2E tests (ephemeral Kind services, run-ignored)
+just test-all       # unit + integration + e2e (all except LLM)
 just test-doc       # cargo test --doc
 just ui             # build Preact SPA (esbuild)
 just db-add <name>  # create new migration
@@ -107,17 +108,16 @@ async fn require_project_write(state: &AppState, auth: &AuthUser, project_id: Uu
 // Then call in each handler: require_project_write(&state, &auth, id).await?;
 ```
 
-### Permission checks — route layer (only when state is available)
+### Permission checks — `require_admin()` helper
+
+For admin-only endpoints, use the shared `require_admin()` helper from `api::helpers`:
 
 ```rust
-use crate::rbac::middleware::require_permission;
-use crate::rbac::Permission;
+use crate::api::helpers::require_admin;
 
-// Only works if you have a concrete `state` value at construction time
-pub fn router(state: AppState) -> Router<AppState> {
-    Router::new()
-        .route("/api/projects", get(list).post(create))
-        .route_layer(axum::middleware::from_fn_with_state(state, require_permission(Permission::ProjectRead)))
+async fn admin_handler(State(state): State<AppState>, auth: AuthUser) -> Result<..., ApiError> {
+    require_admin(&state, &auth).await?;
+    // ...
 }
 ```
 
@@ -145,6 +145,26 @@ After any role or delegation change, invalidate the affected user's permission c
 ```rust
 resolver::invalidate_permissions(&state.valkey, user_id, project_id).await;
 ```
+
+### Workspace-derived permissions
+
+Workspace membership grants implicit project permissions without explicit role assignments:
+- Workspace **owner/admin** → `ProjectRead` + `ProjectWrite` on all workspace projects
+- Workspace **member** → `ProjectRead` on all workspace projects
+
+These are added by `resolver::add_workspace_permissions()` and cached alongside explicit grants.
+
+### Two-layer auth enforcement
+
+1. **Layer 1 — `AuthUser` extractor** (middleware): Authenticates the user and populates `boundary_project_id` / `boundary_workspace_id` hard boundaries from API tokens.
+2. **Layer 2 — Permission helpers** (handlers): `require_project_read()`, `require_project_write()`, `require_admin()` enforce RBAC + scope checks.
+
+A handler that only uses `AuthUser` without calling permission helpers only gets identity — no authorization. Always call the appropriate helper.
+
+### `AuthUser` field naming
+
+- `token_scopes`: Permission strings (e.g., `["project:read"]`) that **filter** which permissions the token can use.
+- `boundary_workspace_id` / `boundary_project_id`: Hard resource **boundaries** that restrict which resources are visible. Named "boundary" (not "scope") to distinguish from permission scopes.
 
 ## Project Management Patterns (Phase 04)
 
@@ -591,27 +611,58 @@ If `just ci-full` is too slow for iterative development, run at minimum:
 ```bash
 just test-unit        # fast (~1s), run after every code change
 just test-integration # after API/DB/auth changes (~2.5 min, requires Kind cluster)
-just test-e2e         # after K8s/pipeline/deployer/agent/git/webhook changes (~2.5 min)
+just test-e2e         # after multi-step workflow changes (~2.5 min)
 ```
 
-**Never skip E2E tests.** They catch real issues that unit and integration tests miss (K8s pod behavior, git operations, webhook delivery, cross-service interactions). If any tier fails, fix the issue before declaring the work done.
+**Never skip E2E tests.** They catch real issues that unit and integration tests miss. If any tier fails, fix the issue before declaring the work done.
+
+### Test Tier Boundary: Endpoint Scope vs User Journey
+
+The boundary is **how much of the user's reality are we simulating**, not whether the code is sync or async.
+
+- **Unit** = Pure functions, no I/O
+- **Integration** = Single API endpoint + ALL its side effects (sync and async — K8s pods, background workers, mock CLI, polling/waiting)
+- **E2E** = Multi-step user journeys spanning multiple API calls
+- **LLM** = Real Claude CLI with live Anthropic credentials (`just test-llm`)
+
+**Integration tests can be async.** If a handler kicks off a background task (executor, reconciler, pod), the integration test spawns that task and polls/waits for the outcome. The test is still "integration" because it's validating one endpoint's complete behavior.
+
+### Decision Tree
+
+```
+Does it touch I/O?
+  No → Unit test
+  Yes ↓
+Single endpoint + its side effects?
+(even if async — pods, executors, reconcilers, workers)
+  Yes → Integration test
+  No ↓
+Multi-step user journey across multiple endpoints?
+  Yes → E2E test
+```
 
 ### Testing pyramid
 
-| Tier | Count | Runtime | Infra | Command | When to run |
-|---|---|---|---|---|---|
-| Unit | 716 | ~1s | None | `just test-unit` | Every code change |
-| Integration | 574 | ~2.5 min | Kind cluster | `just test-integration` | API/DB/auth changes |
-| E2E | 49 | ~2.5 min | Kind cluster | `just test-e2e` | K8s/pipeline/deploy/git/webhook changes |
-| FE-BE | 33+ | ~30s | Kind cluster | `just test-integration` / `just types` | API response shape changes |
+| Tier | What's tested | Real infra | LLM | Command |
+|---|---|---|---|---|
+| Unit | Pure functions, state machines, parsers, validators | None | N/A | `just test-unit` |
+| Integration | Single endpoint + all side effects (K8s pods, workers, mock CLI) | Postgres, Valkey, MinIO, K8s API | Mock (`CLAUDE_CLI_PATH`) | `just test-integration` |
+| E2E | Multi-step business workflows across multiple endpoints | All real + background tasks | Disabled | `just test-e2e` |
+| LLM | Claude CLI protocol with real Anthropic API | Real Claude CLI | Real | `just test-llm` |
+
+**Coverage target**: 100% on unit + integration (diff-only enforcement via `just cov-diff-check`). E2E covers critical user journeys only.
+
+**LLM rule**: No real LLM calls in unit/integration/E2E. Mock CLI via `CLAUDE_CLI_PATH=tests/fixtures/mock-claude-cli.sh`. Separate `just test-llm` for real Anthropic API.
 
 ### Test helpers — integration (`tests/helpers/mod.rs`)
 
-- `test_state(pool: PgPool) -> (AppState, String)` — builds full state with real Valkey, MinIO, dummy K8s. Returns `(state, admin_token)`. The admin API token is created directly in the DB, bypassing the login endpoint's rate limiter.
+- `test_state(pool: PgPool) -> (AppState, String)` — builds full state with real Valkey, MinIO, K8s. Returns `(state, admin_token)`. The admin API token is created directly in the DB, bypassing the login endpoint's rate limiter.
+- `test_state_with_cli(pool, cli_spawn_enabled) -> (AppState, String)` — wraps `test_state()`, always sets `CLAUDE_CLI_PATH` to the mock CLI script. Pass `true` to enable CLI subprocess spawning.
 - `test_router(state: AppState) -> Router` — merges API + observe + registry routers.
 - `admin_login(&app) -> String` — login via POST `/api/auth/login`. Only for tests that test login/session behavior (~2 tests). All other tests use the pre-created `admin_token` from `test_state()`.
 - `create_user(&app, token, name, email) -> (Uuid, String)` — create user + login.
 - `assign_role(&app, token, user_id, role, project_id, &pool)` — assign role.
+- `start_test_server(pool) -> (AppState, String, JoinHandle)` — real TCP server for pod connectivity tests.
 - `get_json`, `post_json`, `patch_json`, `put_json`, `delete_json` — HTTP helpers with bearer auth.
 
 ### Test helpers — E2E (`tests/e2e_helpers/mod.rs`)
@@ -648,6 +699,8 @@ state.pipeline_notify.notify_one();  // wake executor after trigger
 **Use dynamic queries in test files** — `sqlx::query()` not `sqlx::query!()` in `tests/`.
 
 **Git repos under `/tmp/platform-e2e/`** — shared mount between host and Kind node.
+
+**Mock CLI for integration tests** — `test_state_with_cli(pool, true)` sets `CLAUDE_CLI_PATH` to `tests/fixtures/mock-claude-cli.sh` and enables `cli_spawn_enabled`. The mock script exits instantly with canned NDJSON.
 
 ### When to write tests first (TDD)
 
@@ -710,7 +763,7 @@ pub struct ListResponse<T: serde::Serialize> {
 - **Clippy `too_many_lines`**: Threshold is 100 lines per function. Extract helpers (e.g., `get_project_repo_path()`) when handlers grow large.
 - **Clippy `collapsible_if`**: Use `if let ... && condition { }` instead of nested `if let { if { } }`.
 - **Clippy `trivially_copy_pass_by_ref`**: For `Copy` types, use `self` not `&self` (e.g., `fn as_str(self)`).
-- **`require_permission` route layer**: Requires `from_fn_with_state(state.clone(), ...)` — won't work in sub-routers that return `Router<AppState>` without a concrete state. Use inline permission checks instead.
+- **Permission checks**: Use `require_admin()`, `require_project_read()`, `require_project_write()` from `api::helpers`. For other permissions, call `resolver::has_permission_scoped()` inline.
 - **K8s `kind_to_plural` in applier**: `src/deployer/applier.rs` has a `kind_to_plural()` map for server-side apply. When adding new K8s resource types (e.g., `NetworkPolicy`), add the correct plural to this map — the generic fallback just appends "s" which is wrong for irregular plurals (`"networkpolicies"`, not `"networkpolicys"`).
 
 ## Git Workflow

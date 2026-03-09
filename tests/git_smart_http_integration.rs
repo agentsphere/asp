@@ -2,8 +2,8 @@
 //!
 //! Tests that exercise authentication, project resolution, access control,
 //! and input validation for the git smart HTTP endpoints. Tests that require
-//! the git binary to run successfully (info_refs content, upload/receive-pack)
-//! are covered by E2E tests in tests/e2e_git.rs.
+//! the git binary to run successfully (`info_refs` content, upload/receive-pack)
+//! are covered by E2E tests in `tests/e2e_git.rs`.
 
 mod helpers;
 
@@ -173,7 +173,7 @@ async fn authenticate_basic_nonexistent_user(pool: PgPool) {
 
 /// Token-only auth: using the raw API token as both username and password
 /// succeeds when the user is active and the token is valid. This is the
-/// GIT_ASKPASS pattern where the token is echoed as the password.
+/// `GIT_ASKPASS` pattern where the token is echoed as the password.
 #[sqlx::test(migrations = "./migrations")]
 async fn authenticate_token_only_auth_succeeds(pool: PgPool) {
     let (state, admin_token) = test_state(pool).await;
@@ -236,7 +236,7 @@ async fn authenticate_token_only_inactive_user_returns_401(pool: PgPool) {
 // Tests: Project resolution
 // ---------------------------------------------------------------------------
 
-/// resolve_project returns 404 for non-existent project.
+/// `resolve_project` returns 404 for non-existent project.
 #[sqlx::test(migrations = "./migrations")]
 async fn resolve_project_not_found(pool: PgPool) {
     let (state, _admin_token) = test_state(pool).await;
@@ -253,7 +253,7 @@ async fn resolve_project_not_found(pool: PgPool) {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// resolve_project returns 404 for wrong owner.
+/// `resolve_project` returns 404 for wrong owner.
 #[sqlx::test(migrations = "./migrations")]
 async fn resolve_project_wrong_owner(pool: PgPool) {
     let (state, admin_token) = test_state(pool).await;
@@ -468,7 +468,7 @@ async fn internal_repo_any_authed_user_can_read(pool: PgPool) {
     assert_ne!(status, StatusCode::NOT_FOUND);
 }
 
-/// Internal repo write (receive-pack) requires ProjectWrite permission.
+/// Internal repo write (receive-pack) requires `ProjectWrite` permission.
 #[sqlx::test(migrations = "./migrations")]
 async fn internal_repo_write_requires_perm(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -496,7 +496,7 @@ async fn internal_repo_write_requires_perm(pool: PgPool) {
 // Tests: .git suffix stripping in resolve_project
 // ---------------------------------------------------------------------------
 
-/// resolve_project strips .git suffix from repo name.
+/// `resolve_project` strips .git suffix from repo name.
 #[sqlx::test(migrations = "./migrations")]
 async fn resolve_project_strips_git_suffix(pool: PgPool) {
     let (state, admin_token) = test_state(pool).await;
@@ -634,7 +634,7 @@ async fn authenticate_basic_malformed_base64(pool: PgPool) {
     let (status, _, _) = git_get(
         &app,
         "/admin/bad-b64-proj/info/refs?service=git-upload-pack",
-        Some(&auth),
+        Some(auth),
     )
     .await;
 
@@ -848,7 +848,7 @@ async fn receive_pack_nonexistent_project_404(pool: PgPool) {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// POST receive-pack without ProjectWrite permission returns 404.
+/// POST receive-pack without `ProjectWrite` permission returns 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn receive_pack_no_write_perm_404(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -875,7 +875,7 @@ async fn receive_pack_no_write_perm_404(pool: PgPool) {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// POST receive-pack with admin (has ProjectWrite) passes access control.
+/// POST receive-pack with admin (has `ProjectWrite`) passes access control.
 ///
 /// With an empty body, `git receive-pack --stateless-rpc` blocks waiting for pack data.
 /// A timeout proves we got past auth and into the git subprocess (auth failures return
@@ -917,7 +917,7 @@ async fn receive_pack_admin_passes_access(pool: PgPool) {
 /// POST receive-pack verifies access control passes for authenticated admin.
 ///
 /// Note: The audit log write happens AFTER the git subprocess completes (line 376 in
-/// smart_http.rs). With an empty body git hangs, so audit is never written. We verify
+/// `smart_http.rs`). With an empty body git hangs, so audit is never written. We verify
 /// auth passes via timeout instead.
 #[sqlx::test(migrations = "./migrations")]
 async fn receive_pack_writes_audit_log(pool: PgPool) {
@@ -951,7 +951,7 @@ async fn receive_pack_writes_audit_log(pool: PgPool) {
     }
 }
 
-/// POST receive-pack with user having developer role and ProjectWrite on internal repo.
+/// POST receive-pack with user having developer role and `ProjectWrite` on internal repo.
 ///
 /// With an empty body, `git receive-pack --stateless-rpc` blocks. A timeout proves
 /// we got past auth (auth failures return immediately).
@@ -1219,7 +1219,7 @@ async fn lfs_batch_upload_returns_presigned_urls(pool: PgPool) {
     );
 }
 
-/// LFS batch upload without ProjectWrite returns 404.
+/// LFS batch upload without `ProjectWrite` returns 404.
 #[sqlx::test(migrations = "./migrations")]
 async fn lfs_batch_upload_no_write_perm_404(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -1291,7 +1291,7 @@ async fn lfs_batch_multiple_objects(pool: PgPool) {
 // Tests: Private repo with assigned ProjectRead permission
 // ---------------------------------------------------------------------------
 
-/// User with viewer role on a private repo can read (ProjectRead granted).
+/// User with viewer role on a private repo can read (`ProjectRead` granted).
 #[sqlx::test(migrations = "./migrations")]
 async fn private_repo_viewer_with_project_read(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;

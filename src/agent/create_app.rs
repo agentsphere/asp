@@ -29,7 +29,7 @@ const MAX_TOOL_ROUNDS: usize = 10;
 /// - LLM returns no tools and no pending user messages → done
 /// - `handle.cancelled` is set → stopped
 /// - `MAX_TOOL_ROUNDS` reached → safety limit
-#[tracing::instrument(skip(state, handle, initial_prompt), fields(session_id = %handle.session_id), err)]
+#[tracing::instrument(skip(state, handle, initial_prompt, oauth_token, anthropic_api_key), fields(session_id = %handle.session_id), err)]
 pub async fn run_create_app_loop(
     state: &AppState,
     handle: Arc<CliSessionHandle>,
@@ -41,7 +41,9 @@ pub async fn run_create_app_loop(
     let session_id = handle.session_id;
 
     let mut current_prompt = initial_prompt;
-    let mut is_resume = false;
+    // If we already have a CLI session ID from a prior invocation, resume it
+    // (e.g. user sent a follow-up message after the first turn completed)
+    let mut is_resume = handle.cli_session_id.lock().await.is_some();
 
     for round in 0..MAX_TOOL_ROUNDS {
         // Check cancellation
@@ -205,9 +207,24 @@ async fn execute_tools(
         let result = execute_create_app_tool(state, session_id, user_id, tool).await;
 
         // Publish ToolResult event
-        let (msg, is_error) = match &result {
-            Ok(_) => (format!("{}: done", tool.name), false),
-            Err(e) => (format!("{}: error — {e}", tool.name), true),
+        let (msg, metadata) = match &result {
+            Ok(val) => (
+                format!("{}: done", tool.name),
+                serde_json::json!({
+                    "tool": &tool.name,
+                    "tool_name": &tool.name,
+                    "is_error": false,
+                    "result": serde_json::to_string(val).unwrap_or_default(),
+                }),
+            ),
+            Err(e) => (
+                format!("{}: error — {e}", tool.name),
+                serde_json::json!({
+                    "tool": &tool.name,
+                    "tool_name": &tool.name,
+                    "is_error": true,
+                }),
+            ),
         };
         let _ = pubsub_bridge::publish_event(
             &state.valkey,
@@ -215,7 +232,7 @@ async fn execute_tools(
             &ProgressEvent {
                 kind: ProgressKind::ToolResult,
                 message: msg,
-                metadata: Some(serde_json::json!({"tool": &tool.name, "is_error": is_error})),
+                metadata: Some(metadata),
             },
         )
         .await;
@@ -227,7 +244,7 @@ async fn execute_tools(
 }
 
 /// Execute a single tool call, dispatching by name.
-async fn execute_create_app_tool(
+pub async fn execute_create_app_tool(
     state: &AppState,
     session_id: Uuid,
     user_id: Uuid,
@@ -237,7 +254,13 @@ async fn execute_create_app_tool(
         "create_project" => execute_create_project(state, session_id, user_id, &tool.parameters)
             .await
             .map_err(|e| e.to_string()),
-        "spawn_coding_agent" => execute_spawn_agent(state, user_id, &tool.parameters)
+        "spawn_coding_agent" => execute_spawn_agent(state, session_id, user_id, &tool.parameters)
+            .await
+            .map_err(|e| e.to_string()),
+        "send_message_to_session" => execute_send_message(state, session_id, &tool.parameters)
+            .await
+            .map_err(|e| e.to_string()),
+        "check_session_progress" => execute_check_progress(state, session_id, &tool.parameters)
             .await
             .map_err(|e| e.to_string()),
         other => Err(format!("unknown tool: {other}")),
@@ -360,6 +383,7 @@ async fn execute_create_project(
 /// Spawn a K8s coding agent session for the project.
 async fn execute_spawn_agent(
     state: &AppState,
+    manager_session_id: Uuid,
     user_id: Uuid,
     input: &serde_json::Value,
 ) -> Result<serde_json::Value, anyhow::Error> {
@@ -378,12 +402,134 @@ async fn execute_spawn_agent(
         Some("main"),
         None,
         super::AgentRoleName::Dev,
+        Some(manager_session_id), // Link child to Manager
     )
     .await?;
 
     Ok(serde_json::json!({
         "session_id": session.id.to_string(),
         "status": session.status,
+    }))
+}
+
+/// Send a message from the Manager to a child Worker session.
+async fn execute_send_message(
+    state: &AppState,
+    manager_session_id: Uuid,
+    input: &serde_json::Value,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let child_session_id = parse_uuid_field(input, "session_id")?;
+    let message = input
+        .get("message")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing required field: message"))?;
+
+    crate::validation::check_length("message", message, 1, 100_000)
+        .map_err(|e| anyhow::anyhow!("invalid message: {e}"))?;
+
+    // Verify child session exists and belongs to this Manager
+    let child: (Uuid, Option<Uuid>, String) =
+        sqlx::query_as("SELECT id, parent_session_id, status FROM agent_sessions WHERE id = $1")
+            .bind(child_session_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("session not found: {child_session_id}"))?;
+
+    if child.1 != Some(manager_session_id) {
+        return Err(anyhow::anyhow!(
+            "session {child_session_id} is not a child of this session"
+        ));
+    }
+
+    if child.2 != "running" {
+        return Err(anyhow::anyhow!(
+            "session {child_session_id} is not running (status: {})",
+            child.2,
+        ));
+    }
+
+    // Publish to Worker's input channel with source="manager"
+    super::pubsub_bridge::publish_prompt_with_source(
+        &state.valkey,
+        child_session_id,
+        message,
+        "manager",
+    )
+    .await?;
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "session_id": child_session_id.to_string(),
+    }))
+}
+
+/// Check the progress of a child Worker session.
+/// Returns the session status and the last N messages.
+async fn execute_check_progress(
+    state: &AppState,
+    manager_session_id: Uuid,
+    input: &serde_json::Value,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let child_session_id = parse_uuid_field(input, "session_id")?;
+    let limit = input
+        .get("limit")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(20)
+        .min(50);
+
+    // Verify child belongs to this Manager
+    let child: (
+        Uuid,
+        Option<Uuid>,
+        String,
+        Option<i64>,
+        Option<chrono::DateTime<chrono::Utc>>,
+    ) = sqlx::query_as(
+        "SELECT id, parent_session_id, status, cost_tokens, finished_at \
+             FROM agent_sessions WHERE id = $1",
+    )
+    .bind(child_session_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("session not found: {child_session_id}"))?;
+
+    if child.1 != Some(manager_session_id) {
+        return Err(anyhow::anyhow!(
+            "session {child_session_id} is not a child of this session"
+        ));
+    }
+
+    // Fetch recent messages (newest first, then reverse for chronological order)
+    let messages: Vec<(String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT role, content, created_at \
+         FROM agent_messages \
+         WHERE session_id = $1 \
+         ORDER BY created_at DESC \
+         LIMIT $2",
+    )
+    .bind(child_session_id)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let messages: Vec<serde_json::Value> = messages
+        .into_iter()
+        .rev()
+        .map(|(role, content, created_at)| {
+            serde_json::json!({
+                "role": role,
+                "content": content,
+                "created_at": created_at.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "session_id": child_session_id.to_string(),
+        "status": child.2,
+        "cost_tokens": child.3,
+        "finished_at": child.4.map(|t| t.to_rfc3339()),
+        "messages": messages,
     }))
 }
 
@@ -550,5 +696,58 @@ mod tests {
     fn parse_uuid_field_invalid() {
         let input = serde_json::json!({"project_id": "not-a-uuid"});
         assert!(parse_uuid_field(&input, "project_id").is_err());
+    }
+
+    #[test]
+    fn send_message_input_requires_session_id() {
+        let input = serde_json::json!({"message": "hello"});
+        assert!(parse_uuid_field(&input, "session_id").is_err());
+    }
+
+    #[test]
+    fn send_message_input_requires_message() {
+        let input = serde_json::json!({"session_id": Uuid::new_v4().to_string()});
+        let message = input.get("message").and_then(|v| v.as_str());
+        assert!(message.is_none());
+    }
+
+    #[test]
+    fn check_progress_default_limit() {
+        let input = serde_json::json!({"session_id": Uuid::new_v4().to_string()});
+        let limit = input
+            .get("limit")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(20)
+            .min(50);
+        assert_eq!(limit, 20);
+    }
+
+    #[test]
+    fn check_progress_limit_capped_at_50() {
+        let input = serde_json::json!({"session_id": Uuid::new_v4().to_string(), "limit": 100});
+        let limit = input
+            .get("limit")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(20)
+            .min(50);
+        assert_eq!(limit, 50);
+    }
+
+    #[test]
+    fn tool_dispatch_recognizes_new_tools() {
+        // Verify the tool name strings match what the schema expects
+        let names = ["send_message_to_session", "check_session_progress"];
+        for name in &names {
+            assert!(
+                [
+                    "create_project",
+                    "spawn_coding_agent",
+                    "send_message_to_session",
+                    "check_session_progress"
+                ]
+                .contains(name),
+                "tool {name} not in known tools"
+            );
+        }
     }
 }

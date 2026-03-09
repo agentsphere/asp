@@ -5,6 +5,7 @@ cli/*/target/
 
 # Environment
 .env
+.env.dev
 
 # Node / UI
 ui/node_modules/
@@ -24,6 +25,10 @@ ui/test-results/
 *.lcov
 coverage-html/
 
+# Test reports
+test-report.txt
+
 # Kind kubeconfig
 kind-platform.kubeconfig
 .claude/worktrees/
+.rustup/

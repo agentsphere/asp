@@ -13,9 +13,10 @@ use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::git::gpg_keys;
-use crate::rbac::{Permission, resolver};
 use crate::store::AppState;
 use crate::validation;
+
+use super::helpers::require_admin;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,28 +54,6 @@ pub struct GpgKeyDetailResponse {
     pub expires_at: Option<DateTime<Utc>>,
     pub can_sign: bool,
     pub created_at: DateTime<Utc>,
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-async fn require_admin(state: &AppState, auth: &AuthUser) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission_scoped(
-        &state.pool,
-        &state.valkey,
-        auth.user_id,
-        None,
-        Permission::AdminUsers,
-        auth.token_scopes.as_deref(),
-    )
-    .await
-    .map_err(ApiError::Internal)?;
-
-    if !allowed {
-        return Err(ApiError::Forbidden);
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------

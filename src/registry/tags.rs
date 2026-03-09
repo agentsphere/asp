@@ -2,10 +2,10 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use serde::Deserialize;
 
-use super::auth::RegistryUser;
+use super::auth::OptionalRegistryUser;
 use super::error::RegistryError;
 use super::types::TagListResponse;
-use super::{RepoAccess, resolve_repo_with_access};
+use super::{RepoAccess, resolve_repo_with_optional_access};
 use crate::store::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -22,14 +22,14 @@ pub struct TagListQuery {
 
 pub async fn list_tags(
     State(state): State<AppState>,
-    user: RegistryUser,
+    OptionalRegistryUser(user): OptionalRegistryUser,
     Path(name): Path<String>,
     Query(query): Query<TagListQuery>,
 ) -> Result<Json<TagListResponse>, RegistryError> {
     let RepoAccess {
         repository_id,
         project_id: _,
-    } = resolve_repo_with_access(&state, &user, &name, false).await?;
+    } = resolve_repo_with_optional_access(&state, user.as_ref(), &name, false).await?;
 
     let limit = query.n.unwrap_or(100).min(1000);
 

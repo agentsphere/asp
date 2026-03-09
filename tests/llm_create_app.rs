@@ -14,9 +14,10 @@
 
 use std::time::Duration;
 
+use fred::interfaces::ClientLike;
 use platform::agent::claude_cli::messages::{CliMessage, parse_cli_message};
 use platform::agent::claude_cli::transport::{CliSpawnOptions, SubprocessTransport};
-use platform::agent::cli_invoke::{StructuredResponse, create_app_schema};
+use platform::agent::cli_invoke::{CliInvokeParams, StructuredResponse, create_app_schema};
 
 /// Skip the test gracefully if no auth credentials are available.
 fn require_auth() -> (Option<String>, Option<String>) {
@@ -30,7 +31,7 @@ fn require_auth() -> (Option<String>, Option<String>) {
 }
 
 /// Helper: spawn a one-shot `claude -p` with structured output.
-async fn spawn_structured_cli(
+fn spawn_structured_cli(
     prompt: &str,
     session_id: Option<&str>,
     resume: Option<&str>,
@@ -55,6 +56,17 @@ async fn spawn_structured_cli(
     };
 
     SubprocessTransport::spawn(opts).expect("failed to spawn Claude CLI")
+}
+
+/// Helper: spawn CLI in -p mode and immediately close stdin (not needed).
+async fn spawn_and_prepare(
+    prompt: &str,
+    session_id: Option<&str>,
+    resume: Option<&str>,
+) -> SubprocessTransport {
+    let transport = spawn_structured_cli(prompt, session_id, resume);
+    transport.close_stdin().await;
+    transport
 }
 
 /// Read all messages from CLI until result or timeout.
@@ -97,14 +109,14 @@ async fn read_all_messages(transport: &mut SubprocessTransport) -> Vec<CliMessag
 
 /// Structured output with empty tools (text-only response).
 #[tokio::test]
-#[ignore]
+#[ignore = "requires real Claude CLI"]
 async fn llm_structured_output_text_only() {
     let (oauth, api_key) = require_auth();
     if oauth.is_none() && api_key.is_none() {
         return;
     }
 
-    let mut transport = spawn_structured_cli("Say hello in one sentence.", None, None).await;
+    let mut transport = spawn_and_prepare("Say hello in one sentence.", None, None).await;
     let messages = read_all_messages(&mut transport).await;
     let _ = transport.kill().await;
 
@@ -142,14 +154,14 @@ async fn llm_structured_output_text_only() {
 
 /// Structured output with a tool request.
 #[tokio::test]
-#[ignore]
+#[ignore = "requires real Claude CLI"]
 async fn llm_structured_output_with_tool_request() {
     let (oauth, api_key) = require_auth();
     if oauth.is_none() && api_key.is_none() {
         return;
     }
 
-    let mut transport = spawn_structured_cli(
+    let mut transport = spawn_and_prepare(
         "Create a project called test-app with description 'A test application'",
         None,
         None,
@@ -183,7 +195,7 @@ async fn llm_structured_output_with_tool_request() {
 
 /// Session ID and resume flow.
 #[tokio::test]
-#[ignore]
+#[ignore = "requires real Claude CLI"]
 async fn llm_session_id_and_resume() {
     let (oauth, api_key) = require_auth();
     if oauth.is_none() && api_key.is_none() {
@@ -193,7 +205,7 @@ async fn llm_session_id_and_resume() {
     let session_id = uuid::Uuid::new_v4().to_string();
 
     // First call with --session-id
-    let mut t1 = spawn_structured_cli("Remember the number 42.", Some(&session_id), None).await;
+    let mut t1 = spawn_and_prepare("Remember the number 42.", Some(&session_id), None).await;
     let msgs1 = read_all_messages(&mut t1).await;
     let _ = t1.kill().await;
 
@@ -210,7 +222,7 @@ async fn llm_session_id_and_resume() {
     assert!(!result1.is_error);
 
     // Second call with --resume
-    let mut t2 = spawn_structured_cli(
+    let mut t2 = spawn_and_prepare(
         "What number did I ask you to remember?",
         None,
         Some(&session_id),
@@ -243,14 +255,14 @@ async fn llm_session_id_and_resume() {
 
 /// NDJSON stream format validation — all lines parse correctly.
 #[tokio::test]
-#[ignore]
+#[ignore = "requires real Claude CLI"]
 async fn llm_ndjson_stream_format() {
     let (oauth, api_key) = require_auth();
     if oauth.is_none() && api_key.is_none() {
         return;
     }
 
-    let mut transport = spawn_structured_cli("Say hello.", None, None).await;
+    let mut transport = spawn_and_prepare("Say hello.", None, None).await;
     let messages = read_all_messages(&mut transport).await;
     let _ = transport.kill().await;
 
@@ -277,16 +289,16 @@ async fn llm_ndjson_stream_format() {
     }
 }
 
-/// Result message contains structured_output matching our schema.
+/// Result message contains `structured_output` matching our schema.
 #[tokio::test]
-#[ignore]
+#[ignore = "requires real Claude CLI"]
 async fn llm_result_has_structured_output() {
     let (oauth, api_key) = require_auth();
     if oauth.is_none() && api_key.is_none() {
         return;
     }
 
-    let mut transport = spawn_structured_cli("Say hello.", None, None).await;
+    let mut transport = spawn_and_prepare("Say hello.", None, None).await;
     let messages = read_all_messages(&mut transport).await;
     let _ = transport.kill().await;
 
@@ -319,16 +331,16 @@ async fn llm_result_has_structured_output() {
     );
 }
 
-/// `--tools ""` disables built-in tools — system init shows only StructuredOutput.
+/// `--tools ""` disables built-in tools — system init shows only `StructuredOutput`.
 #[tokio::test]
-#[ignore]
+#[ignore = "requires real Claude CLI"]
 async fn llm_tools_empty_disables_builtins() {
     let (oauth, api_key) = require_auth();
     if oauth.is_none() && api_key.is_none() {
         return;
     }
 
-    let mut transport = spawn_structured_cli("Say hello.", None, None).await;
+    let mut transport = spawn_and_prepare("Say hello.", None, None).await;
     let messages = read_all_messages(&mut transport).await;
     let _ = transport.kill().await;
 
@@ -348,8 +360,7 @@ async fn llm_tools_empty_disables_builtins() {
         for tool in tools {
             assert!(
                 tool == "StructuredOutput" || tool.starts_with("mcp__"),
-                "unexpected tool '{}' — --tools \"\" should disable builtins",
-                tool
+                "unexpected tool '{tool}' — --tools \"\" should disable builtins"
             );
         }
     }
@@ -357,14 +368,14 @@ async fn llm_tools_empty_disables_builtins() {
 
 /// `parse_cli_message` correctly handles real CLI output lines.
 #[tokio::test]
-#[ignore]
+#[ignore = "requires real Claude CLI"]
 async fn llm_parse_cli_messages_roundtrip() {
     let (oauth, api_key) = require_auth();
     if oauth.is_none() && api_key.is_none() {
         return;
     }
 
-    let mut transport = spawn_structured_cli("Say hello.", None, None).await;
+    let mut transport = spawn_and_prepare("Say hello.", None, None).await;
     let messages = read_all_messages(&mut transport).await;
     let _ = transport.kill().await;
 
@@ -383,4 +394,49 @@ async fn llm_parse_cli_messages_roundtrip() {
             _ => panic!("variant mismatch after roundtrip"),
         }
     }
+}
+
+/// End-to-end test: `invoke_cli()` completes with real Claude CLI.
+///
+/// This mirrors what the platform server does — same CliSpawnOptions,
+/// same `close_stdin()` call, same timeout. Catches env/stdin/config
+/// issues that unit tests miss.
+#[tokio::test]
+#[ignore = "requires real Claude CLI"]
+async fn llm_invoke_cli_completes() {
+    let (oauth, api_key) = require_auth();
+    if oauth.is_none() && api_key.is_none() {
+        return;
+    }
+
+    // Create a real Valkey pool (fire-and-forget pub/sub — OK if unavailable)
+    let valkey_url =
+        std::env::var("VALKEY_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+    let valkey_config =
+        fred::types::config::Config::from_url(&valkey_url).expect("invalid VALKEY_URL");
+    let valkey = fred::clients::Pool::new(valkey_config, None, None, None, 1)
+        .expect("valkey pool creation failed");
+    valkey.init().await.expect("valkey connection failed");
+
+    let params = CliInvokeParams {
+        session_id: uuid::Uuid::new_v4(),
+        prompt: "Say hello in one sentence.".into(),
+        is_resume: false,
+        system_prompt: Some("You are a helpful assistant. Respond with valid JSON.".into()),
+        oauth_token: oauth,
+        anthropic_api_key: api_key,
+        max_turns: Some(1),
+    };
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(60),
+        platform::agent::cli_invoke::invoke_cli(params, &valkey),
+    )
+    .await
+    .expect("invoke_cli should complete within 60s")
+    .expect("invoke_cli should succeed");
+
+    let (structured, result_msg) = result;
+    assert!(!structured.text.is_empty(), "should have response text");
+    assert!(result_msg.is_some(), "should have result message");
 }

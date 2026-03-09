@@ -1,3 +1,4 @@
+use fred::interfaces::ClientLike;
 use fred::interfaces::EventInterface;
 use fred::interfaces::PubsubInterface;
 use sqlx::PgPool;
@@ -30,8 +31,20 @@ pub async fn publish_prompt(
     session_id: Uuid,
     content: &str,
 ) -> Result<(), anyhow::Error> {
+    publish_prompt_with_source(valkey, session_id, content, "user").await
+}
+
+/// Publish a prompt with a source identifier to a session's input channel.
+/// Used by Manager → Worker communication (`source="manager"`) and user messages (`source="user"`).
+#[tracing::instrument(skip(valkey, content), fields(%session_id, %source), err)]
+pub async fn publish_prompt_with_source(
+    valkey: &fred::clients::Pool,
+    session_id: Uuid,
+    content: &str,
+    source: &str,
+) -> Result<(), anyhow::Error> {
     let channel = valkey_acl::input_channel(session_id);
-    let msg = serde_json::json!({ "type": "prompt", "content": content });
+    let msg = serde_json::json!({ "type": "prompt", "content": content, "source": source });
     valkey
         .next()
         .publish::<(), _, _>(&channel, msg.to_string())
@@ -58,13 +71,33 @@ pub async fn publish_control(
 
 /// Spawn a background task that subscribes to session events and persists them to `agent_messages`.
 /// Started at session creation. Exits on Completed/Error events.
-pub fn spawn_persistence_subscriber(
+///
+/// The returned future resolves once the Valkey subscription is established,
+/// ensuring no pub/sub messages are lost to a race condition.
+pub async fn spawn_persistence_subscriber(
     pool: PgPool,
     valkey: fred::clients::Pool,
     session_id: Uuid,
 ) -> JoinHandle<()> {
+    let channel = valkey_acl::events_channel(session_id);
+
+    // Subscribe on a dedicated connection before spawning the background task.
+    // This ensures the subscription is active before any pod publishes events.
+    // clone_new() creates an unconnected client — init() establishes the connection.
+    let subscriber = valkey.next().clone_new();
+    if let Err(e) = subscriber.init().await {
+        tracing::error!(error = %e, %session_id, "persistence subscriber failed to init");
+        return tokio::spawn(async {});
+    }
+    if let Err(e) = subscriber.subscribe(&channel).await {
+        tracing::error!(error = %e, %session_id, "persistence subscriber failed to subscribe");
+        return tokio::spawn(async {});
+    }
+    let rx = subscriber.message_rx();
+
     tokio::spawn(async move {
-        if let Err(e) = run_persistence_subscriber(pool, valkey, session_id).await {
+        if let Err(e) = run_persistence_subscriber(pool, subscriber, rx, channel, session_id).await
+        {
             tracing::error!(error = %e, %session_id, "persistence subscriber failed");
         }
     })
@@ -72,17 +105,11 @@ pub fn spawn_persistence_subscriber(
 
 async fn run_persistence_subscriber(
     pool: PgPool,
-    valkey: fred::clients::Pool,
+    subscriber: fred::clients::Client,
+    mut rx: tokio::sync::broadcast::Receiver<fred::types::Message>,
+    channel: String,
     session_id: Uuid,
 ) -> Result<(), anyhow::Error> {
-    let channel = valkey_acl::events_channel(session_id);
-
-    // Use clone_new() for a dedicated subscriber connection.
-    // Pool doesn't impl PubsubInterface, only Client does.
-    let subscriber = valkey.next().clone_new();
-    subscriber.subscribe(&channel).await?;
-    let mut rx = subscriber.message_rx();
-
     while let Ok(msg) = rx.recv().await {
         let payload: String = match msg.value.convert() {
             Ok(s) => s,
@@ -136,7 +163,9 @@ pub async fn subscribe_session_events(
     let (tx, rx) = mpsc::channel(256);
 
     // Dedicated subscriber connection (separate from pool command connections).
+    // clone_new() creates an unconnected client — init() establishes the connection.
     let subscriber = valkey.next().clone_new();
+    subscriber.init().await?;
     subscriber.subscribe(&channel).await?;
     let mut msg_rx = subscriber.message_rx();
 
@@ -163,6 +192,83 @@ pub async fn subscribe_session_events(
         }
 
         let _ = subscriber.unsubscribe(&channel).await;
+    });
+
+    Ok(rx)
+}
+
+/// Subscribe to events from multiple sessions (parent + children).
+/// Returns `(Uuid, ProgressEvent)` tuples so the caller knows which session emitted each event.
+/// Exits when ALL sessions have emitted a terminal event (Completed/Error), or when the
+/// receiver is dropped.
+pub async fn subscribe_session_tree_events(
+    valkey: &fred::clients::Pool,
+    session_ids: &[Uuid],
+) -> Result<mpsc::Receiver<(Uuid, ProgressEvent)>, anyhow::Error> {
+    let (tx, rx) = mpsc::channel(256);
+
+    if session_ids.is_empty() {
+        return Ok(rx);
+    }
+
+    // Build channel → session_id mapping
+    let channels: Vec<String> = session_ids
+        .iter()
+        .map(|id| valkey_acl::events_channel(*id))
+        .collect();
+    let channel_to_session: std::collections::HashMap<String, Uuid> = channels
+        .iter()
+        .zip(session_ids.iter())
+        .map(|(ch, id)| (ch.clone(), *id))
+        .collect();
+
+    // Single dedicated subscriber for all channels
+    let subscriber = valkey.next().clone_new();
+    subscriber.init().await?;
+    for ch in &channels {
+        subscriber.subscribe(ch).await?;
+    }
+    let mut msg_rx = subscriber.message_rx();
+
+    let channel_list = channels.clone();
+    let terminal_count = session_ids.len();
+
+    tokio::spawn(async move {
+        let mut terminals_seen = 0usize;
+
+        while let Ok(msg) = msg_rx.recv().await {
+            let payload: String = match msg.value.convert() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            // Extract session_id from channel name
+            let channel_name = msg.channel.to_string();
+            let session_id = match channel_to_session.get(&channel_name) {
+                Some(id) => *id,
+                None => continue,
+            };
+
+            if let Ok(event) = serde_json::from_str::<ProgressEvent>(&payload) {
+                let is_terminal = matches!(
+                    event.kind,
+                    super::provider::ProgressKind::Completed | super::provider::ProgressKind::Error
+                );
+                if tx.send((session_id, event)).await.is_err() {
+                    break;
+                }
+                if is_terminal {
+                    terminals_seen += 1;
+                    if terminals_seen >= terminal_count {
+                        break;
+                    }
+                }
+            }
+        }
+
+        for ch in &channel_list {
+            let _ = subscriber.unsubscribe(ch).await;
+        }
     });
 
     Ok(rx)
@@ -203,6 +309,21 @@ mod tests {
         let msg = serde_json::json!({ "type": "prompt", "content": "test prompt" });
         assert_eq!(msg["type"], "prompt");
         assert_eq!(msg["content"], "test prompt");
+    }
+
+    #[test]
+    fn test_prompt_with_source_json_format() {
+        let msg =
+            serde_json::json!({ "type": "prompt", "content": "do this", "source": "manager" });
+        assert_eq!(msg["type"], "prompt");
+        assert_eq!(msg["content"], "do this");
+        assert_eq!(msg["source"], "manager");
+    }
+
+    #[test]
+    fn test_prompt_with_user_source_json_format() {
+        let msg = serde_json::json!({ "type": "prompt", "content": "hello", "source": "user" });
+        assert_eq!(msg["source"], "user");
     }
 
     #[test]
@@ -260,5 +381,42 @@ mod tests {
             !json.contains("metadata"),
             "metadata should be skipped when None"
         );
+    }
+
+    #[test]
+    fn test_tree_channel_mapping() {
+        let id1 = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let id2 = Uuid::parse_str("660e8400-e29b-41d4-a716-446655440000").unwrap();
+        let ids = [id1, id2];
+
+        let channels: Vec<String> = ids
+            .iter()
+            .map(|id| valkey_acl::events_channel(*id))
+            .collect();
+        let map: std::collections::HashMap<String, Uuid> = channels
+            .iter()
+            .zip(ids.iter())
+            .map(|(ch, id)| (ch.clone(), *id))
+            .collect();
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(
+            map.get("session:550e8400-e29b-41d4-a716-446655440000:events"),
+            Some(&id1)
+        );
+        assert_eq!(
+            map.get("session:660e8400-e29b-41d4-a716-446655440000:events"),
+            Some(&id2)
+        );
+    }
+
+    #[test]
+    fn test_tree_empty_ids_returns_empty_channel_list() {
+        let ids: Vec<Uuid> = vec![];
+        let channels: Vec<String> = ids
+            .iter()
+            .map(|id| valkey_acl::events_channel(*id))
+            .collect();
+        assert!(channels.is_empty());
     }
 }

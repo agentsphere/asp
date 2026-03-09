@@ -1,4 +1,4 @@
-//! Integration tests for alert evaluation — evaluate_metric, fire_alert, resolve_alert, evaluate_all.
+//! Integration tests for alert evaluation — `evaluate_metric`, `fire_alert`, `resolve_alert`, `evaluate_all`.
 
 mod helpers;
 

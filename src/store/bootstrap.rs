@@ -433,7 +433,7 @@ async fn create_runner_project(pool: &PgPool, admin_id: Uuid) -> anyhow::Result<
     let project_id = Uuid::new_v4();
     let result = sqlx::query(
         "INSERT INTO projects (id, name, display_name, owner_id, workspace_id, visibility, namespace_slug)
-         VALUES ($1, 'platform-runner', 'Platform Runner Images', $2, $3, 'internal', 'platform-runner')
+         VALUES ($1, 'platform-runner', 'Platform Runner Images', $2, $3, 'public', 'platform-runner')
          ON CONFLICT (owner_id, name) DO NOTHING",
     )
     .bind(project_id)
@@ -443,16 +443,19 @@ async fn create_runner_project(pool: &PgPool, admin_id: Uuid) -> anyhow::Result<
     .await?;
 
     if result.rows_affected() > 0 {
-        // Pre-create registry repository so image pushes work without lazy-create
-        sqlx::query(
-            "INSERT INTO registry_repositories (id, project_id, name)
-             VALUES ($1, $2, 'platform-runner')
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(Uuid::new_v4())
-        .bind(project_id)
-        .execute(pool)
-        .await?;
+        // Pre-create registry repositories so image pushes/seeds work without lazy-create
+        for repo_name in ["platform-runner", "platform-runner-bare"] {
+            sqlx::query(
+                "INSERT INTO registry_repositories (id, project_id, name)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(Uuid::new_v4())
+            .bind(project_id)
+            .bind(repo_name)
+            .execute(pool)
+            .await?;
+        }
         tracing::info!("platform-runner project created for registry");
     }
     Ok(())

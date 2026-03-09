@@ -144,8 +144,13 @@ fn env_suffix(environment: &str) -> &str {
 
 /// Resolve the target K8s namespace for a deployment.
 /// Maps `production` → `{slug}-prod`, `staging` → `{slug}-staging`, etc.
-pub fn target_namespace(namespace_slug: &str, environment: &str) -> String {
-    format!("{namespace_slug}-{}", env_suffix(environment))
+/// When `config` has a `ns_prefix`, the namespace is prefixed accordingly.
+pub fn target_namespace(
+    config: &crate::config::Config,
+    namespace_slug: &str,
+    environment: &str,
+) -> String {
+    config.project_namespace(namespace_slug, env_suffix(environment))
 }
 
 // ---------------------------------------------------------------------------
@@ -191,12 +196,16 @@ async fn handle_active(
     state: &AppState,
     deployment: &PendingDeployment,
 ) -> Result<(), DeployerError> {
-    let ns = target_namespace(&deployment.namespace_slug, &deployment.environment);
+    let ns = target_namespace(
+        &state.config,
+        &deployment.namespace_slug,
+        &deployment.environment,
+    );
 
     // Ensure the target namespace exists before applying
     crate::deployer::namespace::ensure_namespace(
         &state.kube,
-        &deployment.namespace_slug,
+        &ns,
         env_suffix(&deployment.environment),
         &deployment.project_id.to_string(),
     )
@@ -302,7 +311,11 @@ async fn handle_rollback(
         ..copy_deployment_fields(deployment)
     };
 
-    let ns = target_namespace(&deployment.namespace_slug, &deployment.environment);
+    let ns = target_namespace(
+        &state.config,
+        &deployment.namespace_slug,
+        &deployment.environment,
+    );
     let (rendered, sha) = render_manifests(state, &rollback_deployment).await?;
     let applied =
         applier::apply_with_tracking(&state.kube, &rendered, &ns, Some(deployment.id)).await?;
@@ -333,7 +346,11 @@ async fn handle_stopped(
     state: &AppState,
     deployment: &PendingDeployment,
 ) -> Result<(), DeployerError> {
-    let ns = target_namespace(&deployment.namespace_slug, &deployment.environment);
+    let ns = target_namespace(
+        &state.config,
+        &deployment.namespace_slug,
+        &deployment.environment,
+    );
     let deploy_name = format!("{}-{}", deployment.project_name, deployment.environment);
 
     applier::scale(&state.kube, &ns, &deploy_name, 0).await?;
@@ -995,19 +1012,40 @@ mod tests {
 
     #[test]
     fn target_namespace_production() {
-        assert_eq!(target_namespace("my-app", "production"), "my-app-prod");
+        let config = crate::config::Config::test_default();
+        assert_eq!(
+            target_namespace(&config, "my-app", "production"),
+            "my-app-prod"
+        );
     }
 
     #[test]
     fn target_namespace_staging() {
-        assert_eq!(target_namespace("my-app", "staging"), "my-app-staging");
+        let config = crate::config::Config::test_default();
+        assert_eq!(
+            target_namespace(&config, "my-app", "staging"),
+            "my-app-staging"
+        );
     }
 
     #[test]
     fn target_namespace_preview() {
+        let config = crate::config::Config::test_default();
         assert_eq!(
-            target_namespace("my-app", "preview-feat-123"),
+            target_namespace(&config, "my-app", "preview-feat-123"),
             "my-app-preview-feat-123"
+        );
+    }
+
+    #[test]
+    fn target_namespace_with_prefix() {
+        let config = crate::config::Config {
+            ns_prefix: Some("platform-test-abc".into()),
+            ..crate::config::Config::test_default()
+        };
+        assert_eq!(
+            target_namespace(&config, "my-app", "production"),
+            "platform-test-abc-my-app-prod"
         );
     }
 }

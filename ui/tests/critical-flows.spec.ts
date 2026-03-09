@@ -112,7 +112,7 @@ test.describe('Flow 2: Project CRUD', () => {
     await expect(page.getByRole('heading', { name: projName })).toBeVisible({ timeout: 10_000 });
 
     // Verify tabs exist
-    for (const tab of ['Issues', 'MRs', 'Pipelines', 'Deploys']) {
+    for (const tab of ['Issues', 'MRs', 'Builds', 'Deployments']) {
       await expect(page.locator(`[role="tab"]:has-text("${tab}"), .tab:has-text("${tab}"), a:has-text("${tab}")`).first()).toBeVisible();
     }
   });
@@ -143,13 +143,13 @@ test.describe('Flow 3: Issue CRUD', () => {
     await expect(page.locator('h2').first()).toBeVisible({ timeout: 5_000 });
 
     // Click Issues tab
-    await page.click('[role="tab"]:has-text("Issues"), .tab:has-text("Issues"), a:has-text("Issues")');
+    await page.locator('[role="tab"]:has-text("Issues"), .tab:has-text("Issues"), a:has-text("Issues")').first().click();
 
     // Create new issue
     await page.click('button:has-text("New Issue")');
-    await page.fill('input[placeholder*="title" i], input[name="title"]', 'Playwright test issue');
-    await page.fill('textarea[name="body"], textarea[placeholder*="description" i]', 'Created by Playwright');
-    await page.click('button[type="submit"]:has-text("Create")');
+    await page.getByLabel('Title').fill('Playwright test issue');
+    await page.getByLabel('Body').fill('Created by Playwright');
+    await page.click('button:has-text("Create")');
 
     // Should see the issue
     await expect(page.locator('text=Playwright test issue')).toBeVisible({ timeout: 5_000 });

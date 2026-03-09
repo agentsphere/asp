@@ -26,6 +26,8 @@ impl AgentProvider for ClaudeCodeProvider {
             registry_secret_name: params.registry_secret_name,
             valkey_url: params.valkey_url,
             claude_cli_version: params.claude_cli_version,
+            host_mount_path: params.host_mount_path,
+            claude_cli_path: params.claude_cli_path,
         }))
     }
 

@@ -1,4 +1,4 @@
-//! Integration tests for `pipeline::trigger` — on_push, on_api, on_mr.
+//! Integration tests for `pipeline::trigger` — `on_push`, `on_api`, `on_mr`.
 //!
 //! These tests exercise the public trigger functions with real Postgres and
 //! real (temp) git repos. Private helpers (`read_file_at_ref`, `get_ref_sha`,
@@ -31,7 +31,7 @@ fn create_test_repo_with_pipeline_yaml(yaml_content: &str) -> (TempDir, TempDir,
         .arg(&bare_path)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git init --bare failed: {:?}", out);
+    assert!(out.status.success(), "git init --bare failed: {out:?}");
 
     // Create a working copy
     let work_dir = TempDir::new().unwrap();
@@ -43,7 +43,7 @@ fn create_test_repo_with_pipeline_yaml(yaml_content: &str) -> (TempDir, TempDir,
         .arg(work_path)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git clone failed: {:?}", out);
+    assert!(out.status.success(), "git clone failed: {out:?}");
 
     // Write .platform.yaml
     std::fs::write(work_path.join(".platform.yaml"), yaml_content).unwrap();
@@ -55,7 +55,7 @@ fn create_test_repo_with_pipeline_yaml(yaml_content: &str) -> (TempDir, TempDir,
         .args(["add", "."])
         .output()
         .unwrap();
-    assert!(out.status.success(), "git add failed: {:?}", out);
+    assert!(out.status.success(), "git add failed: {out:?}");
 
     let out = Command::new("git")
         .args(["-C"])
@@ -71,7 +71,7 @@ fn create_test_repo_with_pipeline_yaml(yaml_content: &str) -> (TempDir, TempDir,
         ])
         .output()
         .unwrap();
-    assert!(out.status.success(), "git commit failed: {:?}", out);
+    assert!(out.status.success(), "git commit failed: {out:?}");
 
     let out = Command::new("git")
         .args(["-C"])
@@ -79,12 +79,12 @@ fn create_test_repo_with_pipeline_yaml(yaml_content: &str) -> (TempDir, TempDir,
         .args(["push", "origin", "main"])
         .output()
         .unwrap();
-    assert!(out.status.success(), "git push failed: {:?}", out);
+    assert!(out.status.success(), "git push failed: {out:?}");
 
     (bare_dir, work_dir, bare_path)
 }
 
-/// Create a project in the DB with a specific repo_path. Returns (project_id, owner_id).
+/// Create a project in the DB with a specific `repo_path`. Returns (`project_id`, `owner_id`).
 async fn create_project_with_repo(pool: &PgPool, repo_path: &str) -> (Uuid, Uuid) {
     // Get the admin user id (created by bootstrap)
     let row: (Uuid,) = sqlx::query_as("SELECT id FROM users WHERE name = 'admin'")
@@ -167,7 +167,7 @@ pipeline:
 #[sqlx::test(migrations = "./migrations")]
 async fn on_push_creates_pipeline(pool: PgPool) {
     let _state = helpers::test_state(pool.clone()).await;
-    let (bare_dir, _work_dir, bare_path) = create_test_repo_with_pipeline_yaml(SIMPLE_YAML);
+    let (bare_dir, work_dir, bare_path) = create_test_repo_with_pipeline_yaml(SIMPLE_YAML);
     let (project_id, user_id) = create_project_with_repo(&pool, bare_path.to_str().unwrap()).await;
 
     let params = PushTriggerParams {
@@ -205,7 +205,7 @@ async fn on_push_creates_pipeline(pool: PgPool) {
     assert_eq!(step_count.0, 1);
 
     drop(bare_dir);
-    drop(_work_dir);
+    drop(work_dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -286,13 +286,12 @@ async fn on_push_no_yaml_returns_none(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn on_push_branch_mismatch_returns_none(pool: PgPool) {
     let _state = helpers::test_state(pool.clone()).await;
-    let (bare_dir, _work_dir, bare_path) =
-        create_test_repo_with_pipeline_yaml(BRANCH_FILTERED_YAML);
+    let (bare_dir, work_dir, bare_path) = create_test_repo_with_pipeline_yaml(BRANCH_FILTERED_YAML);
     let (project_id, user_id) = create_project_with_repo(&pool, bare_path.to_str().unwrap()).await;
 
     // Push to "develop" but the YAML only triggers on "main"
     // We need a "develop" branch in the repo with the YAML for read_file_at_ref to work
-    let work_path = _work_dir.path();
+    let work_path = work_dir.path();
     Command::new("git")
         .args(["-C"])
         .arg(work_path)
@@ -321,7 +320,7 @@ async fn on_push_branch_mismatch_returns_none(pool: PgPool) {
     );
 
     drop(bare_dir);
-    drop(_work_dir);
+    drop(work_dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -354,7 +353,7 @@ async fn on_push_nonexistent_repo_returns_none(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn on_push_multi_step_creates_all_steps(pool: PgPool) {
     let _state = helpers::test_state(pool.clone()).await;
-    let (bare_dir, _work_dir, bare_path) = create_test_repo_with_pipeline_yaml(MULTI_STEP_YAML);
+    let (bare_dir, work_dir, bare_path) = create_test_repo_with_pipeline_yaml(MULTI_STEP_YAML);
     let (project_id, user_id) = create_project_with_repo(&pool, bare_path.to_str().unwrap()).await;
 
     let params = PushTriggerParams {
@@ -402,7 +401,7 @@ async fn on_push_multi_step_creates_all_steps(pool: PgPool) {
     assert_eq!(row.0.as_deref(), Some("abc123"));
 
     drop(bare_dir);
-    drop(_work_dir);
+    drop(work_dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -412,7 +411,7 @@ async fn on_push_multi_step_creates_all_steps(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn on_api_creates_pipeline(pool: PgPool) {
     let _state = helpers::test_state(pool.clone()).await;
-    let (bare_dir, _work_dir, bare_path) = create_test_repo_with_pipeline_yaml(SIMPLE_YAML);
+    let (bare_dir, work_dir, bare_path) = create_test_repo_with_pipeline_yaml(SIMPLE_YAML);
     let (project_id, user_id) = create_project_with_repo(&pool, bare_path.to_str().unwrap()).await;
 
     let pipeline_id = trigger::on_api(&pool, &bare_path, project_id, "refs/heads/main", user_id)
@@ -446,7 +445,7 @@ async fn on_api_creates_pipeline(pool: PgPool) {
     assert_eq!(sha_row.0.unwrap().len(), 40, "SHA should be 40 hex chars");
 
     drop(bare_dir);
-    drop(_work_dir);
+    drop(work_dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -456,7 +455,7 @@ async fn on_api_creates_pipeline(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn on_api_bare_branch_name(pool: PgPool) {
     let _state = helpers::test_state(pool.clone()).await;
-    let (bare_dir, _work_dir, bare_path) = create_test_repo_with_pipeline_yaml(SIMPLE_YAML);
+    let (bare_dir, work_dir, bare_path) = create_test_repo_with_pipeline_yaml(SIMPLE_YAML);
     let (project_id, user_id) = create_project_with_repo(&pool, bare_path.to_str().unwrap()).await;
 
     // Pass "main" instead of "refs/heads/main" — on_api strips the prefix for read_file_at_ref
@@ -472,7 +471,7 @@ async fn on_api_bare_branch_name(pool: PgPool) {
     assert_eq!(row.0, "main");
 
     drop(bare_dir);
-    drop(_work_dir);
+    drop(work_dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -508,8 +507,7 @@ async fn on_api_no_yaml_returns_error(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn on_mr_creates_pipeline(pool: PgPool) {
     let _state = helpers::test_state(pool.clone()).await;
-    let (bare_dir, _work_dir, bare_path) =
-        create_test_repo_with_pipeline_yaml(BRANCH_FILTERED_YAML);
+    let (bare_dir, work_dir, bare_path) = create_test_repo_with_pipeline_yaml(BRANCH_FILTERED_YAML);
     let (project_id, user_id) = create_project_with_repo(&pool, bare_path.to_str().unwrap()).await;
 
     let params = MrTriggerParams {
@@ -537,7 +535,7 @@ async fn on_mr_creates_pipeline(pool: PgPool) {
     assert_eq!(row.0, "mr");
 
     drop(bare_dir);
-    drop(_work_dir);
+    drop(work_dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -547,8 +545,7 @@ async fn on_mr_creates_pipeline(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn on_mr_action_mismatch_returns_none(pool: PgPool) {
     let _state = helpers::test_state(pool.clone()).await;
-    let (bare_dir, _work_dir, bare_path) =
-        create_test_repo_with_pipeline_yaml(BRANCH_FILTERED_YAML);
+    let (bare_dir, work_dir, bare_path) = create_test_repo_with_pipeline_yaml(BRANCH_FILTERED_YAML);
     let (project_id, user_id) = create_project_with_repo(&pool, bare_path.to_str().unwrap()).await;
 
     // YAML only allows "opened", not "closed"
@@ -568,7 +565,7 @@ async fn on_mr_action_mismatch_returns_none(pool: PgPool) {
     );
 
     drop(bare_dir);
-    drop(_work_dir);
+    drop(work_dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -580,7 +577,7 @@ async fn on_push_invalid_yaml_returns_error(pool: PgPool) {
     let _state = helpers::test_state(pool.clone()).await;
 
     let invalid_yaml = "this is not valid yaml: [[[";
-    let (bare_dir, _work_dir, bare_path) = create_test_repo_with_pipeline_yaml(invalid_yaml);
+    let (bare_dir, work_dir, bare_path) = create_test_repo_with_pipeline_yaml(invalid_yaml);
     let (project_id, user_id) = create_project_with_repo(&pool, bare_path.to_str().unwrap()).await;
 
     let params = PushTriggerParams {
@@ -595,7 +592,7 @@ async fn on_push_invalid_yaml_returns_error(pool: PgPool) {
     assert!(result.is_err(), "invalid YAML should produce an error");
 
     drop(bare_dir);
-    drop(_work_dir);
+    drop(work_dir);
 }
 
 // ---------------------------------------------------------------------------

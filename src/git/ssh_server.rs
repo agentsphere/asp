@@ -153,8 +153,8 @@ impl russh::server::Handler for SshSessionHandler {
                 user_id: row.user_id,
                 user_name: row.user_name,
                 ip_addr: None,
-                scope_project_id: None,
-                scope_workspace_id: None,
+                boundary_project_id: None,
+                boundary_workspace_id: None,
             });
 
             Ok(Auth::Accept)

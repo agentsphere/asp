@@ -28,6 +28,11 @@ fn cache_key(user_id: Uuid, project_id: Option<Uuid>) -> String {
 
 /// Resolve all effective permissions for a user, optionally scoped to a project.
 /// Checks Valkey cache first, then queries DB on miss.
+///
+/// **Cache note**: Permissions are cached for up to `PLATFORM_PERMISSION_CACHE_TTL`
+/// seconds (default 300s). Delegations with `expires_at` in the future may remain
+/// cached after they expire — the stale "allowed" entry persists until cache TTL
+/// expires naturally. This is acceptable for the default 5-minute TTL.
 #[tracing::instrument(skip(pool, valkey), fields(%user_id), err)]
 pub async fn effective_permissions(
     pool: &PgPool,
@@ -170,10 +175,16 @@ fn scope_allows(token_scopes: Option<&[String]>, perm: Permission) -> bool {
     scopes.iter().any(|s| s == perm.as_str())
 }
 
-/// If a project belongs to a workspace, grant implicit project permissions
-/// based on the user's workspace membership role:
-///   - workspace owner/admin → project:read + project:write
-///   - workspace member       → project:read
+/// Grant implicit project permissions based on workspace membership.
+///
+/// When a project belongs to a workspace, members of that workspace get
+/// implicit permissions without needing explicit role assignments:
+///   - workspace owner/admin → `ProjectRead` + `ProjectWrite`
+///   - workspace member       → `ProjectRead` only
+///
+/// These grants are added to the user's effective permissions alongside
+/// any explicit role/delegation grants. They are subject to the same
+/// Valkey cache TTL as other permissions.
 async fn add_workspace_permissions(
     pool: &PgPool,
     perms: &mut HashSet<Permission>,

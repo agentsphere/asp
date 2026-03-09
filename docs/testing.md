@@ -1,17 +1,61 @@
 # Testing Guide
 
-This document covers all testing tiers for the platform: unit, integration, and E2E.
+This document covers all testing tiers for the platform: unit, integration, E2E, and LLM.
+
+## Tier Boundary: Endpoint Scope vs User Journey
+
+The boundary between integration and E2E is **how much of the user's reality are we simulating**, not whether the code is sync or async.
+
+- **Integration** = Single API endpoint + ALL its side effects (sync and async). Can spawn background tasks, poll for pod status, wait for workers to complete. Tests: "does this endpoint work correctly, including everything it kicks off?"
+- **E2E** = Multi-step user journeys spanning multiple API calls. Tests: "can a user complete this business workflow end-to-end?"
+
+### Decision Tree
+
+```
+Does it touch I/O?
+  No → Unit test
+  Yes ↓
+Is it testing a single endpoint and its side effects?
+(even if those side effects are async — pods, executors, reconcilers, workers)
+  Yes → Integration test
+  No ↓
+Is it a multi-step user journey across multiple endpoints?
+  Yes ↓
+Does it use a real Claude CLI with live Anthropic credentials?
+  Yes → LLM test (just test-llm)
+  No → E2E test (just test-e2e)
+```
+
+### Ambiguous Cases Resolved
+
+| Scenario | Tier | Why |
+|---|---|---|
+| `create_session` → pod exists in K8s | Integration | Single endpoint, K8s API is a side effect |
+| `create_session` → pod reaches `Running` → messages flow | Integration | Single endpoint + its async workers |
+| Pipeline trigger → executor → pod completes → status success | Integration | Single endpoint + background executor |
+| Webhook fires → wiremock receives POST | Integration | Single endpoint's async delivery side effect |
+| Reconciler applies manifest after deployment create | Integration | Single endpoint + reconciler worker |
+| Git push → commits readable via browse API | Integration | Single endpoint + filesystem side effect |
+| Mock CLI emits canned NDJSON → session updated | Integration | Mock script, no real LLM |
+| Login → create project → push → pipeline → deploy | E2E | Multi-step business journey |
+| Create project → add agent → agent runs → results visible | E2E | Multi-step business journey |
+| MR open → pipeline auto-triggers → merge → preview cleaned up | E2E | Multi-step business journey |
 
 ## Overview
 
-| Tier | Count | Runtime | Infra required | Command |
+| Tier | What's tested | Real infra | LLM | Command |
 |---|---|---|---|---|
-| Unit | 716 | ~1s | None | `just test-unit` |
-| Integration | 574 | ~4 min | Kind cluster | `just test-integration` |
-| E2E | 49 | ~160s | Kind cluster | `just test-e2e` |
-| FE-BE | 33+ | ~30s | Kind cluster | `just test-integration` / `just types` / `just test-ui` |
+| Unit | Pure functions, state machines, parsers, validators | None | N/A | `just test-unit` |
+| Integration | Single endpoint + all side effects (K8s pods, workers, mock CLI) | Postgres, Valkey, MinIO, K8s API | Mock (`CLAUDE_CLI_PATH`) | `just test-integration` |
+| E2E | Multi-step business workflows across multiple endpoints | All real + background tasks | Disabled (`cli_spawn_enabled: false`) | `just test-e2e` |
+| LLM | Claude CLI protocol with real Anthropic API | Real Claude CLI + credentials | Real | `just test-llm` |
+| FE-BE | API contract + Playwright browser tests | Kind cluster | N/A | `just test-integration` / `just types` / `just test-ui` |
 
 All tests use [cargo-nextest](https://nexte.st/) as the test runner.
+
+**Coverage target**: 100% on unit + integration (diff-only enforcement via `just cov-diff-check`). E2E covers critical user journeys only.
+
+**LLM mocking strategy**: No real LLM calls in unit/integration/E2E. Integration tests use `CLAUDE_CLI_PATH=tests/fixtures/mock-claude-cli.sh` (set automatically by `test_state()`). The mock script exits instantly with canned NDJSON. Separate `just test-llm` for real Anthropic API protocol tests.
 
 **Frontend-Backend integration testing** is covered in a dedicated guide: [`docs/fe-be-testing.md`](fe-be-testing.md). It describes three tiers that prevent type drift between the Rust API and the Preact UI: ts-rs auto-generated types, API contract integration tests, and Playwright browser E2E tests.
 
@@ -44,9 +88,13 @@ just test-doc           # cargo test --doc (doc examples)
 
 ## Integration Tests
 
-**Location**: `tests/*_integration.rs` (25 files, 574 tests).
+**Location**: `tests/*_integration.rs` (26 files, 590+ tests).
 
-**What they cover**: API endpoint flows end-to-end against a real Postgres database. Auth flows, RBAC, project CRUD, issues, MRs, webhooks, notifications, pipelines, deployments, sessions, secrets, registry, observability, workspaces.
+**What they cover**: Single API endpoint + all its side effects against real infrastructure. Each test targets one endpoint and verifies its complete behavior, including async side effects like background workers, K8s pod creation, mock CLI subprocess execution, webhook delivery, and reconciler runs.
+
+**Integration tests can be async.** If a handler kicks off a background task (executor, reconciler, pod), the integration test spawns that task and polls/waits for the outcome. The test is still "integration" because it validates one endpoint's complete behavior — the async worker is an implementation detail.
+
+**Mock CLI in integration tests**: `test_state()` always sets `CLAUDE_CLI_PATH` to `tests/fixtures/mock-claude-cli.sh`. Tests that need the CLI subprocess path set `cli_spawn_enabled: true` via `test_state_with_cli(pool, true)`. The mock script exits instantly with canned NDJSON — no external dependency, no runtime cost.
 
 **Run**:
 ```bash
@@ -102,14 +150,14 @@ async fn create_and_fetch_user(pool: PgPool) {
 ### Integration test files
 
 - `admin_integration.rs` — admin user/role management
-- `agent_spawn_integration.rs` — agent session DB operations
 - `alert_eval_integration.rs` — alert evaluation logic
 - `auth_integration.rs` — login, tokens, sessions, password hashing
 - `contract_integration.rs` — FE-BE API contract tests
 - `create_app_integration.rs` — app/bot session creation
 - `dashboard_integration.rs` — dashboard/onboarding status
-- `deployment_integration.rs` — deployment CRUD, status, rollback
+- `deployment_integration.rs` — deployment CRUD, status, rollback, preview lifecycle
 - `eventbus_integration.rs` — event bus handlers
+- `git_browse_integration.rs` — git browse APIs (branches, tree, blob, commits)
 - `git_smart_http_integration.rs` — git smart HTTP protocol, LFS
 - `issue_mr_integration.rs` — issues, comments, merge requests, reviews
 - `notification_integration.rs` — notification creation, queries
@@ -122,9 +170,9 @@ async fn create_and_fetch_user(pool: PgPool) {
 - `rbac_integration.rs` — role assignment, permission resolution, delegation
 - `registry_integration.rs` — container registry push/pull, GC
 - `secrets_integration.rs` — secrets CRUD, user keys
-- `session_integration.rs` — agent session management
+- `session_integration.rs` — agent session management, spawn lineage
 - `user_keys_integration.rs` — user API key management
-- `webhook_integration.rs` — webhook CRUD, dispatch, HMAC signing
+- `webhook_integration.rs` — webhook CRUD, dispatch, HMAC signing, concurrency
 - `workspace_integration.rs` — workspace CRUD, membership
 
 ### Test helpers
@@ -132,8 +180,10 @@ async fn create_and_fetch_user(pool: PgPool) {
 All shared helpers are in `tests/helpers/mod.rs`:
 
 **State & Router**:
-- `test_state(pool: PgPool) -> (AppState, String)` — builds full state with real Valkey, MinIO, dummy K8s client. Returns `(state, admin_token)`. The admin API token is created directly in the DB, bypassing the login endpoint's rate limiter. No FLUSHDB — all Valkey keys are UUID-scoped and never collide between parallel tests.
+- `test_state(pool: PgPool) -> (AppState, String)` — builds full state with real Valkey, MinIO, K8s client. Returns `(state, admin_token)`. The admin API token is created directly in the DB, bypassing the login endpoint's rate limiter. No FLUSHDB — all Valkey keys are UUID-scoped and never collide between parallel tests.
+- `test_state_with_cli(pool, cli_spawn_enabled) -> (AppState, String)` — wraps `test_state()`, always sets `CLAUDE_CLI_PATH` to the mock CLI script. Pass `true` to enable CLI subprocess spawning for tests that exercise the mock CLI flow.
 - `test_router(state: AppState) -> Router` — merges API + observe + registry routers with state.
+- `start_test_server(pool) -> (AppState, String, JoinHandle)` — real TCP server for tests needing pod connectivity (binds to `PLATFORM_LISTEN_PORT`).
 
 **Auth**:
 - `admin_login(&app) -> String` — login as bootstrap admin via POST `/api/auth/login`, returns bearer token. **Only use for tests that specifically test login/session behavior** (~2 tests in `auth_integration.rs`). All other tests should use the pre-created `admin_token` from `test_state()`.
@@ -142,14 +192,20 @@ All shared helpers are in `tests/helpers/mod.rs`:
 
 **HTTP**:
 - `get_json`, `post_json`, `patch_json`, `put_json`, `delete_json` — HTTP helpers with bearer auth.
+- `get_bytes(&app, token, path) -> (StatusCode, Vec<u8>)` — GET raw bytes (for non-JSON endpoints).
+
+**Git**:
+- `create_bare_repo() -> (TempDir, PathBuf)` — bare git repo under `/tmp/platform-e2e/` (visible to Kind).
+- `create_working_copy(&bare_path) -> (TempDir, PathBuf)` — clone + initial commit + push to main.
+- `git_cmd(&dir, &[args]) -> String` — run git command, panic on failure.
 
 **Important**: The admin token from `test_state()` bypasses the login rate limiter entirely. This avoids the `rate:login:admin` Valkey key collision that caused flaky tests when 574 parallel tests all called `admin_login()`. The rate limit key was the only cross-test Valkey key — all other keys (permission cache, upload sessions, WebAuthn challenges) contain per-test UUIDs.
 
 ## E2E Tests
 
-**Location**: `tests/e2e_*.rs` (5 files, 49 tests total) + `tests/e2e_helpers/mod.rs`.
+**Location**: `tests/e2e_*.rs` (5 files, 34 tests total) + `tests/e2e_helpers/mod.rs`.
 
-**What they cover**: full system behavior with real K8s pods, MinIO object storage, Valkey caching, and Postgres. Pipeline execution, git operations, webhook delivery, agent lifecycle, deployment management.
+**What they cover**: multi-step user journeys spanning multiple API calls. E2E tests simulate real business workflows (pipeline execution, git protocol, deployment reconciliation, agent pod lifecycle) rather than individual endpoint behavior.
 
 ### Prerequisites
 
@@ -164,7 +220,7 @@ This creates the Kind cluster with shared mount, Postgres, Valkey, MinIO, namesp
 ### Running E2E Tests
 
 ```bash
-# All 49 E2E tests (ephemeral namespace, auto port-forward)
+# All 34 E2E tests (ephemeral namespace, auto port-forward)
 just test-e2e
 
 # Specific test file
@@ -250,25 +306,21 @@ Tests pipeline triggering, execution via real K8s pods, multi-step pipelines, ca
 
 Tests: `pipeline_trigger_and_execute`, `pipeline_with_multiple_steps`, `pipeline_step_failure`, `pipeline_cancel`, `step_logs_captured`, `step_logs_in_minio`, `artifact_upload_and_download`, `pipeline_branch_trigger_filter`, `pipeline_definition_parsing`, `concurrent_pipeline_limit`.
 
-#### `e2e_git.rs` (8 tests)
+#### `e2e_git.rs` (3 tests)
 
-Tests git operations: bare repo creation on project create, smart HTTP push/clone, branch listing, commit history, tree browsing, blob content retrieval, and merge request merge.
+Tests multi-step git protocol operations: smart HTTP push, clone, and merge request merge.
 
-**Pattern**: create a bare repo + working copy, point a project at the bare repo via DB update, then exercise git browser API endpoints.
+**Pattern**: create a bare repo + working copy, exercise multi-step git workflows. Single-endpoint browse tests (branches, tree, blob, commits) moved to `git_browse_integration.rs`.
 
-Tests: `bare_repo_init_on_project_create`, `smart_http_push`, `smart_http_clone`, `branch_listing`, `commit_history`, `tree_browsing`, `blob_content`, `merge_request_merge`.
+Tests: `smart_http_push`, `smart_http_clone`, `merge_request_merge`.
 
-#### `e2e_webhook.rs` (6 tests)
+#### `e2e_webhook.rs` (1 test)
 
-Tests webhook delivery, HMAC-SHA256 signing, pipeline completion events, concurrency limits, and timeout handling.
+Tests multi-step webhook dispatch: pipeline trigger → execution → completion → webhook fires.
 
-**Critical pattern — SSRF bypass**: the platform's SSRF protection blocks `127.0.0.1` URLs. Since wiremock binds to localhost, tests insert webhooks directly into DB instead of using the API:
-```rust
-sqlx::query("INSERT INTO webhooks (id, project_id, url, events, is_active) VALUES ($1,$2,$3,$4,true)")
-    .bind(id).bind(project_id).bind(&wiremock_url).bind(&["push"]).execute(&pool).await.unwrap();
-```
+Single-endpoint webhook dispatch tests (issue create fires webhook, HMAC signature, timeout, concurrency) moved to `webhook_integration.rs`.
 
-Tests: `webhook_fires_on_issue_create`, `webhook_hmac_signature`, `webhook_no_signature_without_secret`, `webhook_fires_on_pipeline_complete`, `webhook_concurrent_limit`, `webhook_timeout_doesnt_block`.
+Tests: `webhook_fires_on_pipeline_complete`.
 
 #### `e2e_agent.rs` (8 tests)
 
@@ -278,13 +330,13 @@ Tests agent session lifecycle: creation, identity provisioning, pod spec generat
 
 Tests: `agent_session_creation`, `agent_identity_created`, `agent_identity_cleanup`, `agent_pod_spec_correct`, `agent_role_determines_mcp_config`, `agent_session_stop`, `agent_session_with_custom_image`, `agent_reaper_captures_logs`.
 
-#### `e2e_deployer.rs` (17 tests)
+#### `e2e_deployer.rs` (7 tests)
 
-Tests deployment API layer: CRUD, status transitions, history recording, rollback, image updates, stop, preview environment lifecycle, reconciler behavior, multi-env, optimistic locking, and preview TTL cleanup.
+Tests deployer reconciler behavior with real K8s: basic deployment, rollback, stop (scale to zero), optimistic locking, multi-env reconciliation, history tracking, and preview TTL cleanup.
 
-**Pattern**: API-only tests exercise CRUD without the reconciler. Reconciler tests spawn a `ReconcilerGuard` (similar to `ExecutorGuard` for pipelines) that runs the reconciler loop in a background task.
+**Pattern**: Reconciler tests spawn a `ReconcilerGuard` (similar to `ExecutorGuard` for pipelines) that runs the reconciler loop in a background task. Deployment API CRUD tests and preview lifecycle tests moved to `deployment_integration.rs`.
 
-Tests: `deployment_status_transitions`, `deployment_get_returns_correct_fields`, `deployment_history_recorded`, `deployment_rollback`, `deployment_update_image`, `deployment_stop`, `deployment_failed_state_visible`, `ops_repo_sync_caches_in_valkey`, `preview_deployment_lifecycle`, `preview_cleanup_on_mr_merge`, `preview_expired_cleanup`, `reconciler_deploys_basic_manifest`, `reconciler_history_actions`, `reconciler_multi_env`, `reconciler_optimistic_lock`, `reconciler_stop_scales_to_zero`, `reconciler_rollback_restores_previous`.
+Tests: `reconciler_deploys_basic_manifest`, `reconciler_rollback_restores_previous`, `reconciler_stop_scales_to_zero`, `reconciler_optimistic_lock`, `preview_expired_cleanup`, `reconciler_multi_env`, `reconciler_history_actions`.
 
 ## Ephemeral Test Infrastructure
 
@@ -350,12 +402,13 @@ The script sets these before running `cargo nextest`:
 | `PLATFORM_DEV` | `true` |
 | `RUST_LOG` | `warn` |
 
-For E2E tests, additionally:
+For all test types, additionally:
 
 | Variable | Value |
 |---|---|
 | `PLATFORM_PIPELINE_NAMESPACE` | `{namespace}-pipelines` |
 | `PLATFORM_AGENT_NAMESPACE` | `{namespace}-agents` |
+| `CLAUDE_CLI_PATH` | `{project_dir}/tests/fixtures/mock-claude-cli.sh` |
 
 ### Cleaning up stale namespaces
 
@@ -364,6 +417,26 @@ If a test run is killed without cleanup (e.g., `kill -9`), stale namespaces may 
 ```bash
 just test-cleanup   # deletes all test-* namespaces
 ```
+
+## Migration Status: E2E → Integration
+
+Single-endpoint tests have been migrated from E2E to integration per the new boundary definition:
+
+| Migrated from | Migrated to | Tests moved |
+|---|---|---|
+| `e2e_webhook.rs` | `webhook_integration.rs` | 5 (dispatch, HMAC, timeout, concurrency) |
+| `e2e_git.rs` | `git_browse_integration.rs` | 5 (branches, tree, blob, commits, repo init) |
+| `e2e_deployer.rs` | `deployment_integration.rs` | 2 (preview lifecycle, MR merge cleanup) |
+| `agent_spawn_integration.rs` | `session_integration.rs` | 2 unique tests merged; 7 duplicates removed |
+| `e2e_deployer.rs` | (deleted) | 8 duplicate CRUD tests removed |
+
+**Remaining E2E tests** (34 total) are all multi-step: pipeline execution (10), agent pod lifecycle (8), deployer reconciler (7), git protocol (3), SSH (5), pipeline webhook (1).
+
+**Future E2E tests** to be written as the suite matures:
+- Onboarding journey: signup → create project → configure → first push → first pipeline
+- Full agent workflow: create project → create session → agent completes task → logs visible
+- MR lifecycle: branch → push → MR → pipeline → review → merge → preview cleanup
+- Deployment pipeline: push → build → deploy → verify → rollback
 
 ## Common Pitfalls
 

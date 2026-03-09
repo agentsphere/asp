@@ -26,7 +26,7 @@ interface ProgressEvent {
 }
 
 export function OnboardingOverlay() {
-  const { needsOnboarding, hasProviderKey, refresh } = useOnboarding();
+  const { needsOnboarding, hasProviderKey, hasCliCredentials, refresh } = useOnboarding();
 
   // --- API key state ---
   const [apiKey, setApiKey] = useState('');
@@ -219,7 +219,7 @@ export function OnboardingOverlay() {
           </p>
         </div>
 
-        {/* API Key Section (hidden if user already has a key) */}
+        {/* API Key Section (hidden if user already has a key or CLI credentials) */}
         {!hasProviderKey && (
           <div class="onboarding-key-section">
             <form onSubmit={handleValidate} style="display:flex;gap:0.5rem;align-items:flex-start">
@@ -247,6 +247,11 @@ export function OnboardingOverlay() {
             {keyValid && (
               <div class="onboarding-key-status valid">API key verified and saved</div>
             )}
+          </div>
+        )}
+        {hasCliCredentials && !keyValid && (
+          <div class="onboarding-key-section">
+            <div class="onboarding-key-status valid">Authenticated via Claude CLI</div>
           </div>
         )}
 

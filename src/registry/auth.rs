@@ -16,10 +16,10 @@ use crate::store::AppState;
 pub struct RegistryUser {
     pub user_id: Uuid,
     pub user_name: String,
-    /// Hard project scope from API token.
-    pub scope_project_id: Option<Uuid>,
-    /// Hard workspace scope from API token.
-    pub scope_workspace_id: Option<Uuid>,
+    /// Hard project boundary from API token.
+    pub boundary_project_id: Option<Uuid>,
+    /// Hard workspace boundary from API token.
+    pub boundary_workspace_id: Option<Uuid>,
 }
 
 /// Rejection type for registry auth — returns OCI-compliant 401 with Www-Authenticate.
@@ -38,7 +38,7 @@ impl IntoResponse for RegistryAuthRejection {
         let mut headers = HeaderMap::new();
         headers.insert(
             "www-authenticate",
-            HeaderValue::from_static(r#"Bearer realm="/v2/token",service="platform-registry""#),
+            HeaderValue::from_static(r#"Basic realm="platform-registry""#),
         );
 
         (StatusCode::UNAUTHORIZED, headers, axum::Json(body)).into_response()
@@ -78,8 +78,8 @@ impl FromRequestParts<AppState> for RegistryUser {
                 return Ok(Self {
                     user_id: user.user_id,
                     user_name: user.user_name,
-                    scope_project_id: user.scope_project_id,
-                    scope_workspace_id: user.scope_workspace_id,
+                    boundary_project_id: user.scope_project_id,
+                    boundary_workspace_id: user.scope_workspace_id,
                 });
             }
             return Err(RegistryAuthRejection);
@@ -96,8 +96,8 @@ impl FromRequestParts<AppState> for RegistryUser {
                 return Ok(Self {
                     user_id: user.user_id,
                     user_name: user.user_name,
-                    scope_project_id: user.scope_project_id,
-                    scope_workspace_id: user.scope_workspace_id,
+                    boundary_project_id: user.scope_project_id,
+                    boundary_workspace_id: user.scope_workspace_id,
                 });
             }
             return Err(RegistryAuthRejection);
@@ -184,6 +184,24 @@ async fn lookup_basic_auth(
     }
 
     row
+}
+
+/// Optional registry auth — returns `None` instead of 401 when credentials are missing.
+/// Used on pull/read endpoints to allow anonymous access to public projects.
+pub struct OptionalRegistryUser(pub Option<RegistryUser>);
+
+impl FromRequestParts<AppState> for OptionalRegistryUser {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        match RegistryUser::from_request_parts(parts, state).await {
+            Ok(user) => Ok(Self(Some(user))),
+            Err(_) => Ok(Self(None)),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -128,12 +128,13 @@ async fn create_issue(
     }
 
     // Creating issues requires project:write
-    let allowed = crate::rbac::resolver::has_permission(
+    let allowed = crate::rbac::resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         Some(id),
         Permission::ProjectWrite,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;
@@ -347,12 +348,13 @@ async fn update_issue(
     .ok_or_else(|| ApiError::NotFound("issue".into()))?;
 
     if issue_author != auth.user_id {
-        let allowed = crate::rbac::resolver::has_permission(
+        let allowed = crate::rbac::resolver::has_permission_scoped(
             &state.pool,
             &state.valkey,
             auth.user_id,
             Some(id),
             Permission::ProjectWrite,
+            auth.token_scopes.as_deref(),
         )
         .await
         .map_err(ApiError::Internal)?;
@@ -560,12 +562,13 @@ async fn update_comment(
             .ok_or_else(|| ApiError::NotFound("comment".into()))?;
 
     if comment_author != auth.user_id {
-        let is_admin = crate::rbac::resolver::has_permission(
+        let is_admin = crate::rbac::resolver::has_permission_scoped(
             &state.pool,
             &state.valkey,
             auth.user_id,
             None,
             Permission::AdminUsers,
+            auth.token_scopes.as_deref(),
         )
         .await
         .map_err(ApiError::Internal)?;

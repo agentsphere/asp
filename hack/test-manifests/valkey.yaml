@@ -9,6 +9,7 @@ spec:
   containers:
     - name: valkey
       image: valkey/valkey:8-alpine
+      args: ["--save", "", "--appendonly", "no"]
       ports:
         - containerPort: 6379
       readinessProbe:
@@ -21,13 +22,14 @@ spec:
           cpu: 50m
           memory: 64Mi
         limits:
-          memory: 256Mi
+          memory: 512Mi
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: valkey
 spec:
+  type: NodePort
   selector:
     app: valkey
   ports:

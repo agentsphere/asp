@@ -372,4 +372,98 @@ mod tests {
         let truncated = truncate_str(emojis, 2);
         assert_eq!(truncated, "🎉🎊...");
     }
+
+    #[test]
+    fn render_assistant_unknown_block_type() {
+        let msg = CliMessage::Assistant(AssistantMessage {
+            message: AssistantContent {
+                content: vec![serde_json::json!({"type": "server_tool_use", "name": "mcp"})],
+                model: None,
+                usage: None,
+            },
+            session_id: None,
+        });
+        render_message(&msg); // exercises `_ => {}` branch
+    }
+
+    #[test]
+    fn render_user_non_tool_result_block() {
+        let msg = CliMessage::User(UserMessage {
+            message: UserContent {
+                content: vec![serde_json::json!({"type": "text", "text": "user said hi"})],
+            },
+            session_id: None,
+        });
+        render_message(&msg); // user block that isn't tool_result — skipped
+    }
+
+    #[test]
+    fn render_user_tool_result_missing_fields() {
+        let msg = CliMessage::User(UserMessage {
+            message: UserContent {
+                content: vec![serde_json::json!({"type": "tool_result"})],
+            },
+            session_id: None,
+        });
+        render_message(&msg); // missing tool_use_id and content — uses defaults
+    }
+
+    #[test]
+    fn render_system_no_model_no_version() {
+        let msg = CliMessage::System(SystemMessage {
+            subtype: "init".into(),
+            session_id: "s1".into(),
+            model: None,
+            tools: None,
+            claude_code_version: None,
+        });
+        render_message(&msg); // uses "default" model, no version suffix
+    }
+
+    #[test]
+    fn notify_desktop_does_not_panic() {
+        notify_desktop("test", "body");
+    }
+
+    #[test]
+    fn render_result_success_partial_metadata() {
+        // Only cost, no turns or duration
+        let msg = CliMessage::Result(ResultMessage {
+            subtype: "success".into(),
+            session_id: "s1".into(),
+            is_error: false,
+            result: Some("OK".into()),
+            total_cost_usd: Some(0.01),
+            duration_ms: None,
+            num_turns: None,
+            usage: None,
+        });
+        render_message(&msg);
+
+        // Only turns
+        let msg2 = CliMessage::Result(ResultMessage {
+            subtype: "success".into(),
+            session_id: "s1".into(),
+            is_error: false,
+            result: Some("OK".into()),
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: Some(5),
+            usage: None,
+        });
+        render_message(&msg2);
+
+        // Only duration
+        let msg3 = CliMessage::Result(ResultMessage {
+            subtype: "success".into(),
+            session_id: "s1".into(),
+            is_error: false,
+            result: Some("OK".into()),
+            total_cost_usd: None,
+            duration_ms: Some(9999),
+            num_turns: None,
+            usage: None,
+        });
+        render_message(&msg3);
+    }
 }

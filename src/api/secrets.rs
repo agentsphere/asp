@@ -17,7 +17,7 @@ use crate::secrets::request::{MAX_PENDING_PER_SESSION, SecretRequest, SecretRequ
 use crate::store::AppState;
 use crate::validation;
 
-use super::helpers::ListResponse;
+use super::helpers::{ListResponse, require_admin};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -137,23 +137,6 @@ async fn require_secret_write(
         Some(project_id),
         Permission::SecretWrite,
         auth.token_scopes.as_deref(),
-    )
-    .await
-    .map_err(ApiError::Internal)?;
-
-    if !allowed {
-        return Err(ApiError::Forbidden);
-    }
-    Ok(())
-}
-
-async fn require_admin(state: &AppState, auth: &AuthUser) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission(
-        &state.pool,
-        &state.valkey,
-        auth.user_id,
-        None,
-        Permission::AdminUsers,
     )
     .await
     .map_err(ApiError::Internal)?;

@@ -55,13 +55,12 @@ fn project_resource_attrs(
     ]
 }
 
-/// Build a minimal OTLP ExportTraceServiceRequest with one span.
-fn build_trace_request(trace_id: &[u8; 16], span_id: &[u8; 8], project_id: Uuid) -> Vec<u8> {
+/// Build a minimal OTLP `ExportTraceServiceRequest` with one span.
+fn build_trace_request(trace_id: &[u8; 16], span_id: [u8; 8], project_id: Uuid) -> Vec<u8> {
     let request = platform::observe::proto::ExportTraceServiceRequest {
         resource_spans: vec![platform::observe::proto::ResourceSpans {
             resource: Some(platform::observe::proto::Resource {
                 attributes: project_resource_attrs("ingest-test-svc", project_id),
-                ..Default::default()
             }),
             scope_spans: vec![platform::observe::proto::ScopeSpans {
                 spans: vec![platform::observe::proto::Span {
@@ -79,14 +78,13 @@ fn build_trace_request(trace_id: &[u8; 16], span_id: &[u8; 8], project_id: Uuid)
                 }],
                 ..Default::default()
             }],
-            ..Default::default()
         }],
     };
     request.encode_to_vec()
 }
 
 /// Build a trace request WITHOUT `platform.project_id` (for testing rejection).
-fn build_trace_request_no_project(trace_id: &[u8; 16], span_id: &[u8; 8]) -> Vec<u8> {
+fn build_trace_request_no_project(trace_id: &[u8; 16], span_id: [u8; 8]) -> Vec<u8> {
     let request = platform::observe::proto::ExportTraceServiceRequest {
         resource_spans: vec![platform::observe::proto::ResourceSpans {
             resource: Some(platform::observe::proto::Resource {
@@ -98,7 +96,6 @@ fn build_trace_request_no_project(trace_id: &[u8; 16], span_id: &[u8; 8]) -> Vec
                         )),
                     }),
                 }],
-                ..Default::default()
             }),
             scope_spans: vec![platform::observe::proto::ScopeSpans {
                 spans: vec![platform::observe::proto::Span {
@@ -112,19 +109,17 @@ fn build_trace_request_no_project(trace_id: &[u8; 16], span_id: &[u8; 8]) -> Vec
                 }],
                 ..Default::default()
             }],
-            ..Default::default()
         }],
     };
     request.encode_to_vec()
 }
 
-/// Build a minimal OTLP ExportLogsServiceRequest with one log record.
+/// Build a minimal OTLP `ExportLogsServiceRequest` with one log record.
 fn build_logs_request(project_id: Uuid) -> Vec<u8> {
     let request = platform::observe::proto::ExportLogsServiceRequest {
         resource_logs: vec![platform::observe::proto::ResourceLogs {
             resource: Some(platform::observe::proto::Resource {
                 attributes: project_resource_attrs("ingest-log-svc", project_id),
-                ..Default::default()
             }),
             scope_logs: vec![platform::observe::proto::ScopeLogs {
                 log_records: vec![platform::observe::proto::LogRecord {
@@ -140,19 +135,17 @@ fn build_logs_request(project_id: Uuid) -> Vec<u8> {
                 }],
                 ..Default::default()
             }],
-            ..Default::default()
         }],
     };
     request.encode_to_vec()
 }
 
-/// Build a minimal OTLP ExportMetricsServiceRequest with one gauge.
+/// Build a minimal OTLP `ExportMetricsServiceRequest` with one gauge.
 fn build_metrics_request(metric_name: &str, project_id: Uuid) -> Vec<u8> {
     let request = platform::observe::proto::ExportMetricsServiceRequest {
         resource_metrics: vec![platform::observe::proto::ResourceMetrics {
             resource: Some(platform::observe::proto::Resource {
                 attributes: project_resource_attrs("ingest-metric-svc", project_id),
-                ..Default::default()
             }),
             scope_metrics: vec![platform::observe::proto::ScopeMetrics {
                 metrics: vec![platform::observe::proto::Metric {
@@ -175,7 +168,6 @@ fn build_metrics_request(metric_name: &str, project_id: Uuid) -> Vec<u8> {
                 }],
                 ..Default::default()
             }],
-            ..Default::default()
         }],
     };
     request.encode_to_vec()
@@ -228,7 +220,7 @@ async fn ingest_traces_protobuf(pool: PgPool) {
 
     let trace_id: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
     let span_id: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
-    let body = build_trace_request(&trace_id, &span_id, project_id);
+    let body = build_trace_request(&trace_id, span_id, project_id);
 
     let (status, _) = post_protobuf(&app, &admin_token, "/v1/traces", body).await;
     assert_eq!(status, StatusCode::OK);
@@ -414,7 +406,7 @@ async fn otlp_ingest_missing_project_id_returns_400(pool: PgPool) {
 
     let trace_id: [u8; 16] = [10; 16];
     let span_id: [u8; 8] = [20; 8];
-    let body = build_trace_request_no_project(&trace_id, &span_id);
+    let body = build_trace_request_no_project(&trace_id, span_id);
 
     let (status, resp_bytes) = post_protobuf(&app, &admin_token, "/v1/traces", body).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -456,7 +448,6 @@ async fn otlp_ingest_invalid_project_id_uuid_returns_400(pool: PgPool) {
                         }),
                     },
                 ],
-                ..Default::default()
             }),
             scope_spans: vec![platform::observe::proto::ScopeSpans {
                 spans: vec![platform::observe::proto::Span {
@@ -470,7 +461,6 @@ async fn otlp_ingest_invalid_project_id_uuid_returns_400(pool: PgPool) {
                 }],
                 ..Default::default()
             }],
-            ..Default::default()
         }],
     };
     let body = request.encode_to_vec();
@@ -485,7 +475,7 @@ async fn otlp_ingest_invalid_project_id_uuid_returns_400(pool: PgPool) {
     );
 }
 
-/// OTLP ingest rejects user without ObserveWrite permission with 404 (not 403).
+/// OTLP ingest rejects user without `ObserveWrite` permission with 404 (not 403).
 #[sqlx::test(migrations = "./migrations")]
 async fn otlp_ingest_rejects_unauthorized_project(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -503,7 +493,7 @@ async fn otlp_ingest_rejects_unauthorized_project(pool: PgPool) {
     // Attempt to ingest traces — should be rejected with 404 (avoids leaking existence)
     let trace_id: [u8; 16] = [30; 16];
     let span_id: [u8; 8] = [40; 8];
-    let body = build_trace_request(&trace_id, &span_id, project_id);
+    let body = build_trace_request(&trace_id, span_id, project_id);
 
     let (status, _) = post_protobuf(&app, &user_token, "/v1/traces", body).await;
     assert_eq!(
@@ -513,7 +503,7 @@ async fn otlp_ingest_rejects_unauthorized_project(pool: PgPool) {
     );
 }
 
-/// OTLP ingest accepts authorized user with ObserveWrite permission.
+/// OTLP ingest accepts authorized user with `ObserveWrite` permission.
 #[sqlx::test(migrations = "./migrations")]
 async fn otlp_ingest_accepts_authorized_project(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -526,13 +516,13 @@ async fn otlp_ingest_accepts_authorized_project(pool: PgPool) {
 
     let trace_id: [u8; 16] = [50; 16];
     let span_id: [u8; 8] = [60; 8];
-    let body = build_trace_request(&trace_id, &span_id, project_id);
+    let body = build_trace_request(&trace_id, span_id, project_id);
 
     let (status, _) = post_protobuf(&app, &admin_token, "/v1/traces", body).await;
     assert_eq!(status, StatusCode::OK);
 }
 
-/// OTLP ingest handles multiple spans with same project_id efficiently (one auth check).
+/// OTLP ingest handles multiple spans with same `project_id` efficiently (one auth check).
 #[sqlx::test(migrations = "./migrations")]
 async fn otlp_ingest_deduplicates_project_auth(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -549,7 +539,6 @@ async fn otlp_ingest_deduplicates_project_auth(pool: PgPool) {
             platform::observe::proto::ResourceSpans {
                 resource: Some(platform::observe::proto::Resource {
                     attributes: attrs.clone(),
-                    ..Default::default()
                 }),
                 scope_spans: vec![platform::observe::proto::ScopeSpans {
                     spans: vec![platform::observe::proto::Span {
@@ -563,13 +552,9 @@ async fn otlp_ingest_deduplicates_project_auth(pool: PgPool) {
                     }],
                     ..Default::default()
                 }],
-                ..Default::default()
             },
             platform::observe::proto::ResourceSpans {
-                resource: Some(platform::observe::proto::Resource {
-                    attributes: attrs,
-                    ..Default::default()
-                }),
+                resource: Some(platform::observe::proto::Resource { attributes: attrs }),
                 scope_spans: vec![platform::observe::proto::ScopeSpans {
                     spans: vec![platform::observe::proto::Span {
                         trace_id: vec![2; 16],
@@ -582,7 +567,6 @@ async fn otlp_ingest_deduplicates_project_auth(pool: PgPool) {
                     }],
                     ..Default::default()
                 }],
-                ..Default::default()
             },
         ],
     };

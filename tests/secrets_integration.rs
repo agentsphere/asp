@@ -163,7 +163,7 @@ async fn non_admin_cannot_manage_global_secrets(pool: PgPool) {
 // User provider keys
 // ---------------------------------------------------------------------------
 
-/// PUT + GET /api/users/me/provider-keys/{provider} → key_suffix visible.
+/// PUT + GET /api/users/me/provider-keys/{provider} → `key_suffix` visible.
 #[sqlx::test(migrations = "./migrations")]
 async fn user_key_set_and_list(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -218,7 +218,7 @@ async fn user_key_delete(pool: PgPool) {
     assert!(keys.is_empty());
 }
 
-/// Short api_key (<10 chars) → 400.
+/// Short `api_key` (<10 chars) → 400.
 #[sqlx::test(migrations = "./migrations")]
 async fn user_key_too_short_rejected(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -686,7 +686,7 @@ async fn secret_request_invalid_environment(pool: PgPool) {
 // Scoped secret queries (deploy vs agent)
 // ---------------------------------------------------------------------------
 
-/// Secrets with scope='deploy' are returned by query_scoped_secrets with deploy scope.
+/// Secrets with scope='deploy' are returned by `query_scoped_secrets` with deploy scope.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_scoped_secrets_deploy(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -747,7 +747,7 @@ async fn query_scoped_secrets_deploy(pool: PgPool) {
     );
 }
 
-/// Secrets with scope='agent' are returned by query_scoped_secrets with agent scope.
+/// Secrets with scope='agent' are returned by `query_scoped_secrets` with agent scope.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_scoped_secrets_agent(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -800,7 +800,7 @@ async fn query_scoped_secrets_agent(pool: PgPool) {
     );
 }
 
-/// query_scoped_secrets filters by environment correctly.
+/// `query_scoped_secrets` filters by environment correctly.
 #[sqlx::test(migrations = "./migrations")]
 async fn query_scoped_secrets_environment_filter(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
@@ -1089,7 +1089,7 @@ async fn complete_secret_request_empty_value(pool: PgPool) {
 // DevImageBuilt event handler (R13)
 // ---------------------------------------------------------------------------
 
-/// handle_dev_image_built updates project's agent_image.
+/// `handle_dev_image_built` updates project's `agent_image`.
 #[sqlx::test(migrations = "./migrations")]
 async fn dev_image_built_updates_project_agent_image(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;

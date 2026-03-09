@@ -135,8 +135,13 @@ async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), Pip
         project_name: pipeline.project_name,
         repo_clone_url,
         git_auth_token: git_token.0,
-        namespace: format!("{}-dev", pipeline.namespace_slug),
+        namespace: state
+            .config
+            .project_namespace(&pipeline.namespace_slug, "dev"),
     };
+
+    // Ensure project namespace exists (lazy creation for DB-only projects)
+    ensure_project_namespace(state, &meta.namespace, project_id).await?;
 
     // Create registry auth Secret if registry is configured and we know who triggered it
     let registry_creds = if state.config.registry_url.is_some() {
@@ -206,6 +211,32 @@ struct StepRow {
     name: String,
     image: String,
     commands: Vec<String>,
+}
+
+/// Ensure the project's dev namespace (and network policy) exist before running pods.
+/// Idempotent — no-op if the namespace was already created by `setup_project_infrastructure`.
+async fn ensure_project_namespace(
+    state: &AppState,
+    namespace: &str,
+    project_id: Uuid,
+) -> Result<(), PipelineError> {
+    crate::deployer::namespace::ensure_namespace(
+        &state.kube,
+        namespace,
+        "dev",
+        &project_id.to_string(),
+    )
+    .await
+    .map_err(|e| PipelineError::Other(e.into()))?;
+    if !state.config.dev_mode {
+        let _ = crate::deployer::namespace::ensure_network_policy(
+            &state.kube,
+            namespace,
+            &state.config.platform_namespace,
+        )
+        .await;
+    }
+    Ok(())
 }
 
 /// Run all steps for a pipeline. Returns true if all steps succeeded.
@@ -538,16 +569,19 @@ async fn create_registry_secret(
         .fetch_one(&state.pool)
         .await?;
 
-    // Build Docker config JSON: {"auths":{"<registry>":{"auth":"<base64(user:token)>"}}}
+    // Build Docker config JSON with auth for both registry URLs (push + pull)
     let basic_auth =
         base64::engine::general_purpose::STANDARD.encode(format!("{user_name}:{raw_token}"));
-    let config_json = serde_json::json!({
-        "auths": {
-            registry_url: {
-                "auth": basic_auth
-            }
-        }
-    });
+    let auth_entry = serde_json::json!({ "auth": basic_auth });
+    let mut auths = serde_json::Map::new();
+    auths.insert(registry_url.to_owned(), auth_entry.clone());
+    // Also add node_registry_url if different (`DaemonSet` proxy for containerd pulls)
+    if let Some(node_url) = node_registry_url(&state.config)
+        && node_url != registry_url
+    {
+        auths.insert(node_url.to_owned(), auth_entry);
+    }
+    let config_json = serde_json::json!({ "auths": auths });
 
     let secret_name = format!("pl-registry-{}", &pipeline_id.to_string()[..8]);
 
@@ -746,6 +780,15 @@ fn build_pod_spec(p: &PodSpecParams<'_>) -> Pod {
     }
 }
 
+/// Registry URL as seen from K8s nodes (for image refs in pod specs).
+/// Prefers `registry_node_url` (`DaemonSet` proxy), falls back to `registry_url`.
+fn node_registry_url(config: &crate::config::Config) -> Option<&str> {
+    config
+        .registry_node_url
+        .as_deref()
+        .or(config.registry_url.as_deref())
+}
+
 fn build_env_vars(
     state: &AppState,
     pipeline_id: Uuid,
@@ -762,6 +805,8 @@ fn build_env_vars(
         git_ref,
         commit_sha,
         step_name,
+        // REGISTRY env var for Kaniko push — uses the actual platform API URL
+        // (not the node proxy) since Kaniko pushes from inside the pod.
         state.config.registry_url.as_deref(),
     )
 }
@@ -921,11 +966,8 @@ async fn detect_and_write_deployment(state: &AppState, pipeline_id: Uuid, projec
         .ok()
         .flatten();
 
-    let registry = state
-        .config
-        .registry_url
-        .as_deref()
-        .unwrap_or("localhost:5000");
+    // Use node_registry_url for image refs (containerd pulls from this URL)
+    let registry = node_registry_url(&state.config).unwrap_or("localhost:5000");
     let name = project_name.as_deref().unwrap_or("unknown");
     let tag = pipeline_meta.commit_sha.as_deref().unwrap_or("latest");
     let image_ref = format!("{registry}/{name}:{tag}");
@@ -1002,11 +1044,8 @@ async fn detect_and_publish_dev_image(state: &AppState, pipeline_id: Uuid, proje
         .ok()
         .flatten();
 
-    let registry = state
-        .config
-        .registry_url
-        .as_deref()
-        .unwrap_or("localhost:5000");
+    // Use node_registry_url for image refs (containerd pulls from this URL)
+    let registry = node_registry_url(&state.config).unwrap_or("localhost:5000");
     let name = project_name.as_deref().unwrap_or("unknown");
     let tag = commit_sha.as_deref().unwrap_or("latest");
     let dev_image_ref = format!("{registry}/{name}-dev:{tag}");
@@ -1125,7 +1164,7 @@ pub async fn cancel_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), 
     .await?
     .map_or_else(
         || state.config.pipeline_namespace.clone(),
-        |slug| format!("{slug}-dev"),
+        |slug| state.config.project_namespace(&slug, "dev"),
     );
 
     // Delete running pods by label selector
@@ -1154,7 +1193,8 @@ use super::slug;
 mod tests {
     use super::*;
     use k8s_openapi::api::core::v1::{
-        ContainerState, ContainerStateTerminated, ContainerStatus, PodStatus,
+        ContainerState, ContainerStateRunning, ContainerStateTerminated, ContainerStateWaiting,
+        ContainerStatus, PodStatus,
     };
 
     // -- test-only helpers for kaniko detection / branch classification --
@@ -1260,7 +1300,7 @@ mod tests {
                 image: String::new(),
                 image_id: String::new(),
                 state: Some(ContainerState {
-                    running: Some(Default::default()),
+                    running: Some(ContainerStateRunning::default()),
                     terminated: None,
                     ..Default::default()
                 }),
@@ -1966,7 +2006,7 @@ mod tests {
                 image: String::new(),
                 image_id: String::new(),
                 state: Some(ContainerState {
-                    waiting: Some(Default::default()),
+                    waiting: Some(ContainerStateWaiting::default()),
                     terminated: None,
                     ..Default::default()
                 }),

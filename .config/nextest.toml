@@ -9,3 +9,28 @@ retries = 1
 failure-output = "immediate"
 # Longer timeout for E2E tests (SSH operations take 60-70s)
 slow-timeout = { period = "180s", terminate-after = 2 }
+
+[profile.ci.junit]
+path = "junit.xml"
+store-success-output = false
+store-failure-output = true
+
+# Tests that bind to PLATFORM_LISTEN_PORT must run one at a time.
+[test-groups.listen-port]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = "binary(registry_pull_integration)"
+test-group = "listen-port"
+
+[[profile.default.overrides]]
+filter = "binary(e2e_agent)"
+test-group = "listen-port"
+
+[[profile.ci.overrides]]
+filter = "binary(registry_pull_integration)"
+test-group = "listen-port"
+
+[[profile.ci.overrides]]
+filter = "binary(e2e_agent)"
+test-group = "listen-port"

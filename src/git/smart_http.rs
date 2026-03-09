@@ -30,10 +30,10 @@ pub struct GitUser {
     pub user_id: Uuid,
     pub user_name: String,
     pub ip_addr: Option<String>,
-    /// Hard project scope from API token (if token-authenticated).
-    pub scope_project_id: Option<Uuid>,
-    /// Hard workspace scope from API token (if token-authenticated).
-    pub scope_workspace_id: Option<Uuid>,
+    /// Hard project boundary from API token (if token-authenticated).
+    pub boundary_project_id: Option<Uuid>,
+    /// Hard workspace boundary from API token (if token-authenticated).
+    pub boundary_workspace_id: Option<Uuid>,
 }
 
 /// Resolved project from /:owner/:repo path.
@@ -152,8 +152,8 @@ pub async fn authenticate_basic(headers: &HeaderMap, pool: &PgPool) -> Result<Gi
             user_id: user.id,
             user_name: user.name,
             ip_addr: None,
-            scope_project_id: token_row.project_id,
-            scope_workspace_id: token_row.scope_workspace_id,
+            boundary_project_id: token_row.project_id,
+            boundary_workspace_id: token_row.scope_workspace_id,
         });
     }
 
@@ -184,8 +184,8 @@ pub async fn authenticate_basic(headers: &HeaderMap, pool: &PgPool) -> Result<Gi
                 user_id: row.user_id,
                 user_name: row.user_name,
                 ip_addr: None,
-                scope_project_id: row.project_id,
-                scope_workspace_id: row.scope_workspace_id,
+                boundary_project_id: row.project_id,
+                boundary_workspace_id: row.scope_workspace_id,
             });
         }
     }
@@ -208,8 +208,8 @@ pub async fn authenticate_basic(headers: &HeaderMap, pool: &PgPool) -> Result<Gi
         user_id: user.id,
         user_name: user.name,
         ip_addr: None,
-        scope_project_id: None,
-        scope_workspace_id: None,
+        boundary_project_id: None,
+        boundary_workspace_id: None,
     })
 }
 
@@ -480,14 +480,14 @@ pub async fn check_access_for_user(
     is_read: bool,
 ) -> Result<(), ApiError> {
     // Enforce hard project scope from API token
-    if let Some(scope_pid) = git_user.scope_project_id
+    if let Some(scope_pid) = git_user.boundary_project_id
         && scope_pid != project.project_id
     {
         return Err(ApiError::NotFound("repository".into()));
     }
 
     // Enforce hard workspace scope from API token
-    if let Some(scope_wid) = git_user.scope_workspace_id {
+    if let Some(scope_wid) = git_user.boundary_workspace_id {
         let in_workspace = sqlx::query_scalar!(
             r#"SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1 AND workspace_id = $2 AND is_active = true) as "exists!: bool""#,
             project.project_id, scope_wid,

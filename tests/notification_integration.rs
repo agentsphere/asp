@@ -240,7 +240,7 @@ async fn cannot_mark_other_users_notification(pool: PgPool) {
 // Dispatch integration tests
 // ---------------------------------------------------------------------------
 
-/// notify() with InApp channel creates a row with status='sent'.
+/// `notify()` with `InApp` channel creates a row with status='sent'.
 #[sqlx::test(migrations = "./migrations")]
 async fn notify_in_app_creates_row(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -276,7 +276,7 @@ async fn notify_in_app_creates_row(pool: PgPool) {
     assert_eq!(row.0, "sent");
 }
 
-/// on_build_complete with "failure" creates a notification for the project owner.
+/// `on_build_complete` with "failure" creates a notification for the project owner.
 #[sqlx::test(migrations = "./migrations")]
 async fn on_build_failed_notifies_owner(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -301,7 +301,7 @@ async fn on_build_failed_notifies_owner(pool: PgPool) {
     assert_eq!(count.0, 1, "expected build_failed notification");
 }
 
-/// on_build_complete with "success" does NOT create a notification.
+/// `on_build_complete` with "success" does NOT create a notification.
 #[sqlx::test(migrations = "./migrations")]
 async fn on_build_success_skips_notification(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -324,7 +324,7 @@ async fn on_build_success_skips_notification(pool: PgPool) {
     );
 }
 
-/// on_mr_created creates a notification for the project owner.
+/// `on_mr_created` creates a notification for the project owner.
 #[sqlx::test(migrations = "./migrations")]
 async fn on_mr_created_notifies_owner(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -348,7 +348,7 @@ async fn on_mr_created_notifies_owner(pool: PgPool) {
     assert_eq!(count.0, 1);
 }
 
-/// on_deploy_status creates a notification for the project owner.
+/// `on_deploy_status` creates a notification for the project owner.
 #[sqlx::test(migrations = "./migrations")]
 async fn on_deploy_status_notifies_owner(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -372,7 +372,7 @@ async fn on_deploy_status_notifies_owner(pool: PgPool) {
     assert_eq!(count.0, 1, "expected deploy_status notification");
 }
 
-/// on_alert_firing creates a notification for the given user.
+/// `on_alert_firing` creates a notification for the given user.
 #[sqlx::test(migrations = "./migrations")]
 async fn on_alert_firing_notifies_user(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -406,7 +406,7 @@ async fn on_alert_firing_notifies_user(pool: PgPool) {
     assert_eq!(ref_id.0, Some(alert_id));
 }
 
-/// notify() with Email channel and no SMTP → status='sent' (email::send returns Ok when unconfigured).
+/// `notify()` with Email channel and no SMTP → status='sent' (`email::send` returns Ok when unconfigured).
 #[sqlx::test(migrations = "./migrations")]
 async fn notify_email_channel_without_smtp(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
@@ -446,7 +446,7 @@ async fn notify_email_channel_without_smtp(pool: PgPool) {
     );
 }
 
-/// on_agent_completed creates a notification for the given user.
+/// `on_agent_completed` creates a notification for the given user.
 #[sqlx::test(migrations = "./migrations")]
 async fn on_agent_completed_notifies_user(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;

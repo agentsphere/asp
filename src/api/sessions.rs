@@ -305,6 +305,7 @@ async fn create_session(
         body.branch.as_deref(),
         body.config,
         agent_role,
+        None, // No parent session for API-created sessions
     )
     .await
     .map_err(ApiError::from)?;
@@ -550,7 +551,7 @@ async fn create_app(
     Json(body): Json<CreateAppRequest>,
 ) -> Result<(StatusCode, Json<SessionResponse>), ApiError> {
     // Project-scoped tokens cannot create project-less sessions
-    if auth.scope_project_id.is_some() {
+    if auth.boundary_project_id.is_some() {
         return Err(ApiError::Forbidden);
     }
 
@@ -648,12 +649,13 @@ async fn update_session(
         }
 
         // Verify user has project write access
-        let allowed = crate::rbac::resolver::has_permission(
+        let allowed = crate::rbac::resolver::has_permission_scoped(
             &state.pool,
             &state.valkey,
             auth.user_id,
             Some(project_id),
             crate::rbac::Permission::ProjectWrite,
+            auth.token_scopes.as_deref(),
         )
         .await
         .map_err(ApiError::Internal)?;
@@ -940,11 +942,23 @@ async fn send_message_global(
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
+/// Query parameters for the global SSE endpoint.
+#[derive(Debug, Deserialize)]
+struct SseGlobalParams {
+    /// When true, also stream events from child sessions.
+    include_children: Option<bool>,
+}
+
 /// SSE handler for global (project-less) sessions.
+///
+/// With `?include_children=true`, streams events from the parent session AND
+/// all its current child sessions. Each event includes a `session_id` field
+/// so the client can distinguish which session emitted it.
 async fn sse_session_events_global(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(session_id): Path<Uuid>,
+    Query(params): Query<SseGlobalParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = service::fetch_session(&state.pool, session_id)
         .await
@@ -955,13 +969,36 @@ async fn sse_session_events_global(
         return Err(ApiError::Forbidden);
     }
 
-    let rx = crate::agent::pubsub_bridge::subscribe_session_events(&state.valkey, session_id)
+    // Build list of session IDs to subscribe to
+    let include_children = params.include_children.unwrap_or(false);
+    let mut all_ids = vec![session_id];
+    if include_children {
+        let child_ids: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM agent_sessions WHERE parent_session_id = $1")
+                .bind(session_id)
+                .fetch_all(&state.pool)
+                .await
+                .map_err(|e| ApiError::Internal(e.into()))?;
+        all_ids.extend(child_ids);
+    }
+
+    let rx = crate::agent::pubsub_bridge::subscribe_session_tree_events(&state.valkey, &all_ids)
         .await
         .map_err(ApiError::Internal)?;
 
-    let stream = ReceiverStream::new(rx).map(|event| {
-        let json = serde_json::to_string(&event).unwrap_or_default();
-        Ok::<_, std::convert::Infallible>(Event::default().event("progress").data(json))
+    let stream = ReceiverStream::new(rx).map(move |(sid, event)| {
+        if include_children {
+            // Include session_id so client knows which session emitted the event
+            let mut json = serde_json::to_value(&event).unwrap_or_default();
+            if let Some(obj) = json.as_object_mut() {
+                obj.insert("session_id".into(), serde_json::json!(sid));
+            }
+            let data = serde_json::to_string(&json).unwrap_or_default();
+            Ok::<_, std::convert::Infallible>(Event::default().event("progress").data(data))
+        } else {
+            let data = serde_json::to_string(&event).unwrap_or_default();
+            Ok::<_, std::convert::Infallible>(Event::default().event("progress").data(data))
+        }
     });
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))

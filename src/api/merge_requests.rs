@@ -391,12 +391,13 @@ async fn update_mr(
     .ok_or_else(|| ApiError::NotFound("merge request".into()))?;
 
     if mr_author != auth.user_id {
-        let allowed = crate::rbac::resolver::has_permission(
+        let allowed = crate::rbac::resolver::has_permission_scoped(
             &state.pool,
             &state.valkey,
             auth.user_id,
             Some(id),
             Permission::ProjectWrite,
+            auth.token_scopes.as_deref(),
         )
         .await
         .map_err(ApiError::Internal)?;
@@ -473,12 +474,13 @@ async fn merge_mr(
     auth: AuthUser,
     Path((id, number)): Path<(Uuid, i32)>,
 ) -> Result<Json<MrResponse>, ApiError> {
-    let allowed = crate::rbac::resolver::has_permission(
+    let allowed = crate::rbac::resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         Some(id),
         Permission::ProjectWrite,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;
@@ -830,12 +832,13 @@ async fn update_comment(
             .ok_or_else(|| ApiError::NotFound("comment".into()))?;
 
     if comment_author != auth.user_id {
-        let is_admin = crate::rbac::resolver::has_permission(
+        let is_admin = crate::rbac::resolver::has_permission_scoped(
             &state.pool,
             &state.valkey,
             auth.user_id,
             None,
             Permission::AdminUsers,
+            auth.token_scopes.as_deref(),
         )
         .await
         .map_err(ApiError::Internal)?;

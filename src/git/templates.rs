@@ -93,7 +93,7 @@ mod tests {
     fn template_dev_dockerfile_extends_runner() {
         let files = project_template_files("test");
         let f = files.iter().find(|f| f.path == "Dockerfile.dev").unwrap();
-        assert!(f.content.contains("platform-claude-runner"));
+        assert!(f.content.contains("platform-runner"));
     }
 
     #[test]

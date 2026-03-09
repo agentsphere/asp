@@ -19,8 +19,8 @@ pub struct AgentIdentity {
 /// effective permissions (role ∩ spawner), and generate a scoped API token.
 ///
 /// No delegation rows are created — the token's `scopes` column carries the
-/// pre-computed permission set, and `project_id` / `scope_workspace_id` enforce
-/// hard boundaries.
+/// pre-computed permission set, and `project_id` / `scope_workspace_id` columns
+/// enforce hard resource boundaries.
 #[tracing::instrument(skip(pool, valkey), fields(%session_id, %spawner_id, %project_id, %workspace_id, %agent_role), err)]
 pub async fn create_agent_identity(
     pool: &PgPool,

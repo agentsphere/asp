@@ -5,6 +5,7 @@ pub mod error;
 pub mod gc;
 pub mod manifests;
 pub mod pull_secret;
+pub mod seed;
 pub mod tags;
 pub mod types;
 
@@ -15,7 +16,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, head, patch, post};
 use uuid::Uuid;
 
-use self::auth::RegistryUser;
+use self::auth::{OptionalRegistryUser, RegistryUser};
 use self::error::RegistryError;
 use crate::rbac::{Permission, resolver};
 use crate::store::AppState;
@@ -27,9 +28,42 @@ pub struct RepoAccess {
     pub project_id: Uuid,
 }
 
+/// Resolved project info from a repository lookup.
+struct RepoProject {
+    repository_id: Uuid,
+    project_id: Uuid,
+    owner_id: Uuid,
+    workspace_id: Uuid,
+    visibility: String,
+}
+
+/// Look up a repository by name, joining to its parent project.
+///
+/// The URL path segment is a **repository** name (which may differ from
+/// the project name, e.g. `platform-runner-bare` repo under `platform-runner` project).
+async fn lookup_repo_and_project(
+    pool: &sqlx::PgPool,
+    name: &str,
+) -> Result<Option<RepoProject>, sqlx::Error> {
+    sqlx::query_as!(
+        RepoProject,
+        r#"SELECT r.id AS "repository_id!", p.id AS "project_id!",
+                  p.owner_id AS "owner_id!", p.workspace_id AS "workspace_id!",
+                  p.visibility AS "visibility!"
+           FROM registry_repositories r
+           JOIN projects p ON p.id = r.project_id AND p.is_active = true
+           WHERE r.name = $1"#,
+        name,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 /// Resolve a repository name to a project, checking ownership and permissions.
 ///
-/// Ownership chain: image → `registry_repository` → project → workspace → owner
+/// Looks up by repository name first (supports multi-repo projects like
+/// `platform-runner-bare` under project `platform-runner`). Falls back to
+/// project-name lookup with lazy repo creation for push operations.
 ///
 /// Returns 404 (not 403) if user lacks access to avoid leaking existence.
 pub async fn resolve_repo_with_access(
@@ -38,40 +72,54 @@ pub async fn resolve_repo_with_access(
     name: &str,
     need_push: bool,
 ) -> Result<RepoAccess, RegistryError> {
-    // 1. Find the project by name (must be active)
-    let project = sqlx::query!(
-        r#"SELECT id, owner_id, workspace_id, visibility
-           FROM projects
-           WHERE name = $1 AND is_active = true"#,
-        name,
-    )
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or(RegistryError::NameUnknown)?;
+    // 1. Try to find existing repository → project
+    let resolved = lookup_repo_and_project(&state.pool, name).await?;
 
-    let project_id = project.id;
+    let (repository_id, project_id, owner_id, workspace_id) = if let Some(rp) = resolved {
+        (
+            Some(rp.repository_id),
+            rp.project_id,
+            rp.owner_id,
+            rp.workspace_id,
+        )
+    } else if need_push {
+        // No repo found — for push, fall back to project-name lookup + lazy-create
+        let project = sqlx::query!(
+            r#"SELECT id, owner_id, workspace_id
+               FROM projects
+               WHERE name = $1 AND is_active = true"#,
+            name,
+        )
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or(RegistryError::NameUnknown)?;
+        (None, project.id, project.owner_id, project.workspace_id)
+    } else {
+        // Pull with no existing repo — nothing to pull
+        return Err(RegistryError::NameUnknown);
+    };
 
-    // Enforce hard project scope from API token
-    if let Some(scope_pid) = user.scope_project_id
-        && scope_pid != project_id
+    // Enforce hard project boundary from API token
+    if let Some(boundary_pid) = user.boundary_project_id
+        && boundary_pid != project_id
     {
         return Err(RegistryError::NameUnknown);
     }
 
-    // Enforce hard workspace scope from API token
-    if let Some(scope_wid) = user.scope_workspace_id
-        && project.workspace_id != scope_wid
+    // Enforce hard workspace boundary from API token
+    if let Some(boundary_wid) = user.boundary_workspace_id
+        && workspace_id != boundary_wid
     {
         return Err(RegistryError::NameUnknown);
     }
 
     // 2. Owner always has full access
-    let is_owner = project.owner_id == user.user_id;
+    let is_owner = owner_id == user.user_id;
 
     if !is_owner {
         // 3. Check workspace membership
         let is_workspace_member =
-            workspace::service::is_member(&state.pool, project.workspace_id, user.user_id)
+            workspace::service::is_member(&state.pool, workspace_id, user.user_id)
                 .await
                 .map_err(|e| RegistryError::Internal(anyhow::anyhow!("{e}")))?;
 
@@ -101,23 +149,11 @@ pub async fn resolve_repo_with_access(
         }
     }
 
-    // 5. Lazily create registry_repository if it doesn't exist
-    let repo = sqlx::query_scalar!(
-        r#"SELECT id FROM registry_repositories WHERE name = $1"#,
-        name,
-    )
-    .fetch_optional(&state.pool)
-    .await?;
-
-    let repository_id = if let Some(id) = repo {
+    // 4. Get or create the repository
+    let repository_id = if let Some(id) = repository_id {
         id
     } else {
-        if !need_push {
-            // For pull operations, if no repo exists, there's nothing to pull
-            return Err(RegistryError::NameUnknown);
-        }
-
-        // Create the repository lazily on first push
+        // Lazy-create on first push (only reachable when need_push && no repo found)
         let id = Uuid::new_v4();
         sqlx::query!(
             r#"INSERT INTO registry_repositories (id, project_id, name)
@@ -139,10 +175,44 @@ pub async fn resolve_repo_with_access(
     })
 }
 
+/// Resolve a repository for anonymous or authenticated access.
+///
+/// When `user` is `None`, only public projects are accessible (pull only).
+/// When `user` is `Some`, delegates to the full `resolve_repo_with_access`.
+pub async fn resolve_repo_with_optional_access(
+    state: &AppState,
+    user: Option<&RegistryUser>,
+    name: &str,
+    need_push: bool,
+) -> Result<RepoAccess, RegistryError> {
+    if let Some(user) = user {
+        return resolve_repo_with_access(state, user, name, need_push).await;
+    }
+
+    // Anonymous access: push is never allowed
+    if need_push {
+        return Err(RegistryError::Unauthorized);
+    }
+
+    // Look up repository → project (must exist and be public)
+    let rp = lookup_repo_and_project(&state.pool, name)
+        .await?
+        .ok_or(RegistryError::NameUnknown)?;
+
+    if rp.visibility != "public" {
+        return Err(RegistryError::NameUnknown);
+    }
+
+    Ok(RepoAccess {
+        repository_id: rp.repository_id,
+        project_id: rp.project_id,
+    })
+}
+
 /// OCI Distribution Spec version check endpoint.
 async fn version_check(
     State(_state): State<AppState>,
-    _user: RegistryUser,
+    _user: OptionalRegistryUser,
 ) -> Result<Response, RegistryError> {
     // Per OCI spec: return 200 {} to indicate the registry supports v2
     let mut headers = HeaderMap::new();

@@ -5,7 +5,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 // Real ED25519 GPG key (UID: Admin <admin@localhost>)
-const TEST_ED25519_GPG_KEY: &str = r#"-----BEGIN PGP PUBLIC KEY BLOCK-----
+const TEST_ED25519_GPG_KEY: &str = r"-----BEGIN PGP PUBLIC KEY BLOCK-----
 
 mDMEaaB6RRYJKwYBBAHaRw8BAQdAmi3YA/Lq9CTPOMJea51Eu+yZWbDFfhh1rUfE
 LAHT8q20F0FkbWluIDxhZG1pbkBsb2NhbGhvc3Q+iJMEExYKADsWIQRQVMGx5eUI
@@ -13,10 +13,10 @@ A0cYisgMFfJwj0kygAUCaaB6RQIbAwULCQgHAgIiAgYVCgkICwIEFgIDAQIeBwIX
 gAAKCRAMFfJwj0kygH4PAQCLFqqAOULMgdTh8ya9+reLefMHooFFqjaIGyeHxYul
 kAEA04pCRRL33dMeTgTYpBGMrMdXegCRLPoUq5eKjET5swc=
 =JNMc
------END PGP PUBLIC KEY BLOCK-----"#;
+-----END PGP PUBLIC KEY BLOCK-----";
 
 // RSA GPG key (UID: Admin RSA <admin@localhost>)
-const TEST_RSA_GPG_KEY: &str = r#"-----BEGIN PGP PUBLIC KEY BLOCK-----
+const TEST_RSA_GPG_KEY: &str = r"-----BEGIN PGP PUBLIC KEY BLOCK-----
 
 mQENBGmgekgBCACwzmHejX3A8k73fN54fFa9XDcElZan0BwwXhBk92bHusf3HoOp
 tsO0MHmC4bRyDPBSFDwbY9frdUQJC9fS2EWW1YGQaI7bYnbn8OJ214s/V4YtcMwQ
@@ -33,10 +33,10 @@ FB1oBFlgRAr5kUV2cQBQBbWb54iRwy15KkEzdOIhBaex5uFq/pdUNaxRZ8zViJZF
 pYaiZSmbery+jVVTGpY4nwQa7bd4lS3rMr+X7UogNV8LVq17kAJ0EGS2GBrJJmZT
 gnq5d4Jhjk4E5xyaAiuyxcY=
 =CqZH
------END PGP PUBLIC KEY BLOCK-----"#;
+-----END PGP PUBLIC KEY BLOCK-----";
 
 // GPG key with different email (UID: Other User <other@example.com>)
-const TEST_MISMATCH_GPG_KEY: &str = r#"-----BEGIN PGP PUBLIC KEY BLOCK-----
+const TEST_MISMATCH_GPG_KEY: &str = r"-----BEGIN PGP PUBLIC KEY BLOCK-----
 
 mDMEaaB1BRYJKwYBBAHaRw8BAQdARLy3pnfpC9xZzFm0p3C3yowaUJwkgae2DgGI
 WZivJWu0Hk90aGVyIFVzZXIgPG90aGVyQGV4YW1wbGUuY29tPoiTBBMWCgA7FiEE
@@ -44,7 +44,7 @@ FxWKwBZlJmIu0Nq+boJqgnwdY00FAmmgdQUCGwMFCwkIBwICIgIGFQoJCAsCBBYC
 AwECHgcCF4AACgkQboJqgnwdY00PygD+OyssgX52vWyzUQmZUXOKrGW8RT0OXfQB
 LR+IPE/XK6cA/j6YvUkcTSPKKxlR8cf8PQKdl8Y/k9BqLZmX8rsNI7cG
 =ivG3
------END PGP PUBLIC KEY BLOCK-----"#;
+-----END PGP PUBLIC KEY BLOCK-----";
 
 // ---------------------------------------------------------------------------
 // POST /api/users/me/gpg-keys
