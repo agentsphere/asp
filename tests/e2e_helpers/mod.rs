@@ -792,10 +792,10 @@ pub async fn poll_session_status(
                 .fetch_optional(pool)
                 .await
                 .unwrap();
-        if let Some((status,)) = row {
-            if expected.contains(&status.as_str()) {
-                return status;
-            }
+        if let Some((status,)) = row
+            && expected.contains(&status.as_str())
+        {
+            return status;
         }
         assert!(
             start.elapsed().as_secs() <= timeout_secs,
@@ -808,7 +808,7 @@ pub async fn poll_session_status(
 /// Start a real TCP server for agent E2E tests (with git routes for repo clone).
 ///
 /// Binds to `PLATFORM_LISTEN_PORT` (set by `test-in-cluster.sh`) so that the
-/// registry DaemonSet proxy can forward image pull requests to this server.
+/// registry `DaemonSet` proxy can forward image pull requests to this server.
 pub async fn start_agent_server(pool: PgPool) -> (AppState, String, tokio::task::JoinHandle<()>) {
     let port: u16 = std::env::var("PLATFORM_LISTEN_PORT")
         .expect("PLATFORM_LISTEN_PORT must be set — run via: just test-e2e")

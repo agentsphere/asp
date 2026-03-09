@@ -3,7 +3,7 @@ import { useAuth } from '../lib/auth';
 import { ApiError } from '../lib/api';
 
 export function Login() {
-  const { login } = useAuth();
+  const { login, loginWithPasskey } = useAuth();
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -22,6 +22,21 @@ export function Login() {
       setLoading(false);
     }
   };
+
+  const handlePasskey = async () => {
+    setError('');
+    setLoading(true);
+    try {
+      await loginWithPasskey();
+      window.location.href = '/';
+    } catch (err) {
+      setError(err instanceof ApiError ? err.body.error : (err as Error).message || 'Passkey login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const supportsPasskey = typeof window !== 'undefined' && !!window.PublicKeyCredential;
 
   return (
     <div class="login-page">
@@ -46,6 +61,17 @@ export function Login() {
             {loading ? 'Signing in...' : 'Sign in'}
           </button>
         </form>
+        {supportsPasskey && (
+          <>
+            <div class="login-divider">
+              <span>or</span>
+            </div>
+            <button class="btn btn-ghost" style="width:100%"
+              onClick={handlePasskey} disabled={loading}>
+              Sign in with Passkey
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
