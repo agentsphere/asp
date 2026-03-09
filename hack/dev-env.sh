@@ -1,49 +1,53 @@
 #!/usr/bin/env bash
-# dev-env.sh — Deploy services into Kind and port-forward to fixed ports.
+# dev-env.sh — Deploy isolated dev services into Kind using NodePort (no port-forwards).
 #
-# Deploys Postgres/Valkey/MinIO into the Kind cluster's `platform` namespace,
-# kills anything occupying the fixed ports, starts background port-forwards,
-# verifies connectivity, and exits. Port-forwards survive after the script exits.
+# Each worktree gets its own K8s namespace (platform-dev-{worktree}) with auto-assigned
+# NodePorts. Generates .env.dev with discovered ports. No port-forwards needed — direct
+# Kind node IP access (OrbStack makes it routable on macOS).
 #
 # Workflow:
 #   1. just cluster-up   # create Kind cluster (one-time)
-#   2. just dev-env       # this script: deploy + port-forward (exits when ready)
+#   2. just dev-env       # this script: deploy services, generate .env.dev
 #   3. just run           # cargo run (loads .env.dev automatically)
 #
-# To stop port-forwards:  just dev-env-stop
-#
-# Fixed ports (from .env.dev):
-#   Postgres  → localhost:5432
-#   Valkey    → localhost:6379
-#   MinIO     → localhost:9000
-#   Platform  → localhost:8080   (via `just run`)
+# To stop:  just dev-env-stop
+# To stop all worktrees:  just dev-env-stop-all
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 KIND_CLUSTER="platform"
 NODE="${KIND_CLUSTER}-control-plane"
-PIDFILE="/tmp/platform-dev-pf.pids"
 
 export KUBECONFIG="${HOME}/.kube/kind-${KIND_CLUSTER}"
 
-# ── Refresh kubeconfig (API server port changes on cluster recreate) ─────
-if kind get clusters 2>/dev/null | grep -q "^${KIND_CLUSTER}$"; then
-  kind get kubeconfig --name "$KIND_CLUSTER" > "$KUBECONFIG"
-  KUBECONFIG="${HOME}/.kube/config" kind export kubeconfig --name "$KIND_CLUSTER"
-else
+# ── Pre-flight checks ────────────────────────────────────────────────────
+if ! kind get clusters 2>/dev/null | grep -q "^${KIND_CLUSTER}$"; then
   echo "ERROR: Kind cluster '${KIND_CLUSTER}' not found. Run: just cluster-up"
   exit 1
 fi
 
-# ── Fixed ports (must match .env.dev) ────────────────────────────────────
-PG_PORT=5432
-VALKEY_PORT=6379
-MINIO_PORT=9000
-BACKEND_PORT=8080
-REGISTRY_NODE_PORT=5000
+# Refresh kubeconfig (API server port changes on cluster recreate)
+kind get kubeconfig --name "$KIND_CLUSTER" > "$KUBECONFIG"
+KUBECONFIG="${HOME}/.kube/config" kind export kubeconfig --name "$KIND_CLUSTER"
 
-# ── Detect host address ─────────────────────────────────────────────────
+# ── Detect worktree name ─────────────────────────────────────────────────
+WORKTREE="$(bash "${SCRIPT_DIR}/detect-worktree.sh")"
+NS="platform-dev-${WORKTREE}"
+
+echo "==> Worktree: ${WORKTREE}"
+echo "  Namespace: ${NS}"
+
+# ── Get Kind node IP (OrbStack makes it routable from macOS) ─────────────
+NODE_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${NODE}")
+if [[ -z "$NODE_IP" ]]; then
+  echo "ERROR: Could not determine node IP for ${NODE}"
+  exit 1
+fi
+echo "  Node IP:   ${NODE_IP}"
+
+# ── Detect host address (for in-pod → host communication) ────────────────
 if [[ "$(uname)" == "Darwin" ]]; then
   PLATFORM_HOST="host.docker.internal"
 else
@@ -51,94 +55,108 @@ else
     -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || echo "172.18.0.1")
 fi
 
-# ── Kill anything on our fixed ports ─────────────────────────────────────
-kill_port() {
-  local port=$1
-  local pids
-  pids=$(lsof -ti "tcp:${port}" 2>/dev/null || true)
-  if [[ -n "$pids" ]]; then
-    echo "  Killing processes on port ${port}: $(echo $pids | tr '\n' ' ')"
-    echo "$pids" | xargs kill -9 2>/dev/null || true
-  fi
+# ── Find free ports ──────────────────────────────────────────────────────
+find_free_port() {
+  python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()"
 }
 
-echo "==> Clearing fixed ports"
+find_free_node_port() {
+  docker exec "${NODE}" \
+    python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()"
+}
 
-# Kill previously tracked port-forward PIDs
-if [[ -f "$PIDFILE" ]]; then
-  while read -r pid; do
-    kill "$pid" 2>/dev/null || true
-  done < "$PIDFILE"
-  rm -f "$PIDFILE"
-fi
+BACKEND_PORT=$(find_free_port)
+REGISTRY_NODE_PORT=$(find_free_node_port)
 
-# Kill stale kubectl port-forward processes for our services
-pkill -f "kubectl port-forward.*-n platform.*postgres" 2>/dev/null || true
-pkill -f "kubectl port-forward.*-n platform.*valkey" 2>/dev/null || true
-pkill -f "kubectl port-forward.*-n platform.*minio" 2>/dev/null || true
-sleep 0.3
+echo ""
+echo "==> Auto-assigned ports"
+echo "  Backend:  ${BACKEND_PORT}"
+echo "  Registry: ${REGISTRY_NODE_PORT} (node hostPort)"
 
-# Kill anything else on the fixed ports
-for port in "$PG_PORT" "$VALKEY_PORT" "$MINIO_PORT"; do
-  kill_port "$port"
-done
+# ── Deploy services + registry proxy (idempotent) ────────────────────────
+REGISTRY_BACKEND_HOST="${PLATFORM_HOST}" \
+  REGISTRY_BACKEND_PORT="${BACKEND_PORT}" \
+  REGISTRY_NODE_PORT="${REGISTRY_NODE_PORT}" \
+  bash "${SCRIPT_DIR}/deploy-services.sh" "${NS}"
 
-# Kill busy port on Kind node for registry proxy
-docker exec "$NODE" \
-  sh -c "fuser -k ${REGISTRY_NODE_PORT}/tcp 2>/dev/null; true" 2>/dev/null || true
+# ── Discover NodePorts (K8s auto-assigned) ───────────────────────────────
+echo ""
+echo "==> Discovering NodePorts"
+PG_PORT=$(kubectl get svc -n "${NS}" postgres -o jsonpath='{.spec.ports[0].nodePort}')
+VALKEY_PORT=$(kubectl get svc -n "${NS}" valkey -o jsonpath='{.spec.ports[0].nodePort}')
+MINIO_PORT=$(kubectl get svc -n "${NS}" minio -o jsonpath='{.spec.ports[0].nodePort}')
+echo "  Postgres: ${NODE_IP}:${PG_PORT}"
+echo "  Valkey:   ${NODE_IP}:${VALKEY_PORT}"
+echo "  MinIO:    ${NODE_IP}:${MINIO_PORT}"
 
-# ── Deploy services + registry proxy (idempotent) ───────────────────────
-export REGISTRY_BACKEND_HOST="${PLATFORM_HOST}"
-export REGISTRY_BACKEND_PORT="${BACKEND_PORT}"
-export REGISTRY_NODE_PORT
-bash "${SCRIPT_DIR}/deploy-services.sh" platform
-
-# ── Start background port-forwards ──────────────────────────────────────
-echo "==> Starting background port-forwards (fixed ports from .env.dev)"
-kubectl port-forward -n platform pod/postgres "${PG_PORT}:5432" &>/dev/null &
-PG_PID=$!
-kubectl port-forward -n platform pod/valkey "${VALKEY_PORT}:6379" &>/dev/null &
-VK_PID=$!
-kubectl port-forward -n platform pod/minio "${MINIO_PORT}:9000" &>/dev/null &
-MN_PID=$!
-
-# Save PIDs for later cleanup
-echo "$PG_PID" > "$PIDFILE"
-echo "$VK_PID" >> "$PIDFILE"
-echo "$MN_PID" >> "$PIDFILE"
-
-# Detach port-forwards from this shell so they survive script exit
-disown "$PG_PID" "$VK_PID" "$MN_PID"
-
-# Wait for port-forwards to be reachable
-echo -n "  Waiting for port-forwards"
+# Wait for NodePort connectivity (direct to Kind node — no port-forward)
+echo -n "  Waiting for NodePort connectivity"
 for i in $(seq 1 30); do
-  ALL_READY=true
-  for port in "$PG_PORT" "$VALKEY_PORT" "$MINIO_PORT"; do
-    if ! nc -z 127.0.0.1 "$port" 2>/dev/null; then
-      ALL_READY=false
-      break
-    fi
-  done
-  if $ALL_READY; then break; fi
+  if nc -z "$NODE_IP" "$PG_PORT" 2>/dev/null && \
+     nc -z "$NODE_IP" "$VALKEY_PORT" 2>/dev/null && \
+     nc -z "$NODE_IP" "$MINIO_PORT" 2>/dev/null; then
+    break
+  fi
   echo -n "."
   sleep 0.5
 done
-
-if ! $ALL_READY; then
-  echo " FAILED"
-  echo "ERROR: Port-forwards did not become ready in 15s"
-  exit 1
-fi
 echo " ready"
+
+# ── Generate .env.dev ────────────────────────────────────────────────────
+ENV_FILE="${PROJECT_DIR}/.env.dev"
+cat > "${ENV_FILE}" <<EOF
+# Auto-generated by hack/dev-env.sh — do not edit manually.
+# Worktree: ${WORKTREE}  |  Namespace: ${NS}
+# Re-run 'just dev-env' to regenerate.
+
+# --- Data stores (NodePort via Kind node — no port-forwards) ---
+DATABASE_URL=postgres://platform:dev@${NODE_IP}:${PG_PORT}/platform_dev
+VALKEY_URL=redis://${NODE_IP}:${VALKEY_PORT}
+MINIO_ENDPOINT=http://${NODE_IP}:${MINIO_PORT}
+MINIO_ACCESS_KEY=platform
+MINIO_SECRET_KEY=devdevdev
+
+# --- Platform core ---
+PLATFORM_LOG=debug
+PLATFORM_LISTEN=0.0.0.0:${BACKEND_PORT}
+PLATFORM_DEV=true
+
+# AES-256-GCM key for secrets encryption (64 hex chars = 32 bytes)
+PLATFORM_MASTER_KEY=0000000000000000000000000000000000000000000000000000000000000000
+
+# --- Container registry ---
+PLATFORM_REGISTRY_URL=${PLATFORM_HOST}:${BACKEND_PORT}
+
+# --- Agent/Pipeline pod communication ---
+PLATFORM_API_URL=http://${PLATFORM_HOST}:${BACKEND_PORT}
+PLATFORM_VALKEY_AGENT_HOST=valkey.${NS}.svc.cluster.local:6379
+
+# --- Namespace prefix (for per-project namespaces) ---
+PLATFORM_NS_PREFIX=${NS}
+
+# --- Storage paths ---
+PLATFORM_GIT_REPOS_PATH=/tmp/platform-repos
+PLATFORM_OPS_REPOS_PATH=/tmp/platform-ops-repos
+
+# --- K8s config ---
+KUBECONFIG=${HOME}/.kube/kind-platform
+
+# --- WebAuthn / Passkeys ---
+WEBAUTHN_RP_ID=localhost
+WEBAUTHN_RP_ORIGIN=http://localhost:${BACKEND_PORT}
+WEBAUTHN_RP_NAME=Platform
+EOF
 
 # ── Summary ──────────────────────────────────────────────────────────────
 echo ""
-echo "==> Dev environment ready"
-echo "  Postgres:       localhost:${PG_PORT}  (pid ${PG_PID})"
-echo "  Valkey:         localhost:${VALKEY_PORT}  (pid ${VK_PID})"
-echo "  MinIO:          localhost:${MINIO_PORT}  (pid ${MN_PID})"
-echo "  Registry proxy: Kind node:${REGISTRY_NODE_PORT} → ${PLATFORM_HOST}:${BACKEND_PORT}"
+echo "==> Dev environment ready (${WORKTREE})"
+echo "  Namespace:  ${NS}"
+echo "  Postgres:   ${NODE_IP}:${PG_PORT}"
+echo "  Valkey:     ${NODE_IP}:${VALKEY_PORT}"
+echo "  MinIO:      ${NODE_IP}:${MINIO_PORT}"
+echo "  Backend:    0.0.0.0:${BACKEND_PORT}"
+echo "  Registry:   Kind node:${REGISTRY_NODE_PORT} → ${PLATFORM_HOST}:${BACKEND_PORT}"
+echo "  .env.dev:   ${ENV_FILE}"
 echo ""
 echo "  Run: just run"
-echo "  Stop port-forwards: just dev-env-stop"
+echo "  Stop: just dev-env-stop"
