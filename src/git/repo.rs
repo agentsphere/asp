@@ -55,39 +55,67 @@ pub async fn init_bare_repo(
 }
 
 /// Create the initial commit with template files in a bare repo using git plumbing.
+///
+/// Supports arbitrarily nested paths (e.g. `.claude/commands/dev.md`) by
+/// building git trees bottom-up.
 async fn create_initial_commit(
     repo_dir: &Path,
     default_branch: &str,
     files: &[templates::TemplateFile],
 ) -> anyhow::Result<()> {
-    let mut root_entries: Vec<String> = Vec::new();
-    let mut subdirs: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
-
+    // Build a nested map: path segments → content.
+    // Each node is either a blob (file) or a tree (directory).
+    let mut tree = DirNode::default();
     for file in files {
-        if let Some((dir, filename)) = file.path.rsplit_once('/') {
-            subdirs
-                .entry(dir)
-                .or_default()
-                .push((filename, &file.content));
-        } else {
-            let blob = hash_object(repo_dir, &file.content).await?;
-            root_entries.push(format!("100644 blob {blob}\t{}", file.path));
-        }
+        tree.insert(file.path, &file.content);
     }
 
-    for (dir_name, dir_files) in &subdirs {
-        let mut sub_entries = Vec::new();
-        for (filename, content) in dir_files {
-            let blob = hash_object(repo_dir, content).await?;
-            sub_entries.push(format!("100644 blob {blob}\t{filename}"));
-        }
-        let subtree = mktree(repo_dir, &sub_entries).await?;
-        root_entries.push(format!("040000 tree {subtree}\t{dir_name}"));
-    }
-
-    let root_tree = mktree(repo_dir, &root_entries).await?;
-    let commit = commit_tree(repo_dir, &root_tree, "Initial commit: platform template").await?;
+    let root_hash = tree.write_tree(repo_dir).await?;
+    let commit = commit_tree(repo_dir, &root_hash, "Initial commit: platform template").await?;
     update_ref(repo_dir, default_branch, &commit).await
+}
+
+/// A directory node in the tree being built for the initial commit.
+#[derive(Default)]
+struct DirNode<'a> {
+    /// Files directly in this directory: (filename, content).
+    files: Vec<(&'a str, &'a str)>,
+    /// Subdirectories: name → node.
+    dirs: BTreeMap<&'a str, DirNode<'a>>,
+}
+
+impl<'a> DirNode<'a> {
+    /// Insert a file at the given slash-separated path.
+    fn insert(&mut self, path: &'a str, content: &'a str) {
+        if let Some((first, rest)) = path.split_once('/') {
+            self.dirs.entry(first).or_default().insert(rest, content);
+        } else {
+            self.files.push((path, content));
+        }
+    }
+
+    /// Recursively write this directory as a git tree object, returning the tree hash.
+    fn write_tree<'b>(
+        &'b self,
+        repo_dir: &'b Path,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + 'b>>
+    {
+        Box::pin(async move {
+            let mut entries = Vec::new();
+
+            for (filename, content) in &self.files {
+                let blob = hash_object(repo_dir, content).await?;
+                entries.push(format!("100644 blob {blob}\t{filename}"));
+            }
+
+            for (dir_name, child) in &self.dirs {
+                let subtree = child.write_tree(repo_dir).await?;
+                entries.push(format!("040000 tree {subtree}\t{dir_name}"));
+            }
+
+            mktree(repo_dir, &entries).await
+        })
+    }
 }
 
 async fn hash_object(repo_dir: &Path, content: &str) -> anyhow::Result<String> {
@@ -290,6 +318,33 @@ mod tests {
         assert!(
             content.contains("kind: Deployment"),
             "should contain K8s Deployment"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn init_bare_repo_has_deeply_nested_claude_commands() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", uuid::Uuid::new_v4()));
+        let path = init_bare_repo(&tmp, "alice", "my-app", "main")
+            .await
+            .unwrap();
+
+        let output = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(&path)
+            .args(["show", "main:.claude/commands/dev.md"])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            ".claude/commands/dev.md should exist in initial commit"
+        );
+        let content = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            content.contains("$ARGUMENTS"),
+            "dev command should contain $ARGUMENTS placeholder"
         );
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;

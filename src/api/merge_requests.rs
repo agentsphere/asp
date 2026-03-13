@@ -28,6 +28,8 @@ pub struct CreateMrRequest {
     pub target_branch: String,
     pub title: String,
     pub body: Option<String>,
+    #[serde(default)]
+    pub auto_merge: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -231,6 +233,24 @@ async fn create_mr(
     .await?;
 
     run_mr_create_side_effects(&state, &auth, id, &mr.id, number, &body, &repo_path).await;
+
+    // Enable auto-merge if requested in the create body
+    if body.auto_merge {
+        let merge_method = "merge".to_string();
+        let _ = sqlx::query!(
+            r#"
+        UPDATE merge_requests
+        SET auto_merge = true, auto_merge_by = $3, auto_merge_method = $4, updated_at = now()
+        WHERE project_id = $1 AND number = $2 AND status = 'open'
+        "#,
+            id,
+            number,
+            auth.user_id,
+            merge_method,
+        )
+        .execute(&state.pool)
+        .await;
+    }
 
     Ok((
         StatusCode::CREATED,

@@ -106,6 +106,10 @@ struct Cli {
     /// Disable MCP server integration even when PLATFORM_API_TOKEN is set.
     #[arg(long)]
     no_mcp: bool,
+
+    /// Exit after completing the first turn (fire-and-forget mode for worker agents).
+    #[arg(long)]
+    one_shot: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +324,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // 10. Run per-turn spawn REPL (opts are cloned per turn)
-    repl::run(opts, pubsub, initial_prompt, stdin_rx).await?;
+    repl::run(opts, pubsub, initial_prompt, stdin_rx, cli.one_shot).await?;
 
     // config_dir is dropped here (auto-cleanup)
     Ok(())

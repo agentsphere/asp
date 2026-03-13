@@ -23,7 +23,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+    sudo \
+  && rm -rf /var/lib/apt/lists/* \
+  && ARCH=$(dpkg --print-architecture) \
+  && curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/${ARCH}/kubectl" \
+  && chmod +x kubectl && mv kubectl /usr/local/bin/kubectl \
+  && mkdir -p /kaniko/ssl/certs \
+  && cp /etc/ssl/certs/ca-certificates.crt /kaniko/ssl/certs/ \
+  && KANIKO_ARCH=$([ "$ARCH" = "arm64" ] && echo "arm64" || echo "amd64") \
+  && curl -sL "https://github.com/GoogleContainerTools/kaniko/releases/latest/download/executor-linux-${KANIKO_ARCH}" -o /kaniko/executor \
+  && chmod +x /kaniko/executor
 
 # Agent-runner from build stage
 COPY --from=builder /usr/local/bin/agent-runner /usr/local/bin/agent-runner
@@ -35,8 +44,11 @@ RUN npm install -g @anthropic-ai/claude-code
 COPY mcp/ /usr/local/lib/mcp/
 RUN cd /usr/local/lib/mcp && npm install --production
 
-# Non-root user
-RUN useradd -m -s /bin/bash agent
+# Non-root user with sudo access (for installing packages at runtime)
+RUN userdel -r node 2>/dev/null || true \
+  && useradd -m -s /bin/bash -u 1000 agent \
+  && echo "agent ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/agent \
+  && chmod 0440 /etc/sudoers.d/agent
 USER agent
 WORKDIR /workspace
 

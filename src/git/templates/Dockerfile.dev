@@ -4,12 +4,12 @@ FROM ${PLATFORM_RUNNER_IMAGE}
 # Install project-specific tools and dependencies here.
 # This image is used for agent sessions in this project.
 #
-# Example: install Python for a Python project
-#   RUN apt-get update && apt-get install -y python3 python3-pip && rm -rf /var/lib/apt/lists/*
-#
 # The base image (platform-runner) already includes:
-#   - Node.js 22, git, curl, Claude Code CLI
+#   - Node.js 22, git, curl, kubectl, Claude Code CLI
 
 USER root
-RUN echo "Add your project dependencies here"
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv \
+    postgresql-client \
+  && rm -rf /var/lib/apt/lists/*
 USER agent

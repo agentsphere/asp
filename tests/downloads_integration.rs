@@ -4,46 +4,44 @@ use axum::http::StatusCode;
 use sqlx::PgPool;
 use std::io::Write;
 
-/// Create a fake agent-runner binary at the expected path for the given arch.
-fn write_fake_binary(dir: &std::path::Path, arch: &str) -> std::path::PathBuf {
-    let path = dir.join(arch);
-    let mut f = std::fs::File::create(&path).expect("create fake binary");
-    f.write_all(b"#!/bin/sh\necho fake-agent-runner\n")
-        .expect("write fake binary");
-    path
+/// Override state to use an isolated temp dir for agent-runner binaries,
+/// so tests never corrupt the real cross-compiled binaries.
+fn isolated_runner_state(state: &mut platform::store::AppState) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("agent-runner-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("create isolated dir");
+    let mut config = (*state.config).clone();
+    config.agent_runner_dir = dir.clone();
+    state.config = std::sync::Arc::new(config);
+    dir
 }
 
 // -- Happy path --
 
 #[sqlx::test(migrations = "./migrations")]
 async fn download_agent_runner_amd64_integration(pool: PgPool) {
-    let (state, admin_token) = helpers::test_state(pool).await;
+    let (mut state, admin_token) = helpers::test_state(pool).await;
+    let dir = isolated_runner_state(&mut state);
 
-    // Write fake binary to the configured agent_runner_dir
-    std::fs::create_dir_all(&state.config.agent_runner_dir).expect("create dir");
-    write_fake_binary(&state.config.agent_runner_dir, "amd64");
+    let mut f = std::fs::File::create(dir.join("amd64")).expect("create fake binary");
+    f.write_all(b"#!/bin/sh\necho fake-agent-runner\n")
+        .expect("write fake binary");
 
     let app = helpers::test_router(state);
 
     let (status, body) =
         helpers::get_json(&app, &admin_token, "/api/downloads/agent-runner?arch=amd64").await;
-    // get_json tries to parse JSON — binary responses will parse as Null
-    // We need a raw request instead
     assert!(status == StatusCode::OK || body.is_null());
 }
 
 #[sqlx::test(migrations = "./migrations")]
 async fn download_agent_runner_returns_binary_integration(pool: PgPool) {
-    let (state, admin_token) = helpers::test_state(pool).await;
+    let (mut state, admin_token) = helpers::test_state(pool).await;
+    let dir = isolated_runner_state(&mut state);
 
-    // Write a known binary payload
-    std::fs::create_dir_all(&state.config.agent_runner_dir).expect("create dir");
-    let path = state.config.agent_runner_dir.join("arm64");
-    std::fs::write(&path, b"TESTBINARY").expect("write");
+    std::fs::write(dir.join("arm64"), b"TESTBINARY").expect("write");
 
     let app = helpers::test_router(state);
 
-    // Use raw request to check binary response
     let req = axum::http::Request::builder()
         .method("GET")
         .uri("/api/downloads/agent-runner?arch=arm64")
@@ -80,10 +78,10 @@ async fn download_agent_runner_returns_binary_integration(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn download_agent_runner_normalizes_x86_64_integration(pool: PgPool) {
-    let (state, admin_token) = helpers::test_state(pool).await;
+    let (mut state, admin_token) = helpers::test_state(pool).await;
+    let dir = isolated_runner_state(&mut state);
 
-    std::fs::create_dir_all(&state.config.agent_runner_dir).expect("create dir");
-    std::fs::write(state.config.agent_runner_dir.join("amd64"), b"BIN").expect("write");
+    std::fs::write(dir.join("amd64"), b"BIN").expect("write");
 
     let app = helpers::test_router(state);
 
@@ -100,10 +98,10 @@ async fn download_agent_runner_normalizes_x86_64_integration(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn download_agent_runner_normalizes_aarch64_integration(pool: PgPool) {
-    let (state, admin_token) = helpers::test_state(pool).await;
+    let (mut state, admin_token) = helpers::test_state(pool).await;
+    let dir = isolated_runner_state(&mut state);
 
-    std::fs::create_dir_all(&state.config.agent_runner_dir).expect("create dir");
-    std::fs::write(state.config.agent_runner_dir.join("arm64"), b"BIN").expect("write");
+    std::fs::write(dir.join("arm64"), b"BIN").expect("write");
 
     let app = helpers::test_router(state);
 

@@ -225,7 +225,7 @@ async fn handle_active(
     inject_project_secrets(state, deployment, &ns).await;
 
     // Ensure a registry pull secret exists so pods can pull images
-    ensure_registry_pull_secret(state, deployment, &ns).await;
+    ensure_registry_pull_secret_for(state, deployment.project_id, deployment.id, &ns).await;
 
     let (rendered, sha) = render_manifests(state, deployment).await?;
 
@@ -588,10 +588,11 @@ async fn apply_k8s_secret(
 ///
 /// The token is scoped to the project owner and expires after 30 days.
 /// Each deploy refreshes the secret, so credentials stay current.
-#[tracing::instrument(skip(state, deployment), fields(project_id = %deployment.project_id, %namespace))]
-async fn ensure_registry_pull_secret(
+#[tracing::instrument(skip(state), fields(%project_id, %namespace))]
+pub async fn ensure_registry_pull_secret_for(
     state: &AppState,
-    deployment: &PendingDeployment,
+    project_id: Uuid,
+    resource_id: Uuid,
     namespace: &str,
 ) {
     let registry_url = state
@@ -604,12 +605,11 @@ async fn ensure_registry_pull_secret(
         return; // No registry configured
     };
 
-    let Some((owner_id, owner_name)) = resolve_project_owner(state, deployment.project_id).await
-    else {
+    let Some((owner_id, owner_name)) = resolve_project_owner(state, project_id).await else {
         return;
     };
 
-    let Some(raw_token) = create_deploy_pull_token(state, owner_id, deployment.id).await else {
+    let Some(raw_token) = create_deploy_pull_token(state, owner_id, resource_id).await else {
         return;
     };
 
@@ -619,10 +619,7 @@ async fn ensure_registry_pull_secret(
         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
             name: Some(REGISTRY_PULL_SECRET_NAME.to_owned()),
             labels: Some(BTreeMap::from([
-                (
-                    "platform.io/project".into(),
-                    deployment.project_id.to_string(),
-                ),
+                ("platform.io/project".into(), project_id.to_string()),
                 ("platform.io/managed-by".into(), "deployer".into()),
             ])),
             ..Default::default()

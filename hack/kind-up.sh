@@ -21,24 +21,6 @@ helm upgrade --install cnpg cnpg/cloudnative-pg -n cnpg-system --create-namespac
 # Create shared temp directory for e2e test repos (mounted via extraMounts)
 mkdir -p /tmp/platform-e2e
 
-# Pre-load socat image for DaemonSet registry proxy
-echo "==> Pre-loading socat image"
-docker pull alpine/socat:latest 2>/dev/null || true
-kind load docker-image alpine/socat:latest --name "$CLUSTER_NAME" 2>/dev/null || true
-
-# Build runner OCI tarball for registry seeding
-SEED_DIR="/tmp/platform-e2e/seed-images"
-if [[ ! -f "${SEED_DIR}/platform-runner.tar" ]]; then
-  echo "==> Building platform-runner OCI tarball"
-  mkdir -p "${SEED_DIR}"
-  docker buildx build \
-    --file docker/Dockerfile.platform-runner-bare \
-    --output "type=oci,dest=${SEED_DIR}/platform-runner.tar" \
-    .
-else
-  echo "==> Reusing existing platform-runner OCI tarball"
-fi
-
 echo ""
 echo "Kind cluster ready."
 echo "  kubectl context set to: kind-${CLUSTER_NAME}"

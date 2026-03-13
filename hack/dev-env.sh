@@ -137,14 +137,14 @@ PLATFORM_VALKEY_AGENT_HOST=valkey.${NS}.svc.cluster.local:6379
 # --- Namespace prefix (for per-project namespaces) ---
 PLATFORM_NS_PREFIX=${NS}
 
-# --- Storage paths ---
-PLATFORM_GIT_REPOS_PATH=/tmp/platform-repos
-PLATFORM_OPS_REPOS_PATH=/tmp/platform-ops-repos
+# --- Storage paths (worktree-scoped) ---
+PLATFORM_GIT_REPOS_PATH=/tmp/platform-e2e/${WORKTREE}/repos
+PLATFORM_OPS_REPOS_PATH=/tmp/platform-e2e/${WORKTREE}/ops-repos
 
-# --- Seed images (OCI tarballs imported into registry on startup) ---
-PLATFORM_SEED_IMAGES_PATH=/tmp/platform-e2e/seed-images
+# --- Seed images (OCI tarballs imported into registry on startup, worktree-scoped) ---
+PLATFORM_SEED_IMAGES_PATH=/tmp/platform-e2e/${WORKTREE}/seed-images
 
-# --- Agent runner binaries (worktree-scoped to avoid cross-worktree overwrites) ---
+# --- Agent runner binaries (worktree-scoped) ---
 PLATFORM_AGENT_RUNNER_DIR=/tmp/platform-e2e/${WORKTREE}/agent-runner
 
 # --- K8s config ---

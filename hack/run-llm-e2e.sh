@@ -106,8 +106,8 @@ export PLATFORM_API_URL="http://${PLATFORM_HOST}:${BACKEND_PORT}"
 export PLATFORM_PIPELINE_NAMESPACE="${PIPELINE_NS}"
 export PLATFORM_AGENT_NAMESPACE="${AGENT_NS}"
 export PLATFORM_VALKEY_AGENT_HOST="valkey.${SVC_NS}.svc.cluster.local:6379"
-export PLATFORM_SEED_IMAGES_PATH="/tmp/platform-e2e/seed-images"
-export PLATFORM_AGENT_RUNNER_DIR="/tmp/platform-e2e/agent-runner"
+export PLATFORM_SEED_IMAGES_PATH="/tmp/platform-e2e/${WORKTREE}/seed-images"
+export PLATFORM_AGENT_RUNNER_DIR="/tmp/platform-e2e/${WORKTREE}/agent-runner"
 export PLATFORM_HOST_MOUNT_PATH="/tmp/platform-e2e"
 export SQLX_OFFLINE=true
 

@@ -65,7 +65,7 @@ watch:
 
 run:
     @if [ ! -f .env.dev ]; then echo "ERROR: .env.dev not found. Run: just dev-env"; exit 1; fi
-    @mkdir -p /tmp/platform-repos /tmp/platform-ops-repos /tmp/platform-e2e/seed-images
+    @grep -E '^PLATFORM_(GIT_REPOS|OPS_REPOS|SEED_IMAGES)_PATH=' .env.dev | cut -d= -f2 | xargs mkdir -p
     cargo run
 
 ui:

@@ -53,7 +53,20 @@ pub async fn run_create_app_loop(
     handle.busy.store(true, Ordering::Relaxed);
     let session_id = handle.session_id;
 
-    let mut current_prompt = initial_prompt;
+    // Wrap user prompt with critical rules from the system prompt.
+    // Models sometimes ignore --system-prompt in favor of -p content,
+    // so we reinforce the key constraints directly in the user prompt.
+    let mut current_prompt = format!(
+        "RULES (you MUST follow these):\n\
+         - You are the Manager Agent. You orchestrate, you do NOT write code.\n\
+         - Use the tools: create_project, then spawn_coding_agent. That is ALL you do.\n\
+         - Your spawn_coding_agent prompt MUST be SHORT — only describe WHAT to build.\n\
+         - Do NOT include file paths, code, Dockerfiles, docker-compose, k8s manifests, or project structure.\n\
+         - Do NOT mention /tmp, /private, or any absolute paths. The worker knows its workspace.\n\
+         - This is a Kubernetes-native platform. There is NO docker-compose, NO SQLite — use PostgreSQL.\n\
+         - The worker has CLAUDE.md with the full development workflow. Do NOT repeat it.\n\n\
+         USER REQUEST:\n{initial_prompt}"
+    );
     // If we already have a CLI session ID from a prior invocation, resume it
     // (e.g. user sent a follow-up message after the first turn completed)
     let mut is_resume = handle.cli_session_id.lock().await.is_some();
@@ -461,42 +474,20 @@ async fn execute_spawn_agent(
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("missing required field: prompt"))?;
 
-    // Augment the LLM's prompt with platform-required instructions that the
-    // worker agent must always follow, regardless of what the manager included.
-    let mr_curl = r#"curl -s -X POST "$PLATFORM_API_URL/api/projects/$PROJECT_ID/merge-requests" \
-                 -H "Authorization: Bearer $PLATFORM_API_TOKEN" \
-                 -H "Content-Type: application/json" \
-                 -d '{"title":"Initial app","source_branch":"feature/initial-app","target_branch":"main"}'"#;
+    // Truncate overly verbose manager prompts — the worker has CLAUDE.md for process details.
+    // Strip everything except the actual requirements (the manager often adds file paths,
+    // code snippets, docker-compose references etc. that the worker should ignore).
+    let truncated_prompt = if raw_prompt.len() > 2000 {
+        &raw_prompt[..2000]
+    } else {
+        raw_prompt
+    };
 
-    let prompt = format!(
-        "{raw_prompt}\n\n\
-         IMPORTANT — after writing all code you MUST also:\n\
-         1. Create a multi-stage `Dockerfile` that builds and runs the app, EXPOSE port 8080\n\
-         2. Create `.platform.yaml` at the repo root with exactly this content:\n\
-         ```yaml\n\
-         pipeline:\n\
-           on:\n\
-             push:\n\
-               branches: [\"*\"]\n\
-             mr:\n\
-               actions: [opened, synchronized]\n\
-           steps:\n\
-             - name: build\n\
-               image: gcr.io/kaniko-project/executor:debug\n\
-               commands:\n\
-                 - /kaniko/executor --context=/workspace --dockerfile=/workspace/Dockerfile --destination=$REGISTRY/$PROJECT/app:$COMMIT_SHA --insecure\n\
-         ```\n\
-         3. The `main` branch is PROTECTED — direct pushes are blocked. You MUST:\n\
-            a. Run: `git add -A && git commit -m \"initial app\"`\n\
-            b. Push to your current feature branch: `git push origin feature/initial-app`\n\
-            c. Create a merge request via the platform API using this curl command:\n\
-               ```\n\
-               {mr_curl}\n\
-               ```\n\
-               The env vars $PLATFORM_API_URL, $PROJECT_ID, and $PLATFORM_API_TOKEN are already set in your shell.\n\
-         The CI pipeline triggers automatically when the MR is created. Once CI passes, the MR auto-merges and deploys.\n\
-         Do NOT skip the git commit, push, and MR creation steps — they are all required."
-    );
+    // Invoke the /dev skill command, which is seeded into every project repo at
+    // .claude/commands/dev.md. The command contains explicit step-by-step instructions
+    // (read CLAUDE.md, install tools, deploy postgres, test locally, push, create MR).
+    // $ARGUMENTS is replaced by Claude with the text after /dev.
+    let prompt = format!("/dev {truncated_prompt}");
 
     let session = super::service::create_session(
         state,

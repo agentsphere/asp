@@ -180,6 +180,7 @@ pub async fn run(
     pubsub: Option<PubSubClient>,
     initial_prompt: Option<String>,
     mut stdin_rx: tokio::sync::mpsc::Receiver<String>,
+    one_shot: bool,
 ) -> Result<()> {
     // Register SIGTERM handler for K8s graceful shutdown
     #[cfg(unix)]
@@ -198,11 +199,6 @@ pub async fn run(
 
     let mut cli_session_id: Option<String> = None;
     let mut stdin_alive = true;
-    // Sessions started with an explicit prompt are "fire-and-forget" — they exit
-    // after the first successful turn (e.g. create-app worker pods).
-    // Sessions started idle (no prompt) stay alive for interactive follow-ups
-    // (e.g. agent chat panel).
-    let started_with_prompt = initial_prompt.is_some();
     let mut pending_prompt = initial_prompt;
 
     // If no initial prompt and pubsub active, publish WaitingForInput immediately
@@ -318,10 +314,10 @@ pub async fn run(
             break;
         }
 
-        // Fire-and-forget mode: if started with an explicit prompt, exit after
-        // the first successful turn. The pod will reach Succeeded phase.
-        // Interactive sessions (started idle) stay alive for follow-up messages.
-        if started_with_prompt {
+        // One-shot mode (--one-shot): exit after the first successful turn.
+        // Used by worker agents spawned by a manager (create-app flow).
+        // Interactive sessions stay alive for follow-up messages via pub/sub.
+        if one_shot {
             if let Some(ref ps) = pubsub {
                 publish_completed(ps, "Agent completed").await;
             }

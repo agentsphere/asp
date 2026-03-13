@@ -90,7 +90,9 @@ cleanup() {
   # DaemonSet cleanup happens automatically with namespace deletion
 
   # Clean up seed cache/lock files scoped to this run
-  find "${SEED_DIR:-/tmp/platform-e2e/seed-images}" -name "*.${NS_PREFIX}.seed-cache.*" -delete 2>/dev/null || true
+  local wt
+  wt="$(bash "${SCRIPT_DIR}/detect-worktree.sh" 2>/dev/null || echo main)"
+  find "/tmp/platform-e2e/${wt}/seed-images" -name "*.${NS_PREFIX}.seed-cache.*" -delete 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -220,7 +222,7 @@ export PLATFORM_API_URL="http://${PLATFORM_HOST}:${BACKEND_PORT}"
 export PLATFORM_PIPELINE_NAMESPACE="${PIPELINE_NS}"
 export PLATFORM_AGENT_NAMESPACE="${AGENT_NS}"
 export PLATFORM_VALKEY_AGENT_HOST="valkey.${SVC_NS}.svc.cluster.local:6379"
-export PLATFORM_SEED_IMAGES_PATH="/tmp/platform-e2e/seed-images"
+export PLATFORM_SEED_IMAGES_PATH="/tmp/platform-e2e/${WORKTREE}/seed-images"
 export PLATFORM_AGENT_RUNNER_DIR="${RUNNER_DIR}"
 export CLAUDE_CLI_PATH="${PROJECT_DIR}/tests/fixtures/mock-claude-cli.sh"
 

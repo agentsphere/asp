@@ -172,17 +172,50 @@ async fn read_cli_output(
         }
 
         // Capture structured output from assistant tool_use blocks.
-        // When --json-schema + --max-turns 1, Claude calls StructuredOutput as
-        // a tool_use but hits error_max_turns before the result is populated.
-        // We capture the tool_use input here as a fallback.
+        // Two cases to handle:
+        //  1. StructuredOutput tool: input is a valid StructuredResponse
+        //     (normal --json-schema flow)
+        //  2. Direct tool call: the LLM calls one of our tools (create_project,
+        //     spawn_coding_agent, etc.) directly instead of via StructuredOutput.
+        //     Wrap it into a StructuredResponse so the create-app loop can
+        //     execute it.
         if let CliMessage::Assistant(ref a) = msg {
+            let mut direct_tool_calls: Vec<serde_json::Value> = Vec::new();
+
             for block in &a.message.content {
-                if block.get("type").and_then(|t| t.as_str()) == Some("tool_use")
-                    && let Some(input) = block.get("input")
-                    && serde_json::from_value::<StructuredResponse>(input.clone()).is_ok()
-                {
-                    assistant_structured = Some(input.clone());
+                if block.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+                    continue;
                 }
+                if let Some(input) = block.get("input") {
+                    // Case 1: StructuredOutput tool (input parses as StructuredResponse)
+                    if serde_json::from_value::<StructuredResponse>(input.clone()).is_ok() {
+                        assistant_structured = Some(input.clone());
+                    }
+                    // Case 2: Direct tool call (one of our known tool names)
+                    else if let Some(name) = block.get("name").and_then(|v| v.as_str())
+                        && matches!(
+                            name,
+                            "create_project"
+                                | "spawn_coding_agent"
+                                | "send_message_to_session"
+                                | "check_session_progress"
+                        )
+                    {
+                        direct_tool_calls.push(serde_json::json!({
+                            "name": name,
+                            "parameters": input
+                        }));
+                    }
+                }
+            }
+
+            // If no StructuredOutput was captured but we have direct tool calls,
+            // wrap them into a StructuredResponse.
+            if assistant_structured.is_none() && !direct_tool_calls.is_empty() {
+                assistant_structured = Some(serde_json::json!({
+                    "text": "",
+                    "tools": direct_tool_calls
+                }));
             }
         }
 
@@ -615,6 +648,31 @@ mod tests {
         let resp = parse_structured_output(&result, None);
         assert_eq!(resp.text, "Max turns reached");
         assert!(resp.tools.is_empty());
+    }
+
+    #[test]
+    fn parse_structured_output_direct_tool_call_wrapped() {
+        // When the LLM calls our tool directly (not via StructuredOutput),
+        // the fallback is wrapped: {text: "", tools: [{name, parameters}]}
+        let result = ResultMessage {
+            subtype: "success".into(),
+            session_id: "s1".into(),
+            is_error: false,
+            result: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            usage: None,
+            structured_output: None,
+        };
+        let fallback = serde_json::json!({
+            "text": "",
+            "tools": [{"name": "create_project", "parameters": {"name": "hello-llm"}}]
+        });
+        let resp = parse_structured_output(&result, Some(&fallback));
+        assert_eq!(resp.tools.len(), 1);
+        assert_eq!(resp.tools[0].name, "create_project");
+        assert_eq!(resp.tools[0].parameters["name"], "hello-llm");
     }
 
     #[test]

@@ -246,6 +246,9 @@ pub async fn seed_image(
 /// the full tarball and uploads blobs to `MinIO`. All other processes block
 /// on the lock, then use the lightweight `.seed-cache.json` sidecar for
 /// DB-only inserts.
+///
+/// If the tarball is newer than the cache file, the cache is invalidated
+/// and the image is re-imported (picks up rebuilt seed images on restart).
 async fn seed_image_cached(
     pool: &PgPool,
     minio: &opendal::Operator,
@@ -253,19 +256,29 @@ async fn seed_image_cached(
     tarball_path: &Path,
     tag: &str,
 ) -> Result<SeedResult, anyhow::Error> {
-    // 1. DB idempotency: tag already exists → skip
+    let ns_prefix = std::env::var("PLATFORM_NS_PREFIX").ok();
+    let cache_path = cache_path_for_tarball(tarball_path, ns_prefix.as_deref());
+
+    // 1. DB idempotency: tag already exists → check if tarball is newer
     let existing: Option<Uuid> =
         sqlx::query_scalar("SELECT id FROM registry_tags WHERE repository_id = $1 AND name = $2")
             .bind(repository_id)
             .bind(tag)
             .fetch_optional(pool)
             .await?;
-    if existing.is_some() {
+    if existing.is_some() && !tarball_newer_than_cache(tarball_path, &cache_path) {
         return Ok(SeedResult::AlreadyExists);
     }
-
-    let ns_prefix = std::env::var("PLATFORM_NS_PREFIX").ok();
-    let cache_path = cache_path_for_tarball(tarball_path, ns_prefix.as_deref());
+    if existing.is_some() {
+        // Tarball was rebuilt — invalidate cache and delete stale tag so we re-import
+        tracing::info!("seed tarball is newer than cache, re-importing");
+        let _ = std::fs::remove_file(&cache_path);
+        sqlx::query("DELETE FROM registry_tags WHERE repository_id = $1 AND name = $2")
+            .bind(repository_id)
+            .bind(tag)
+            .execute(pool)
+            .await?;
+    }
 
     // 2. Fast path: cache file exists → DB-only seed
     if let Some(cache) = try_read_cache(&cache_path) {
@@ -654,6 +667,20 @@ fn sha256_digest(data: &[u8]) -> String {
 fn digest_to_blob_path(digest: &str) -> String {
     let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
     format!("blobs/sha256/{hex}")
+}
+
+/// Check if the tarball file is newer than the seed cache file.
+///
+/// Returns `true` if the tarball was modified after the cache, meaning the
+/// image was rebuilt and needs re-importing.
+fn tarball_newer_than_cache(tarball_path: &Path, cache_path: &Path) -> bool {
+    let tarball_mtime = tarball_path.metadata().and_then(|m| m.modified()).ok();
+    let cache_mtime = cache_path.metadata().and_then(|m| m.modified()).ok();
+    match (tarball_mtime, cache_mtime) {
+        (Some(t), Some(c)) => t > c,
+        (Some(_), None) => true, // no cache → treat as newer
+        _ => false,
+    }
 }
 
 /// Extract image/repository name from a tarball filename.

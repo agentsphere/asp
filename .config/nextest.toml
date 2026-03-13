@@ -27,11 +27,11 @@ test-group = "listen-port"
 filter = "binary(e2e_agent)"
 test-group = "listen-port"
 
-# LLM tests need much longer timeouts (real Claude CLI + K8s pod + Kaniko build)
+# LLM tests need much longer timeouts (real Claude CLI + K8s pod + pipeline build)
 [[profile.default.overrides]]
 filter = "binary(llm_create_app_e2e)"
 test-group = "listen-port"
-slow-timeout = { period = "300s", terminate-after = 4 }
+slow-timeout = { period = "300s", terminate-after = 6 }
 
 [[profile.ci.overrides]]
 filter = "binary(registry_pull_integration)"
@@ -44,4 +44,4 @@ test-group = "listen-port"
 [[profile.ci.overrides]]
 filter = "binary(llm_create_app_e2e)"
 test-group = "listen-port"
-slow-timeout = { period = "300s", terminate-after = 4 }
+slow-timeout = { period = "300s", terminate-after = 6 }

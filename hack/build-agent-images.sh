@@ -14,13 +14,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-FORCE=false
+FORCE="${FORCE:-false}"
 if [[ "${1:-}" == "--force" ]]; then
   FORCE=true
 fi
 
 WORKTREE="$(bash "${SCRIPT_DIR}/detect-worktree.sh")"
-SEED_DIR="/tmp/platform-e2e/seed-images"
+SEED_DIR="/tmp/platform-e2e/${WORKTREE}/seed-images"
 RUNNER_DIR="/tmp/platform-e2e/${WORKTREE}/agent-runner"
 mkdir -p "${SEED_DIR}" "${RUNNER_DIR}"
 

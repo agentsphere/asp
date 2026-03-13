@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::error::PipelineError;
 
@@ -36,6 +36,7 @@ pub struct DevImageConfig {
 #[allow(dead_code)] // fields consumed via serde + executor
 pub struct StepDef {
     pub name: String,
+    #[serde(default)]
     pub image: String,
     #[serde(default)]
     pub commands: Vec<String>,
@@ -43,6 +44,51 @@ pub struct StepDef {
     pub environment: HashMap<String, String>,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// Per-step condition: controls when this step runs based on trigger type and branch.
+    #[serde(default)]
+    pub only: Option<StepCondition>,
+    /// Deploy-test step: deploy app to temp namespace and run test image.
+    /// When present, `image` and `commands` are ignored.
+    #[serde(default)]
+    pub deploy_test: Option<DeployTestDef>,
+}
+
+/// Per-step condition controlling when a step runs.
+/// Both fields AND together. Absent `only` = always run.
+/// Empty list = match all.
+#[derive(Debug, Deserialize, Default)]
+pub struct StepCondition {
+    #[serde(default)]
+    pub events: Vec<String>,
+    #[serde(default)]
+    pub branches: Vec<String>,
+}
+
+fn default_readiness_path() -> String {
+    "/healthz".into()
+}
+
+fn default_readiness_timeout() -> u32 {
+    120
+}
+
+/// Configuration for a deploy-test step.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DeployTestDef {
+    /// Test image to run (supports `$REGISTRY/$PROJECT/$COMMIT_SHA` expansion).
+    pub test_image: String,
+    /// Commands to run in the test container (if empty, uses image entrypoint).
+    #[serde(default)]
+    pub commands: Vec<String>,
+    /// Path to deploy manifests (default: `deploy/production.yaml`).
+    #[serde(default)]
+    pub manifests: Option<String>,
+    /// Readiness path to poll before running tests (default: `/healthz`).
+    #[serde(default = "default_readiness_path")]
+    pub readiness_path: String,
+    /// Timeout in seconds for app to become ready (default: 120).
+    #[serde(default = "default_readiness_timeout")]
+    pub readiness_timeout: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,11 +148,23 @@ fn validate(def: &PipelineDefinition) -> Result<(), PipelineError> {
                 "step {i} is missing a name"
             )));
         }
-        if step.image.is_empty() {
+        // deploy_test steps don't need image/commands
+        if let Some(ref dt) = step.deploy_test {
+            if !step.commands.is_empty() {
+                return Err(PipelineError::InvalidDefinition(format!(
+                    "step '{}': deploy_test and commands are mutually exclusive",
+                    step.name,
+                )));
+            }
+            validate_deploy_test(&step.name, dt)?;
+        } else if step.image.is_empty() {
             return Err(PipelineError::InvalidDefinition(format!(
                 "step '{}' is missing an image",
                 step.name
             )));
+        }
+        if let Some(ref cond) = step.only {
+            validate_step_condition(&step.name, cond)?;
         }
     }
 
@@ -191,6 +249,88 @@ pub fn matches_tag(trigger: Option<&TriggerConfig>, tag_name: &str) -> bool {
     tag.patterns
         .iter()
         .any(|pattern| crate::validation::match_glob_pattern(pattern, tag_name))
+}
+
+// ---------------------------------------------------------------------------
+// Per-step condition matching
+// ---------------------------------------------------------------------------
+
+const VALID_EVENTS: &[&str] = &["push", "mr", "tag", "api"];
+
+/// Check if a step should run given the trigger type and branch.
+///
+/// - `None` condition → always run (backward compat)
+/// - Empty `events` list → match all events
+/// - Empty `branches` list → match all branches
+/// - Both fields AND together
+pub fn step_matches(condition: Option<&StepCondition>, trigger_type: &str, branch: &str) -> bool {
+    let Some(cond) = condition else {
+        return true;
+    };
+
+    let events_match = cond.events.is_empty() || cond.events.iter().any(|e| e == trigger_type);
+    let branches_match = cond.branches.is_empty()
+        || cond
+            .branches
+            .iter()
+            .any(|pattern| crate::validation::match_glob_pattern(pattern, branch));
+
+    events_match && branches_match
+}
+
+/// Validate per-step condition fields.
+fn validate_step_condition(step_name: &str, cond: &StepCondition) -> Result<(), PipelineError> {
+    for event in &cond.events {
+        if !VALID_EVENTS.contains(&event.as_str()) {
+            return Err(PipelineError::InvalidDefinition(format!(
+                "step '{step_name}': invalid event '{event}' (allowed: push, mr, tag, api)"
+            )));
+        }
+    }
+    for branch in &cond.branches {
+        if branch.is_empty() || branch.len() > 255 {
+            return Err(PipelineError::InvalidDefinition(format!(
+                "step '{step_name}': branch pattern must be 1-255 characters"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validate deploy-test step configuration.
+fn validate_deploy_test(step_name: &str, dt: &DeployTestDef) -> Result<(), PipelineError> {
+    if dt.test_image.is_empty() {
+        return Err(PipelineError::InvalidDefinition(format!(
+            "step '{step_name}': deploy_test.test_image must not be empty"
+        )));
+    }
+    if let Some(ref manifests) = dt.manifests
+        && manifests.contains("..")
+    {
+        return Err(PipelineError::InvalidDefinition(format!(
+            "step '{step_name}': deploy_test.manifests must not contain path traversal (..)"
+        )));
+    }
+    if !dt.readiness_path.starts_with('/') {
+        return Err(PipelineError::InvalidDefinition(format!(
+            "step '{step_name}': deploy_test.readiness_path must start with '/'"
+        )));
+    }
+    if dt.readiness_timeout == 0 || dt.readiness_timeout > 600 {
+        return Err(PipelineError::InvalidDefinition(format!(
+            "step '{step_name}': deploy_test.readiness_timeout must be 1-600"
+        )));
+    }
+    Ok(())
+}
+
+/// Expand `$VAR` references in a string using the given env var slice.
+pub fn expand_step_env(value: &str, env_vars: &[(String, String)]) -> String {
+    let mut result = value.to_owned();
+    for (key, val) in env_vars {
+        result = result.replace(&format!("${key}"), val);
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -734,5 +874,310 @@ pipeline:
             matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("relative path")),
             "absolute path should fail: {err:?}"
         );
+    }
+
+    // -- StepCondition parsing --
+
+    #[test]
+    fn parse_only_with_events() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: lint
+      image: rust:1.85
+      commands: [cargo clippy]
+      only:
+        events: [mr]
+"#;
+        let def = parse(yaml).unwrap();
+        let cond = def.steps[0].only.as_ref().unwrap();
+        assert_eq!(cond.events, vec!["mr"]);
+        assert!(cond.branches.is_empty());
+    }
+
+    #[test]
+    fn parse_only_with_branches() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: deploy
+      image: alpine
+      only:
+        branches: ["main"]
+"#;
+        let def = parse(yaml).unwrap();
+        let cond = def.steps[0].only.as_ref().unwrap();
+        assert!(cond.events.is_empty());
+        assert_eq!(cond.branches, vec!["main"]);
+    }
+
+    #[test]
+    fn parse_only_with_both() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: deploy
+      image: alpine
+      only:
+        events: [push, tag]
+        branches: ["main", "release/*"]
+"#;
+        let def = parse(yaml).unwrap();
+        let cond = def.steps[0].only.as_ref().unwrap();
+        assert_eq!(cond.events, vec!["push", "tag"]);
+        assert_eq!(cond.branches, vec!["main", "release/*"]);
+    }
+
+    #[test]
+    fn parse_only_absent_is_none() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: test
+      image: alpine
+";
+        let def = parse(yaml).unwrap();
+        assert!(def.steps[0].only.is_none());
+    }
+
+    #[test]
+    fn parse_only_invalid_event() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: test
+      image: alpine
+      only:
+        events: [invalid]
+"#;
+        let err = parse(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("invalid event")),
+            "got: {err:?}"
+        );
+    }
+
+    // -- step_matches --
+
+    #[test]
+    fn step_matches_none_always_runs() {
+        assert!(step_matches(None, "push", "main"));
+        assert!(step_matches(None, "mr", "feature/foo"));
+    }
+
+    #[test]
+    fn step_matches_empty_events_matches_all() {
+        let cond = StepCondition {
+            events: vec![],
+            branches: vec![],
+        };
+        assert!(step_matches(Some(&cond), "push", "main"));
+        assert!(step_matches(Some(&cond), "mr", "any"));
+    }
+
+    #[test]
+    fn step_matches_events_filter() {
+        let cond = StepCondition {
+            events: vec!["mr".into()],
+            branches: vec![],
+        };
+        assert!(step_matches(Some(&cond), "mr", "main"));
+        assert!(!step_matches(Some(&cond), "push", "main"));
+    }
+
+    #[test]
+    fn step_matches_branches_filter() {
+        let cond = StepCondition {
+            events: vec![],
+            branches: vec!["main".into()],
+        };
+        assert!(step_matches(Some(&cond), "push", "main"));
+        assert!(!step_matches(Some(&cond), "push", "feature/foo"));
+    }
+
+    #[test]
+    fn step_matches_events_and_branches_both_must_match() {
+        let cond = StepCondition {
+            events: vec!["push".into()],
+            branches: vec!["main".into()],
+        };
+        // Both match
+        assert!(step_matches(Some(&cond), "push", "main"));
+        // Event matches but branch doesn't
+        assert!(!step_matches(Some(&cond), "push", "feature/foo"));
+        // Branch matches but event doesn't
+        assert!(!step_matches(Some(&cond), "mr", "main"));
+    }
+
+    #[test]
+    fn step_matches_branch_glob() {
+        let cond = StepCondition {
+            events: vec![],
+            branches: vec!["feature/*".into()],
+        };
+        assert!(step_matches(Some(&cond), "push", "feature/foo"));
+        assert!(!step_matches(Some(&cond), "push", "main"));
+    }
+
+    // -- DeployTestDef parsing --
+
+    #[test]
+    fn parse_deploy_test_step() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: e2e
+      deploy_test:
+        test_image: registry/test:v1
+        readiness_path: /healthz
+        readiness_timeout: 60
+"#;
+        let def = parse(yaml).unwrap();
+        let dt = def.steps[0].deploy_test.as_ref().unwrap();
+        assert_eq!(dt.test_image, "registry/test:v1");
+        assert_eq!(dt.readiness_path, "/healthz");
+        assert_eq!(dt.readiness_timeout, 60);
+        assert!(dt.commands.is_empty());
+        assert!(dt.manifests.is_none());
+    }
+
+    #[test]
+    fn parse_deploy_test_with_commands() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: e2e
+      deploy_test:
+        test_image: registry/test:v1
+        commands: [npm test, npm run e2e]
+"#;
+        let def = parse(yaml).unwrap();
+        let dt = def.steps[0].deploy_test.as_ref().unwrap();
+        assert_eq!(dt.commands, vec!["npm test", "npm run e2e"]);
+    }
+
+    #[test]
+    fn parse_deploy_test_defaults() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: e2e
+      deploy_test:
+        test_image: registry/test:v1
+"#;
+        let def = parse(yaml).unwrap();
+        let dt = def.steps[0].deploy_test.as_ref().unwrap();
+        assert_eq!(dt.readiness_path, "/healthz");
+        assert_eq!(dt.readiness_timeout, 120);
+    }
+
+    #[test]
+    fn validate_deploy_test_and_commands_mutual_exclusion() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: e2e
+      commands: [echo hello]
+      deploy_test:
+        test_image: registry/test:v1
+"#;
+        let err = parse(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("mutually exclusive")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_deploy_test_empty_test_image() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: e2e
+      deploy_test:
+        test_image: ""
+"#;
+        let err = parse(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("test_image must not be empty")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_deploy_test_bad_readiness_path() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: e2e
+      deploy_test:
+        test_image: registry/test:v1
+        readiness_path: healthz
+"#;
+        let err = parse(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("readiness_path must start with")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_deploy_test_bad_timeout() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: e2e
+      deploy_test:
+        test_image: registry/test:v1
+        readiness_timeout: 0
+"#;
+        let err = parse(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("readiness_timeout must be 1-600")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_deploy_test_manifests_path_traversal() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: e2e
+      deploy_test:
+        test_image: registry/test:v1
+        manifests: "../etc/passwd"
+"#;
+        let err = parse(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("path traversal")),
+            "got: {err:?}"
+        );
+    }
+
+    // -- expand_step_env --
+
+    #[test]
+    fn expand_step_env_replaces_vars() {
+        let env = vec![
+            ("REGISTRY".into(), "localhost:5000".into()),
+            ("PROJECT".into(), "myapp".into()),
+            ("COMMIT_SHA".into(), "abc123".into()),
+        ];
+        let result = expand_step_env("$REGISTRY/$PROJECT/test:$COMMIT_SHA", &env);
+        assert_eq!(result, "localhost:5000/myapp/test:abc123");
+    }
+
+    #[test]
+    fn expand_step_env_no_vars() {
+        let result = expand_step_env("plain-string", &[]);
+        assert_eq!(result, "plain-string");
+    }
+
+    #[test]
+    fn expand_step_env_unknown_var_left_as_is() {
+        let env = vec![("REGISTRY".into(), "localhost:5000".into())];
+        let result = expand_step_env("$REGISTRY/$UNKNOWN", &env);
+        assert_eq!(result, "localhost:5000/$UNKNOWN");
     }
 }

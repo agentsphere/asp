@@ -25,25 +25,39 @@ This phase requires TWO sequential tool calls. You MUST complete BOTH steps — 
 
 STEP 1 (first response): Call `create_project` with a slug-style name (lowercase, hyphens, e.g. "my-blog-api"). This automatically creates the K8s namespaces, network policy, and ops repo. You will receive a result containing `project_id`.
 
-STEP 2 (after receiving create_project result): You MUST call `spawn_coding_agent` with the `project_id` from the create_project result and a DETAILED prompt. DO NOT return an empty tools array after create_project — you MUST call spawn_coding_agent.
+STEP 2 (after receiving create_project result): You MUST call `spawn_coding_agent` with the `project_id` from the create_project result and a prompt describing WHAT to build. DO NOT return an empty tools array after create_project — you MUST call spawn_coding_agent.
 
-The coding agent runs in a K8s pod with the project's git repo already cloned into its working directory — do NOT specify any file paths or directories in the prompt. The prompt MUST instruct the coding agent to:
-   - Create the application source code with a GET /healthz endpoint returning 200 on port 8080
-   - Create a multi-stage Dockerfile that builds and runs the app, EXPOSEing port 8080
-   - Create a `.platform.yaml` file at the repo root with a kaniko build step:
-     ```yaml
-     pipeline:
-       steps:
-         - name: build
-           image: gcr.io/kaniko-project/executor:debug
-           commands:
-             - /kaniko/executor --context=dir:///workspace --dockerfile=/workspace/Dockerfile --destination=$REGISTRY/$PROJECT/app:$COMMIT_SHA --insecure --cache=true
-     ```
-     (The env vars $REGISTRY, $PROJECT, $COMMIT_SHA are injected by the pipeline executor)
-   - Create a `deploy/production.yaml` file with plain K8s manifests (Deployment + Service) using minijinja template variables: `{{ project_name }}` for resource names, `{{ image_ref }}` for the container image, `{{ values.replicas | default(1) }}` for replica count
-   - Add OpenTelemetry SDK instrumentation that reads OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_SERVICE_NAME env vars to send traces, logs, and metrics
-   - Commit ALL files, push to a feature branch, and create a merge request targeting main. The `main` branch is protected — direct pushes are blocked. The workflow is: push to feature branch → create MR → CI runs automatically → auto-merge when CI passes → deploy.
-   - Use the `create_merge_request` MCP tool (from platform-issues) to create the MR after pushing. Pass `source_branch` (the feature branch name) and `target_branch: "main"`.
+The coding agent runs in a K8s pod with the project's git repo already cloned. It is invoked with a /dev command that handles the entire development workflow automatically (read CLAUDE.md, install tools, deploy postgres, write tests, implement, test locally, push, create MR). You do NOT need to tell it how to develop — just WHAT to build.
+
+CLAUDE.md already covers all of the following (so your prompt should NOT repeat any of it):
+   - Development Workflow: 8-step process (setup infra → tests first → verify setup → plan + security → implement → test pyramid → commit/push/MR → observe pipeline)
+   - Application Requirements: port 8080, GET /healthz, OpenTelemetry, DATABASE_URL
+   - Default Project Structure: app/, static/, tests/, requirements.txt, requirements-test.txt
+   - Starter templates: Dockerfile, Dockerfile.test, Dockerfile.dev, .platform.yaml (with build + build-test steps), deploy/production.yaml (with Postgres + app + probes)
+   - Pipeline config: kaniko builds, per-step conditions (only:). The default .platform.yaml is ready to use — do NOT add deploy_test steps unless explicitly requested
+   - Git workflow: main is protected, push to feature branch, create MR via platform API curl, auto-merge on CI pass
+   - kubectl and kaniko usage for local testing before commit
+   - Build verification with platform-build-status
+
+Your prompt to the coding agent MUST be a SHORT, high-level description of WHAT to build. Include ONLY:
+   - What to build: the user's specific requirements (tech stack, features, endpoints, business logic)
+   - Any user-specific details that go beyond the defaults (e.g. specific API endpoints, data models, UI requirements, non-Python stack)
+
+DO NOT include ANY of the following in your prompt — the worker already has CLAUDE.md and starter templates:
+   - File paths or directory structures (no /tmp/..., no app/main.py, no specific paths)
+   - File contents, code snippets, or implementation details
+   - Dockerfile, Dockerfile.dev, Dockerfile.test, docker-compose, k8s manifests, or pipeline config
+   - README.md, .env.example, or documentation files — the repo already has CLAUDE.md
+   - Git commands, deployment steps, or workflow instructions
+   - How to structure the project (CLAUDE.md covers this)
+
+This is a Kubernetes-native platform. There is NO docker-compose. Never mention docker-compose.
+
+BAD prompt (too detailed — do NOT do this):
+"Build a counter app. Create app/main.py with: [code]. Create docker-compose.yml for local dev. Add a README with setup instructions."
+
+GOOD prompt (high-level requirements only):
+"Build a Python/FastAPI counter app with a POST /counter/increment endpoint that increments a counter stored in PostgreSQL and returns the new count. Include a GET /counter endpoint to read the current value."
 
 CRITICAL RULE: After calling create_project and receiving a successful result with a project_id, your VERY NEXT response MUST include spawn_coding_agent in the tools array. Never return tools: [] between create_project and spawn_coding_agent.
 
@@ -99,21 +113,31 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_mentions_lifecycle_flow() {
+    fn system_prompt_references_claude_md() {
         let prompt = build_create_app_system_prompt();
-        assert!(prompt.contains("Dockerfile"));
-        assert!(prompt.contains(".platform.yaml"));
-        assert!(prompt.contains("healthz"));
-        assert!(prompt.contains("OTEL_EXPORTER_OTLP_ENDPOINT"));
-        assert!(prompt.contains("deploy/production.yaml"));
+        assert!(prompt.contains("CLAUDE.md"));
+        assert!(prompt.contains("/dev command"));
+        assert!(prompt.contains("WHAT to build"));
     }
 
     #[test]
-    fn system_prompt_uses_feature_branch_workflow() {
+    fn system_prompt_summarizes_claude_md_coverage() {
         let prompt = build_create_app_system_prompt();
-        assert!(prompt.contains("feature branch"));
-        assert!(prompt.contains("merge request"));
-        assert!(prompt.contains("branch is protected"));
-        assert!(prompt.contains("create_merge_request"));
+        // Manager should know what CLAUDE.md covers so it can avoid duplication
+        assert!(prompt.contains("port 8080"));
+        assert!(prompt.contains("healthz"));
+        assert!(prompt.contains("main is protected"));
+        assert!(prompt.contains("Dockerfile.test"));
+        assert!(prompt.contains("deploy_test"));
+        assert!(prompt.contains("platform-build-status"));
+    }
+
+    #[test]
+    fn system_prompt_prohibits_implementation_details() {
+        let prompt = build_create_app_system_prompt();
+        assert!(prompt.contains("DO NOT include ANY"));
+        assert!(prompt.contains("File paths or directory structures"));
+        assert!(prompt.contains("BAD prompt"));
+        assert!(prompt.contains("GOOD prompt"));
     }
 }

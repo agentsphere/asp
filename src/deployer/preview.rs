@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, Namespace, Service, ServicePort, ServiceSpec,
+    Container, ContainerPort, LocalObjectReference, Namespace, Service, ServicePort, ServiceSpec,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -148,6 +148,15 @@ async fn apply_preview_manifests(
     // Ensure namespace exists
     ensure_namespace(&state.kube, &ns_name).await?;
 
+    // Ensure registry pull secret so the preview pod can pull from the platform registry
+    super::reconciler::ensure_registry_pull_secret_for(
+        state,
+        preview.project_id,
+        preview.id,
+        &ns_name,
+    )
+    .await;
+
     // Create/update Deployment
     let deployment = build_preview_deployment(preview, &ns_name);
     apply_deployment(&state.kube, &ns_name, &deployment).await?;
@@ -231,6 +240,9 @@ fn build_preview_deployment(preview: &PendingPreview, namespace: &str) -> Deploy
                     ..Default::default()
                 }),
                 spec: Some(k8s_openapi::api::core::v1::PodSpec {
+                    image_pull_secrets: Some(vec![LocalObjectReference {
+                        name: super::reconciler::REGISTRY_PULL_SECRET_NAME.to_owned(),
+                    }]),
                     containers: vec![Container {
                         name: "app".into(),
                         image: Some(preview.image_ref.clone()),

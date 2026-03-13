@@ -266,9 +266,12 @@ async fn create_session(
     )
     .await?;
 
-    // Input validation
-    let prompt = body.prompt.as_deref().unwrap_or("Hello");
-    validation::check_length("prompt", prompt, 1, 100_000)?;
+    // Input validation — prompt is optional; empty means the session starts idle
+    // and waits for the first message via pub/sub.
+    let prompt = body.prompt.as_deref().unwrap_or("");
+    if !prompt.is_empty() {
+        validation::check_length("prompt", prompt, 1, 100_000)?;
+    }
     let provider = body.provider.as_deref().unwrap_or("claude-code");
     validation::check_length("provider", provider, 1, 50)?;
     if let Some(ref branch) = body.branch {

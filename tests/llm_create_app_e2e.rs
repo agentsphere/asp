@@ -199,18 +199,23 @@ fn resolve_api_key() -> Option<String> {
 
 /// Full create-app E2E flow with real LLM (branch-protection-aware).
 ///
-/// Steps:
+/// Verifies that the worker agent follows the CLAUDE.md Development Workflow:
+///
 /// 1. Start real TCP server (agent pods reach platform API)
 /// 2. Enable CLI spawn + store OAuth token in DB
 /// 3. Spawn background tasks (executor, reconciler, reaper)
-/// 4. POST /api/create-app → manager session
+/// 4. POST /api/create-app with Python/FastAPI requirements
 /// 5. Poll for manager tool calls (`create_project`, `spawn_coding_agent`)
 /// 6. Wait for worker agent pod to complete
-/// 7. Verify git push to feature branch + MR creation
-/// 8. Wait for MR pipeline (triggered by `on_mr`)
-/// 9. Wait for auto-merge (triggered by pipeline success)
-/// 10. Verify deployment (post-merge deploy)
-/// 11. Verify manager session completes
+/// 7. Verify workflow artifacts on feature branch:
+///    - Test files exist (CLAUDE.md step 2: "Create Tests First")
+///    - App source code exists
+///    - Dockerfile, Dockerfile.test, .platform.yaml, deploy/production.yaml
+/// 8. Verify MR creation (CLAUDE.md step 7: "Commit, Push, Create MR")
+/// 9. Wait for MR pipeline + inspect step statuses (build, build-test)
+/// 10. Wait for auto-merge (triggered by pipeline success)
+/// 11. Verify deployment reaches healthy
+/// 12. Verify manager session completes
 #[ignore = "requires real Claude CLI and Kind cluster"]
 #[sqlx::test(migrations = "./migrations")]
 async fn llm_create_app_full_flow(pool: PgPool) {
@@ -342,13 +347,15 @@ async fn llm_create_app_full_flow(pool: PgPool) {
     let _reaper = ReaperGuard::spawn(&state);
 
     // -- 5. Create-app session --
+    // The prompt describes WHAT to build — CLAUDE.md (in the repo template) covers HOW.
+    // Using Python/FastAPI to match the default templates.
     eprintln!("[LLM E2E] Creating create-app session...");
     let (status, body) = e2e_helpers::post_json(
         &app,
         &admin_token,
         "/api/create-app",
         serde_json::json!({
-            "description": "Skip clarification — all details provided. Execute Phase 2 immediately.\n\nApp: hello world Express.js (Node.js LTS) web server. GET /healthz returns {\"status\":\"ok\"} on port 8080. No database, no extra features.\n\nProject name: hello-llm-test\n\nThe main branch is protected. The coding agent must push to a feature branch, then create a merge request targeting main. CI triggers on MR creation and auto-merges when it passes.\n\nYou MUST call create_project first, then spawn_coding_agent with the returned project_id. Both tool calls are required."
+            "description": "Skip clarification — all details provided. Execute Phase 2 immediately.\n\nBuild a Python FastAPI web API with a single resource: items (GET /api/items, POST /api/items). Store items in a PostgreSQL database using SQLAlchemy. Include a simple HTML frontend page at /static/index.html that lists items via the API.\n\nProject name: hello-llm-test\n\nYou MUST call create_project first, then spawn_coding_agent with the returned project_id. Both tool calls are required. In the prompt to the coding agent, remind it to read CLAUDE.md first and follow its Development Workflow."
         }),
     )
     .await;
@@ -457,15 +464,16 @@ async fn llm_create_app_full_flow(pool: PgPool) {
             break;
         }
 
-        // If manager completed and we have project but no child, that's also done
+        // If manager completed and we have project but no child, dump messages and fail
         if let Some((status,)) = &mgr_status
             && (status == "completed" || status == "failed")
             && project_id.is_some()
         {
-            eprintln!(
-                "[LLM E2E] Manager {status}, project found but no child session. Continuing..."
+            let msgs = get_session_messages_full(&pool, manager_session_id).await;
+            let sessions = dump_all_sessions(&pool).await;
+            panic!(
+                "Manager {status} with project but did NOT call spawn_coding_agent.\n\n--- Messages ---\n{msgs}\n\n--- Sessions ---\n{sessions}"
             );
-            break;
         }
 
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -503,8 +511,8 @@ async fn llm_create_app_full_flow(pool: PgPool) {
         };
         eprintln!("[LLM E2E] Worker pod: {pod_name} in namespace: {namespace}");
 
-        // Wait for pod to complete (LLM coding takes time: up to 10 minutes)
-        phase = wait_for_pod_with_logs(&state, &namespace, &pod_name, 600).await;
+        // Wait for pod to complete (LLM coding + pipeline execution: up to 20 minutes)
+        phase = wait_for_pod_with_logs(&state, &namespace, &pod_name, 1200).await;
         eprintln!("[LLM E2E] Worker pod phase: {phase}");
 
         // Always dump pod logs for debugging (even on success)
@@ -552,29 +560,57 @@ async fn llm_create_app_full_flow(pool: PgPool) {
                 eprintln!("[LLM E2E] Commits on {branch}: {commit_count}");
 
                 if commit_count > 1 {
-                    // Check for key files on feature branch
                     let ref_prefix = format!("{branch}:");
-                    let has_platform_yaml =
-                        try_git_cmd(repo, &["show", &format!("{ref_prefix}.platform.yaml")])
-                            .is_some();
-                    let has_dockerfile =
-                        try_git_cmd(repo, &["show", &format!("{ref_prefix}Dockerfile")]).is_some();
 
-                    eprintln!(
-                        "[LLM E2E] .platform.yaml: {has_platform_yaml}, Dockerfile: {has_dockerfile}"
-                    );
+                    // --- Verify CLAUDE.md workflow artifacts ---
+                    // The worker should have read CLAUDE.md and produced these:
+                    let checks = [
+                        (".platform.yaml", "pipeline config"),
+                        ("Dockerfile", "app container image"),
+                        ("Dockerfile.test", "test runner image"),
+                        ("deploy/production.yaml", "deploy manifests"),
+                    ];
+                    for (file, desc) in &checks {
+                        let found =
+                            try_git_cmd(repo, &["show", &format!("{ref_prefix}{file}")]).is_some();
+                        eprintln!("[LLM E2E]   {file} ({desc}): {found}");
+                    }
 
-                    // Dump file contents for debugging
-                    if let Some(yaml) =
-                        try_git_cmd(repo, &["show", &format!("{ref_prefix}.platform.yaml")])
-                    {
-                        eprintln!("[LLM E2E] .platform.yaml content:\n{yaml}");
+                    // Check for test files (CLAUDE.md workflow step 2: "Create Tests First")
+                    let tree = try_git_cmd(repo, &["ls-tree", "-r", "--name-only", &branch])
+                        .unwrap_or_default();
+                    let has_tests = tree.lines().any(|l| {
+                        l.starts_with("tests/") || l.starts_with("test/") || l.contains("test_")
+                    });
+                    let has_requirements = tree
+                        .lines()
+                        .any(|l| l == "requirements.txt" || l == "package.json");
+                    let has_test_deps = tree
+                        .lines()
+                        .any(|l| l == "requirements-test.txt" || l.contains("test"));
+                    let has_app_code = tree.lines().any(|l| {
+                        l.starts_with("app/") || l.starts_with("src/") || l.ends_with(".py")
+                    });
+                    let has_frontend = tree
+                        .lines()
+                        .any(|l| l.starts_with("static/") || l.starts_with("templates/"));
+
+                    eprintln!("[LLM E2E]   tests present: {has_tests}");
+                    eprintln!("[LLM E2E]   app dependencies: {has_requirements}");
+                    eprintln!("[LLM E2E]   test dependencies: {has_test_deps}");
+                    eprintln!("[LLM E2E]   app source code: {has_app_code}");
+                    eprintln!("[LLM E2E]   frontend assets: {has_frontend}");
+
+                    // Dump key file contents for debugging
+                    for file in &[".platform.yaml", "Dockerfile", "Dockerfile.test"] {
+                        if let Some(content) =
+                            try_git_cmd(repo, &["show", &format!("{ref_prefix}{file}")])
+                        {
+                            eprintln!("[LLM E2E] {file} content:\n{content}");
+                        }
                     }
-                    if let Some(df) =
-                        try_git_cmd(repo, &["show", &format!("{ref_prefix}Dockerfile")])
-                    {
-                        eprintln!("[LLM E2E] Dockerfile content:\n{df}");
-                    }
+                    // Dump file tree
+                    eprintln!("[LLM E2E] File tree:\n{tree}");
                 } else {
                     eprintln!(
                         "[LLM E2E] WARNING: Only {commit_count} commit(s) on {branch} — worker may not have pushed"
@@ -696,7 +732,10 @@ async fn llm_create_app_full_flow(pool: PgPool) {
         && !items.is_empty()
     {
         let pipeline_id = items[0]["id"].as_str().unwrap();
-        eprintln!("[LLM E2E] Pipeline found: {pipeline_id}, waiting for completion...");
+        let trigger = items[0]["trigger"].as_str().unwrap_or("?");
+        eprintln!(
+            "[LLM E2E] Pipeline found: {pipeline_id} (trigger: {trigger}), waiting for completion..."
+        );
 
         // Wake executor in case it missed the notify
         state.pipeline_notify.notify_one();
@@ -706,10 +745,30 @@ async fn llm_create_app_full_flow(pool: PgPool) {
                 .await;
         eprintln!("[LLM E2E] Pipeline status: {pipeline_status}");
 
-        // Dump pipeline logs from MinIO (executor stores logs there before deleting the pod)
+        // Inspect pipeline step statuses — verify the build and build-test steps ran on MR
+        let (_, pipeline_detail) = e2e_helpers::get_json(
+            &app,
+            &admin_token,
+            &format!("/api/projects/{project_id}/pipelines/{pipeline_id}"),
+        )
+        .await;
+        if let Some(steps) = pipeline_detail["steps"].as_array() {
+            for step in steps {
+                let name = step["name"].as_str().unwrap_or("?");
+                let step_status = step["status"].as_str().unwrap_or("?");
+                eprintln!("[LLM E2E]   Step '{name}': {step_status}");
+            }
+        }
+
+        // Dump pipeline logs from MinIO on failure
         if pipeline_status != "success" {
             eprintln!("[LLM E2E] Dumping pipeline logs from MinIO...");
-            for suffix in &["build-clone.log", "build.log"] {
+            for suffix in &[
+                "build-clone.log",
+                "build.log",
+                "build-test-clone.log",
+                "build-test.log",
+            ] {
                 let path = format!("logs/pipelines/{pipeline_id}/{suffix}");
                 match state.minio.read(&path).await {
                     Ok(data) => {
@@ -916,13 +975,59 @@ async fn llm_create_app_full_flow(pool: PgPool) {
                     "worker should have pushed commits to {branch} (got {commit_count}). Log:\n{log}"
                 );
             }
+
+            // --- Verify CLAUDE.md workflow was followed ---
+            let tree =
+                try_git_cmd(repo, &["ls-tree", "-r", "--name-only", branch]).unwrap_or_default();
+
+            // Workflow step 2: "Create Tests First" — test files must exist
+            let has_tests = tree
+                .lines()
+                .any(|l| l.starts_with("tests/") || l.starts_with("test/") || l.contains("test_"));
+            assert!(
+                has_tests,
+                "worker should have created test files (CLAUDE.md workflow step 2)"
+            );
+
+            // App structure: source code must exist
+            let has_app_code = tree
+                .lines()
+                .any(|l| l.starts_with("app/") || l.starts_with("src/") || l.ends_with(".py"));
+            assert!(
+                has_app_code,
+                "worker should have created application source code"
+            );
+
+            // Key pipeline files
+            let ref_prefix = format!("{branch}:");
+            assert!(
+                try_git_cmd(repo, &["show", &format!("{ref_prefix}Dockerfile")]).is_some(),
+                "worker should have created/updated Dockerfile"
+            );
+            assert!(
+                try_git_cmd(repo, &["show", &format!("{ref_prefix}.platform.yaml")]).is_some(),
+                "worker should have kept .platform.yaml"
+            );
+            assert!(
+                try_git_cmd(
+                    repo,
+                    &["show", &format!("{ref_prefix}deploy/production.yaml")]
+                )
+                .is_some(),
+                "worker should have kept deploy/production.yaml"
+            );
+
+            // Dockerfile.test: optional — worker may use the template or create a new one
+            let has_dockerfile_test =
+                try_git_cmd(repo, &["show", &format!("{ref_prefix}Dockerfile.test")]).is_some();
+            eprintln!("[LLM E2E] Dockerfile.test present: {has_dockerfile_test}");
         }
     }
 
     // MR should have been created
     assert!(
         mr_found,
-        "worker should have created a merge request via MCP tool"
+        "worker should have created a merge request (CLAUDE.md workflow step 7)"
     );
 
     // Pipeline should have triggered and succeeded

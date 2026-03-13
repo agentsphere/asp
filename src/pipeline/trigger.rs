@@ -257,10 +257,26 @@ async fn create_pipeline_with_steps(
         let commands: Vec<&str> = step.commands.iter().map(String::as_str).collect();
         let step_order = i32::try_from(i).unwrap_or(i32::MAX);
 
+        let condition_events: Vec<&str> = step
+            .only
+            .as_ref()
+            .map(|c| c.events.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        let condition_branches: Vec<&str> = step
+            .only
+            .as_ref()
+            .map(|c| c.branches.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        let deploy_test_json = step
+            .deploy_test
+            .as_ref()
+            .map(|dt| serde_json::to_value(dt).unwrap_or_default());
+
         sqlx::query!(
             r#"
-            INSERT INTO pipeline_steps (pipeline_id, project_id, step_order, name, image, commands)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO pipeline_steps (pipeline_id, project_id, step_order, name, image, commands,
+                                        condition_events, condition_branches, deploy_test)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             "#,
             pipeline_id,
             project_id,
@@ -268,6 +284,9 @@ async fn create_pipeline_with_steps(
             step.name,
             step.image,
             &commands as &[&str],
+            &condition_events as &[&str],
+            &condition_branches as &[&str],
+            deploy_test_json,
         )
         .execute(&mut *tx)
         .await?;

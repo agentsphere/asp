@@ -114,6 +114,7 @@ async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), Pip
                p.owner_id as "owner_id!",
                pl.triggered_by,
                pl.version,
+               pl.trigger as "trigger!: String",
                p.name as "project_name!: String",
                p.namespace_slug as "namespace_slug!: String",
                u.name as "owner_name!: String"
@@ -152,6 +153,8 @@ async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), Pip
         namespace: state
             .config
             .project_namespace(&pipeline.namespace_slug, "dev"),
+        trigger_type: pipeline.trigger,
+        namespace_slug: pipeline.namespace_slug,
     };
 
     // Ensure project namespace exists (lazy creation for DB-only projects)
@@ -215,6 +218,10 @@ struct PipelineMeta {
     git_auth_token: String,
     /// K8s namespace for this pipeline's pods (e.g. `{slug}-dev`).
     namespace: String,
+    /// How the pipeline was triggered: push, mr, tag, api.
+    trigger_type: String,
+    /// Namespace slug for the project (needed for deploy-test).
+    namespace_slug: String,
 }
 
 /// A pipeline step row loaded from the database.
@@ -224,6 +231,9 @@ struct StepRow {
     name: String,
     image: String,
     commands: Vec<String>,
+    condition_events: Vec<String>,
+    condition_branches: Vec<String>,
+    deploy_test: Option<serde_json::Value>,
 }
 
 /// Ensure the project's dev namespace (and network policy) exist before running pods.
@@ -263,7 +273,9 @@ async fn run_all_steps(
     let steps = sqlx::query_as!(
         StepRow,
         r#"
-        SELECT id, step_order, name, image, commands
+        SELECT id, step_order, name, image, commands,
+               condition_events, condition_branches,
+               deploy_test
         FROM pipeline_steps
         WHERE pipeline_id = $1
         ORDER BY step_order ASC
@@ -275,22 +287,60 @@ async fn run_all_steps(
 
     let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &pipeline.namespace);
 
+    // Extract branch from git_ref for condition matching
+    let branch = pipeline
+        .git_ref
+        .strip_prefix("refs/heads/")
+        .or_else(|| pipeline.git_ref.strip_prefix("refs/tags/"))
+        .unwrap_or(&pipeline.git_ref);
+
     for step in &steps {
         if is_cancelled(&state.pool, pipeline_id).await? {
             skip_remaining_steps(&state.pool, pipeline_id).await?;
             return Ok(false);
         }
 
-        let succeeded = execute_single_step(
-            state,
-            &pods,
-            pipeline_id,
-            project_id,
-            pipeline,
-            step,
-            registry_secret,
-        )
-        .await?;
+        // Evaluate per-step conditions
+        let condition = step_condition_from_row(step);
+        if !super::definition::step_matches(condition.as_ref(), &pipeline.trigger_type, branch) {
+            tracing::info!(
+                step = %step.name,
+                trigger = %pipeline.trigger_type,
+                %branch,
+                "step skipped (condition not matched)"
+            );
+            sqlx::query!(
+                "UPDATE pipeline_steps SET status = 'skipped' WHERE id = $1",
+                step.id
+            )
+            .execute(&state.pool)
+            .await?;
+            continue;
+        }
+
+        // Check if this is a deploy-test step
+        let succeeded = if step.deploy_test.is_some() {
+            execute_deploy_test_step(
+                state,
+                pipeline_id,
+                project_id,
+                pipeline,
+                step,
+                registry_secret,
+            )
+            .await?
+        } else {
+            execute_single_step(
+                state,
+                &pods,
+                pipeline_id,
+                project_id,
+                pipeline,
+                step,
+                registry_secret,
+            )
+            .await?
+        };
 
         if !succeeded {
             skip_remaining_after(&state.pool, pipeline_id, step.step_order).await?;
@@ -299,6 +349,18 @@ async fn run_all_steps(
     }
 
     Ok(true)
+}
+
+/// Build a `StepCondition` from a `StepRow`'s stored arrays.
+/// Returns `None` if both arrays are empty (= always run).
+fn step_condition_from_row(step: &StepRow) -> Option<super::definition::StepCondition> {
+    if step.condition_events.is_empty() && step.condition_branches.is_empty() {
+        return None;
+    }
+    Some(super::definition::StepCondition {
+        events: step.condition_events.clone(),
+        branches: step.condition_branches.clone(),
+    })
 }
 
 /// Execute one pipeline step as a K8s pod. Returns true on success.
@@ -311,16 +373,7 @@ async fn execute_single_step(
     step: &StepRow,
     registry_secret: Option<&str>,
 ) -> Result<bool, PipelineError> {
-    let env_vars = build_env_vars(
-        state,
-        pipeline_id,
-        project_id,
-        &pipeline.project_name,
-        &pipeline.git_ref,
-        pipeline.commit_sha.as_deref(),
-        &step.name,
-        pipeline.version.as_deref(),
-    );
+    let env_vars = build_env_vars(state, pipeline_id, project_id, pipeline, &step.name);
 
     let pod_name = format!("pl-{}-{}", &pipeline_id.to_string()[..8], slug(&step.name));
     let pod_spec = build_pod_spec(&PodSpecParams {
@@ -808,23 +861,21 @@ fn build_env_vars(
     state: &AppState,
     pipeline_id: Uuid,
     project_id: Uuid,
-    project_name: &str,
-    git_ref: &str,
-    commit_sha: Option<&str>,
+    meta: &PipelineMeta,
     step_name: &str,
-    version: Option<&str>,
 ) -> Vec<EnvVar> {
     build_env_vars_core(
         pipeline_id,
         project_id,
-        project_name,
-        git_ref,
-        commit_sha,
+        &meta.project_name,
+        &meta.git_ref,
+        meta.commit_sha.as_deref(),
         step_name,
         // REGISTRY env var for Kaniko push — uses the actual platform API URL
         // (not the node proxy) since Kaniko pushes from inside the pod.
         state.config.registry_url.as_deref(),
-        version,
+        meta.version.as_deref(),
+        &meta.trigger_type,
     )
 }
 
@@ -839,6 +890,7 @@ fn build_env_vars_core(
     step_name: &str,
     registry_url: Option<&str>,
     version: Option<&str>,
+    trigger_type: &str,
 ) -> Vec<EnvVar> {
     let branch = git_ref.strip_prefix("refs/heads/").unwrap_or(git_ref);
 
@@ -850,6 +902,7 @@ fn build_env_vars_core(
         env_var("COMMIT_REF", git_ref),
         env_var("COMMIT_BRANCH", branch),
         env_var("PROJECT", project_name),
+        env_var("PIPELINE_TRIGGER", trigger_type),
     ];
 
     if let Some(sha) = commit_sha {
@@ -887,6 +940,343 @@ fn container_security() -> SecurityContext {
             ..Default::default()
         }),
         ..Default::default()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deploy-test step execution
+// ---------------------------------------------------------------------------
+
+/// Drop guard that deletes a test namespace when it goes out of scope.
+struct TestNamespaceGuard {
+    kube: kube::Client,
+    namespace: String,
+}
+
+impl Drop for TestNamespaceGuard {
+    fn drop(&mut self) {
+        let kube = self.kube.clone();
+        let ns = self.namespace.clone();
+        tokio::spawn(async move {
+            let namespaces: Api<k8s_openapi::api::core::v1::Namespace> = Api::all(kube);
+            if let Err(e) = namespaces.delete(&ns, &DeleteParams::default()).await {
+                tracing::warn!(error = %e, %ns, "failed to delete test namespace");
+            } else {
+                tracing::info!(%ns, "test namespace deleted");
+            }
+        });
+    }
+}
+
+/// Execute a deploy-test step: deploy app to temp namespace, run test pod, clean up.
+#[allow(clippy::too_many_lines)]
+async fn execute_deploy_test_step(
+    state: &AppState,
+    pipeline_id: Uuid,
+    project_id: Uuid,
+    pipeline: &PipelineMeta,
+    step: &StepRow,
+    _registry_secret: Option<&str>,
+) -> Result<bool, PipelineError> {
+    let dt: super::definition::DeployTestDef =
+        serde_json::from_value(step.deploy_test.clone().unwrap_or_default()).map_err(|e| {
+            PipelineError::InvalidDefinition(format!("invalid deploy_test config: {e}"))
+        })?;
+
+    // Build env vars for variable expansion
+    let env_pairs: Vec<(String, String)> =
+        build_env_vars(state, pipeline_id, project_id, pipeline, &step.name)
+            .iter()
+            .filter_map(|ev| Some((ev.name.clone(), ev.value.as_ref()?.clone())))
+            .collect();
+
+    // Expand env vars in test_image
+    let test_image = super::definition::expand_step_env(&dt.test_image, &env_pairs);
+
+    // Mark step as running
+    sqlx::query!(
+        "UPDATE pipeline_steps SET status = 'running' WHERE id = $1",
+        step.id
+    )
+    .execute(&state.pool)
+    .await?;
+
+    let start = std::time::Instant::now();
+
+    // 1. Create temp namespace
+    let ns_name = format!(
+        "{}-test-{}",
+        pipeline.namespace_slug,
+        &pipeline_id.to_string()[..8]
+    );
+    crate::deployer::namespace::ensure_namespace(
+        &state.kube,
+        &ns_name,
+        "test",
+        &project_id.to_string(),
+    )
+    .await
+    .map_err(|e| PipelineError::Other(e.into()))?;
+
+    // Guard ensures cleanup even on early return
+    let _ns_guard = TestNamespaceGuard {
+        kube: state.kube.clone(),
+        namespace: ns_name.clone(),
+    };
+
+    // 2. Create registry pull secret in test namespace
+    crate::deployer::reconciler::ensure_registry_pull_secret_for(
+        state,
+        project_id,
+        pipeline_id,
+        &ns_name,
+    )
+    .await;
+
+    // 3. Read + render deploy manifests from project repo
+    let manifests_path = dt.manifests.as_deref().unwrap_or("deploy/production.yaml");
+    let branch = pipeline
+        .git_ref
+        .strip_prefix("refs/heads/")
+        .or_else(|| pipeline.git_ref.strip_prefix("refs/tags/"))
+        .unwrap_or(&pipeline.git_ref);
+
+    // Get repo path from DB
+    let repo_path: Option<String> =
+        sqlx::query_scalar("SELECT repo_path FROM projects WHERE id = $1 AND is_active = true")
+            .bind(project_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
+
+    let repo_path = repo_path
+        .ok_or_else(|| PipelineError::Other(anyhow::anyhow!("project repo_path not found")))?;
+
+    let manifest_content =
+        super::trigger::read_file_at_ref(std::path::Path::new(&repo_path), branch, manifests_path)
+            .await
+            .ok_or_else(|| {
+                PipelineError::InvalidDefinition(format!(
+                    "deploy manifest '{manifests_path}' not found at ref '{branch}'"
+                ))
+            })?;
+
+    // Determine app image ref (use node registry URL for containerd pulls)
+    let registry = node_registry_url(&state.config).unwrap_or("localhost:5000");
+    let commit_sha = pipeline.commit_sha.as_deref().unwrap_or("latest");
+    let app_image_ref = format!("{registry}/{}/app:{commit_sha}", pipeline.project_name);
+
+    // Render manifests with test environment
+    let vars = crate::deployer::renderer::RenderVars {
+        image_ref: app_image_ref,
+        project_name: pipeline.project_name.clone(),
+        environment: "test".into(),
+        values: serde_json::json!({}),
+    };
+    let rendered = crate::deployer::renderer::render(&manifest_content, &vars)
+        .map_err(|e| PipelineError::Other(e.into()))?;
+
+    // 4. Apply manifests to test namespace
+    if let Err(e) =
+        crate::deployer::applier::apply_with_tracking(&state.kube, &rendered, &ns_name, None).await
+    {
+        tracing::error!(error = %e, %ns_name, "failed to apply deploy manifests");
+        let duration_ms = i32::try_from(start.elapsed().as_millis()).unwrap_or(i32::MAX);
+        sqlx::query!(
+            "UPDATE pipeline_steps SET status = 'failure', duration_ms = $2 WHERE id = $1",
+            step.id,
+            duration_ms,
+        )
+        .execute(&state.pool)
+        .await?;
+        return Ok(false);
+    }
+
+    // 5. Wait for deployment to become ready
+    if let Err(e) = wait_for_deployment_ready(&state.kube, &ns_name, dt.readiness_timeout).await {
+        tracing::error!(error = %e, %ns_name, "app deployment did not become ready");
+        // Capture app logs for debugging
+        capture_deployment_logs(state, &ns_name, pipeline_id, &step.name).await;
+        let duration_ms = i32::try_from(start.elapsed().as_millis()).unwrap_or(i32::MAX);
+        sqlx::query!(
+            "UPDATE pipeline_steps SET status = 'failure', duration_ms = $2 WHERE id = $1",
+            step.id,
+            duration_ms,
+        )
+        .execute(&state.pool)
+        .await?;
+        return Ok(false);
+    }
+
+    // 6. Create + run test pod
+    let test_pod_name = format!("test-{}", &pipeline_id.to_string()[..8]);
+    let test_pods: Api<Pod> = Api::namespaced(state.kube.clone(), &ns_name);
+
+    let mut test_env = vec![
+        env_var("APP_HOST", &format!("{}-app", pipeline.project_name)),
+        env_var("APP_PORT", "8080"),
+    ];
+    // Add standard pipeline env vars
+    test_env.extend(build_env_vars(
+        state,
+        pipeline_id,
+        project_id,
+        pipeline,
+        &step.name,
+    ));
+
+    let test_commands = if dt.commands.is_empty() {
+        None
+    } else {
+        let script = dt.commands.join(" && ");
+        Some(vec!["sh".into(), "-c".into(), script])
+    };
+
+    let test_pod = Pod {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(test_pod_name.clone()),
+            labels: Some(std::collections::BTreeMap::from([
+                ("platform.io/pipeline".into(), pipeline_id.to_string()),
+                ("platform.io/step".into(), "deploy-test".into()),
+            ])),
+            ..Default::default()
+        },
+        spec: Some(PodSpec {
+            restart_policy: Some("Never".into()),
+            image_pull_secrets: Some(vec![LocalObjectReference {
+                name: "platform-registry-pull".into(),
+            }]),
+            containers: vec![Container {
+                name: "test".into(),
+                image: Some(test_image),
+                command: test_commands,
+                env: Some(test_env),
+                resources: Some(k8s_openapi::api::core::v1::ResourceRequirements {
+                    limits: Some(std::collections::BTreeMap::from([
+                        ("cpu".into(), Quantity("1".into())),
+                        ("memory".into(), Quantity("1Gi".into())),
+                    ])),
+                    requests: Some(std::collections::BTreeMap::from([
+                        ("cpu".into(), Quantity("250m".into())),
+                        ("memory".into(), Quantity("256Mi".into())),
+                    ])),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    test_pods.create(&PostParams::default(), &test_pod).await?;
+
+    // 7. Wait for test pod to complete
+    let exit_code = wait_for_pod(&test_pods, &test_pod_name).await?;
+
+    // 8. Capture test pod logs
+    let test_log_params = LogParams {
+        container: Some("test".into()),
+        ..Default::default()
+    };
+    if let Ok(logs) = test_pods.logs(&test_pod_name, &test_log_params).await {
+        let path = format!("logs/pipelines/{pipeline_id}/{}-test.log", step.name);
+        if let Err(e) = state.minio.write(&path, logs.into_bytes()).await {
+            tracing::error!(error = %e, %path, "failed to write test logs to MinIO");
+        }
+    }
+
+    // 9. Capture app logs for debugging (especially if tests failed)
+    if exit_code != 0 {
+        capture_deployment_logs(state, &ns_name, pipeline_id, &step.name).await;
+    }
+
+    // Clean up test pod
+    let _ = test_pods
+        .delete(&test_pod_name, &DeleteParams::default())
+        .await;
+
+    let duration_ms = i32::try_from(start.elapsed().as_millis()).unwrap_or(i32::MAX);
+    let status = if exit_code == 0 { "success" } else { "failure" };
+    let log_ref = format!("logs/pipelines/{pipeline_id}/{}-test.log", step.name);
+    sqlx::query!(
+        r#"UPDATE pipeline_steps SET status = $2, exit_code = $3, duration_ms = $4, log_ref = $5 WHERE id = $1"#,
+        step.id,
+        status,
+        exit_code,
+        duration_ms,
+        log_ref,
+    )
+    .execute(&state.pool)
+    .await?;
+
+    // Namespace cleanup happens automatically via _ns_guard drop
+    Ok(exit_code == 0)
+}
+
+/// Wait for at least one deployment in the namespace to have `ready_replicas >= 1`.
+async fn wait_for_deployment_ready(
+    kube: &kube::Client,
+    namespace: &str,
+    timeout_secs: u32,
+) -> Result<(), PipelineError> {
+    use k8s_openapi::api::apps::v1::Deployment;
+
+    let deployments: Api<Deployment> = Api::namespaced(kube.clone(), namespace);
+    let deadline =
+        tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs.into());
+
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(PipelineError::Other(anyhow::anyhow!(
+                "deployment in {namespace} did not become ready within {timeout_secs}s"
+            )));
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        if let Ok(deploy_list) = deployments.list(&ListParams::default()).await {
+            if deploy_list.items.is_empty() {
+                continue;
+            }
+            let all_ready = deploy_list.items.iter().all(|d| {
+                d.status
+                    .as_ref()
+                    .and_then(|s| s.ready_replicas)
+                    .unwrap_or(0)
+                    >= 1
+            });
+            if all_ready {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Capture logs from all pods in a namespace for debugging deploy-test failures.
+async fn capture_deployment_logs(
+    state: &AppState,
+    namespace: &str,
+    pipeline_id: Uuid,
+    step_name: &str,
+) {
+    let pods: Api<Pod> = Api::namespaced(state.kube.clone(), namespace);
+    let Ok(pod_list) = pods.list(&ListParams::default()).await else {
+        return;
+    };
+
+    for pod in &pod_list.items {
+        let Some(pod_name) = &pod.metadata.name else {
+            continue;
+        };
+        let log_params = LogParams::default();
+        if let Ok(logs) = pods.logs(pod_name, &log_params).await {
+            let path = format!("logs/pipelines/{pipeline_id}/{step_name}-app-{pod_name}.log");
+            if let Err(e) = state.minio.write(&path, logs.into_bytes()).await {
+                tracing::warn!(error = %e, %path, "failed to write app logs");
+            }
+        }
     }
 }
 
@@ -1597,9 +1987,34 @@ mod tests {
             .and_then(|v| v.value.clone())
     }
 
+    /// Test helper: wraps `build_env_vars_core` with default trigger_type "push".
+    #[allow(clippy::too_many_arguments)]
+    fn test_env_vars(
+        pipeline_id: Uuid,
+        project_id: Uuid,
+        project_name: &str,
+        git_ref: &str,
+        commit_sha: Option<&str>,
+        step_name: &str,
+        registry_url: Option<&str>,
+        version: Option<&str>,
+    ) -> Vec<EnvVar> {
+        build_env_vars_core(
+            pipeline_id,
+            project_id,
+            project_name,
+            git_ref,
+            commit_sha,
+            step_name,
+            registry_url,
+            version,
+            "push",
+        )
+    }
+
     #[test]
     fn env_vars_include_all_seven_standard_vars() {
-        let vars = build_env_vars_core(
+        let vars = test_env_vars(
             Uuid::nil(),
             Uuid::nil(),
             "my-project",
@@ -1620,7 +2035,7 @@ mod tests {
 
     #[test]
     fn env_vars_commit_sha_present_when_some() {
-        let vars = build_env_vars_core(
+        let vars = test_env_vars(
             Uuid::nil(),
             Uuid::nil(),
             "proj",
@@ -1635,7 +2050,7 @@ mod tests {
 
     #[test]
     fn env_vars_commit_sha_absent_when_none() {
-        let vars = build_env_vars_core(
+        let vars = test_env_vars(
             Uuid::nil(),
             Uuid::nil(),
             "proj",
@@ -1650,7 +2065,7 @@ mod tests {
 
     #[test]
     fn env_vars_registry_present_when_configured() {
-        let vars = build_env_vars_core(
+        let vars = test_env_vars(
             Uuid::nil(),
             Uuid::nil(),
             "proj",
@@ -1668,7 +2083,7 @@ mod tests {
 
     #[test]
     fn env_vars_registry_absent_when_none() {
-        let vars = build_env_vars_core(
+        let vars = test_env_vars(
             Uuid::nil(),
             Uuid::nil(),
             "proj",
@@ -1683,7 +2098,7 @@ mod tests {
 
     #[test]
     fn env_vars_branch_strips_refs_heads_prefix() {
-        let vars = build_env_vars_core(
+        let vars = test_env_vars(
             Uuid::nil(),
             Uuid::nil(),
             "proj",
@@ -1705,7 +2120,7 @@ mod tests {
 
     #[test]
     fn env_vars_bare_ref_used_as_branch() {
-        let vars = build_env_vars_core(
+        let vars = test_env_vars(
             Uuid::nil(),
             Uuid::nil(),
             "proj",
@@ -1716,6 +2131,70 @@ mod tests {
             None,
         );
         assert_eq!(find_env(&vars, "COMMIT_BRANCH"), Some("main".into()));
+    }
+
+    #[test]
+    fn env_vars_include_pipeline_trigger() {
+        let vars = build_env_vars_core(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "main",
+            None,
+            "test",
+            None,
+            None,
+            "mr",
+        );
+        assert_eq!(find_env(&vars, "PIPELINE_TRIGGER"), Some("mr".into()));
+    }
+
+    #[test]
+    fn env_vars_pipeline_trigger_push() {
+        let vars = test_env_vars(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "main",
+            None,
+            "test",
+            None,
+            None,
+        );
+        assert_eq!(find_env(&vars, "PIPELINE_TRIGGER"), Some("push".into()));
+    }
+
+    // -- step_condition_from_row --
+
+    #[test]
+    fn step_condition_from_row_empty_is_none() {
+        let row = StepRow {
+            id: Uuid::nil(),
+            step_order: 0,
+            name: "test".into(),
+            image: "alpine".into(),
+            commands: vec![],
+            condition_events: vec![],
+            condition_branches: vec![],
+            deploy_test: None,
+        };
+        assert!(step_condition_from_row(&row).is_none());
+    }
+
+    #[test]
+    fn step_condition_from_row_with_events() {
+        let row = StepRow {
+            id: Uuid::nil(),
+            step_order: 0,
+            name: "test".into(),
+            image: "alpine".into(),
+            commands: vec![],
+            condition_events: vec!["mr".into()],
+            condition_branches: vec![],
+            deploy_test: None,
+        };
+        let cond = step_condition_from_row(&row).unwrap();
+        assert_eq!(cond.events, vec!["mr"]);
     }
 
     // -- is_kaniko_image --
@@ -1889,7 +2368,7 @@ mod tests {
 
     #[test]
     fn env_vars_docker_config_set_when_registry_configured() {
-        let vars = build_env_vars_core(
+        let vars = test_env_vars(
             Uuid::nil(),
             Uuid::nil(),
             "proj",
@@ -1907,7 +2386,7 @@ mod tests {
 
     #[test]
     fn env_vars_docker_config_absent_when_no_registry() {
-        let vars = build_env_vars_core(
+        let vars = test_env_vars(
             Uuid::nil(),
             Uuid::nil(),
             "proj",
@@ -2199,7 +2678,7 @@ mod tests {
 
     #[test]
     fn env_vars_refs_tags_stripped_for_branch() {
-        let vars = build_env_vars_core(
+        let vars = test_env_vars(
             Uuid::nil(),
             Uuid::nil(),
             "proj",
@@ -2222,7 +2701,7 @@ mod tests {
 
     #[test]
     fn env_vars_project_name_preserved_exactly() {
-        let vars = build_env_vars_core(
+        let vars = test_env_vars(
             Uuid::nil(),
             Uuid::nil(),
             "My-App-v2",
@@ -2241,7 +2720,7 @@ mod tests {
 
     #[test]
     fn env_vars_step_name_preserved() {
-        let vars = build_env_vars_core(
+        let vars = test_env_vars(
             Uuid::nil(),
             Uuid::nil(),
             "proj",
