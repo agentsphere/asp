@@ -14,9 +14,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY cli/agent-runner/ ./cli/agent-runner/
 WORKDIR /build/cli/agent-runner
-RUN cargo build --release && cp target/release/agent-runner /usr/local/bin/agent-runner
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/cli/agent-runner/target \
+    cargo build --release && cp target/release/agent-runner /usr/local/bin/agent-runner
 
 # ── Stage 2: Runtime image ────────────────────────────────────────────────
+FROM gcr.io/kaniko-project/executor:latest AS kaniko
+
 FROM node:22-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -27,12 +31,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/* \
   && ARCH=$(dpkg --print-architecture) \
   && curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/${ARCH}/kubectl" \
-  && chmod +x kubectl && mv kubectl /usr/local/bin/kubectl \
-  && mkdir -p /kaniko/ssl/certs \
+  && chmod +x kubectl && mv kubectl /usr/local/bin/kubectl
+
+# Kaniko executor + SSL certs from official image (no standalone binary releases)
+# chown to uid 1000 so the non-root agent user can write to /kaniko/ at runtime
+# (kaniko copies Dockerfile to /kaniko/Dockerfile during builds)
+COPY --from=kaniko /kaniko/executor /kaniko/executor
+RUN mkdir -p /kaniko/ssl/certs \
   && cp /etc/ssl/certs/ca-certificates.crt /kaniko/ssl/certs/ \
-  && KANIKO_ARCH=$([ "$ARCH" = "arm64" ] && echo "arm64" || echo "amd64") \
-  && curl -sL "https://github.com/GoogleContainerTools/kaniko/releases/latest/download/executor-linux-${KANIKO_ARCH}" -o /kaniko/executor \
-  && chmod +x /kaniko/executor
+  && chown -R 1000:1000 /kaniko
 
 # Agent-runner from build stage
 COPY --from=builder /usr/local/bin/agent-runner /usr/local/bin/agent-runner

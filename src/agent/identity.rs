@@ -18,9 +18,13 @@ pub struct AgentIdentity {
 /// Create an ephemeral agent user, assign the requested agent role, compute
 /// effective permissions (role ∩ spawner), and generate a scoped API token.
 ///
+/// When `project_name` is provided, the token gets a `registry_tag_pattern`
+/// restricting registry pushes to `{project}/session-{short_id}-*`.
+///
 /// No delegation rows are created — the token's `scopes` column carries the
 /// pre-computed permission set, and `project_id` / `scope_workspace_id` columns
 /// enforce hard resource boundaries.
+#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip(pool, valkey), fields(%session_id, %spawner_id, %project_id, %workspace_id, %agent_role), err)]
 pub async fn create_agent_identity(
     pool: &PgPool,
@@ -30,6 +34,7 @@ pub async fn create_agent_identity(
     project_id: Uuid,
     workspace_id: Uuid,
     agent_role: AgentRoleName,
+    project_name: Option<&str>,
 ) -> Result<AgentIdentity, AgentError> {
     let agent_user_id = Uuid::new_v4();
     let short_id = &session_id.to_string()[..8];
@@ -98,10 +103,14 @@ pub async fn create_agent_identity(
         (Some(workspace_id), Some(project_id)) // dev/ops/test/review: project boundary
     };
 
+    // Scope registry pushes to session-prefixed repos under the project
+    let tag_pattern: Option<String> =
+        project_name.map(|pname| format!("{pname}/session-{short_id}-*"));
+
     sqlx::query!(
         r#"
-        INSERT INTO api_tokens (user_id, name, token_hash, scopes, project_id, scope_workspace_id, expires_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO api_tokens (user_id, name, token_hash, scopes, project_id, scope_workspace_id, expires_at, registry_tag_pattern)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         "#,
         agent_user_id,
         format!("agent-session-{session_id}"),
@@ -110,6 +119,7 @@ pub async fn create_agent_identity(
         scope_proj,
         scope_ws,
         token_expires,
+        tag_pattern,
     )
     .execute(pool)
     .await?;

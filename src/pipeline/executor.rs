@@ -1073,6 +1073,7 @@ async fn execute_deploy_test_step(
         project_name: pipeline.project_name.clone(),
         environment: "test".into(),
         values: serde_json::json!({}),
+        platform_api_url: state.config.platform_api_url.clone(),
     };
     let rendered = crate::deployer::renderer::render(&manifest_content, &vars)
         .map_err(|e| PipelineError::Other(e.into()))?;

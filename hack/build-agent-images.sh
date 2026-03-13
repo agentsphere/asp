@@ -70,7 +70,11 @@ build_seed_image "platform-runner-bare" "${PROJECT_DIR}/docker/Dockerfile.platfo
 # ── Agent-runner cross-compiled binaries (worktree-scoped) ───────────────
 echo "  Agent-runner binaries (→ ${RUNNER_DIR}):"
 RUNNER_CHECKSUM_FILE="${RUNNER_DIR}/.checksum"
-RUNNER_CURRENT_CHECKSUM=$(find "${PROJECT_DIR}/cli/agent-runner/src" -name '*.rs' -exec shasum -a 256 {} + | sort | shasum -a 256 | awk '{print $1}')
+RUNNER_CURRENT_CHECKSUM=$(
+  { find "${PROJECT_DIR}/cli/agent-runner/src" -name '*.rs' -exec shasum -a 256 {} +
+    shasum -a 256 "${PROJECT_DIR}/cli/agent-runner/Cargo.toml" "${PROJECT_DIR}/cli/agent-runner/Cargo.lock"
+  } | sort | shasum -a 256 | awk '{print $1}'
+)
 
 if [[ "$FORCE" == "false" && -f "${RUNNER_DIR}/arm64" && -f "${RUNNER_DIR}/amd64" && \
       -f "${RUNNER_CHECKSUM_FILE}" && "$(cat "${RUNNER_CHECKSUM_FILE}")" == "${RUNNER_CURRENT_CHECKSUM}" ]]; then

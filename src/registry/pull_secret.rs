@@ -89,7 +89,11 @@ pub async fn create_pull_secret(
 }
 
 /// Build Docker config JSON for registry authentication.
-fn build_docker_config(registry_url: &str, user_name: &str, raw_token: &str) -> serde_json::Value {
+pub fn build_docker_config(
+    registry_url: &str,
+    user_name: &str,
+    raw_token: &str,
+) -> serde_json::Value {
     let basic_auth =
         base64::engine::general_purpose::STANDARD.encode(format!("{user_name}:{raw_token}"));
     serde_json::json!({
@@ -121,6 +125,7 @@ pub struct PushSecretResult {
 ///
 /// The Secret uses `config.json` as the data key (Kaniko expects `/kaniko/.docker/config.json`).
 /// The API token is tag-scoped via `registry_tag_pattern` to restrict pushes.
+#[allow(dead_code)] // Kept for pipeline use; agent sessions now use build_docker_config directly
 #[tracing::instrument(skip(pool, kube), fields(%user_id, %namespace, %short_id), err)]
 pub async fn create_push_secret(
     pool: &PgPool,

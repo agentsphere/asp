@@ -4,7 +4,8 @@ use uuid::Uuid;
 
 use k8s_openapi::api::core::v1::{
     Capabilities, Container, EmptyDirVolumeSource, EnvVar, LocalObjectReference, Pod,
-    PodSecurityContext, PodSpec, ResourceRequirements, SecurityContext, Volume, VolumeMount,
+    PodSecurityContext, PodSpec, ResourceRequirements, SecretVolumeSource, SecurityContext, Volume,
+    VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 
@@ -67,6 +68,12 @@ pub struct PodBuildParams<'a> {
     pub claude_cli_path: Option<&'a str>,
     /// K8s `ServiceAccount` name for the pod (e.g. `agent-sa` for session RBAC).
     pub service_account_name: Option<&'a str>,
+    /// K8s Secret name containing Docker config for Kaniko push auth.
+    pub registry_push_secret_name: Option<&'a str>,
+    /// Human-readable project name (for `PROJECT` env var in agent pod).
+    pub project_name: Option<&'a str>,
+    /// Session short ID for kaniko image naming (e.g., `abc12345`).
+    pub session_short_id: Option<&'a str>,
 }
 
 /// Resolves the container image for an agent pod.
@@ -95,6 +102,33 @@ fn image_pull_policy(image: &str) -> String {
         "Always".to_string()
     } else {
         "IfNotPresent".to_string()
+    }
+}
+
+/// Mount a Docker config Secret volume for Kaniko push auth.
+/// Adds volume + read-only mount at `/kaniko/.docker` when `registry_push_secret_name` is set.
+fn mount_docker_config(
+    params: &PodBuildParams<'_>,
+    volumes: &mut Vec<Volume>,
+    main_container: &mut Container,
+) {
+    if let Some(secret_name) = params.registry_push_secret_name {
+        volumes.push(Volume {
+            name: "docker-config".into(),
+            secret: Some(SecretVolumeSource {
+                secret_name: Some(secret_name.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        if let Some(ref mut mounts) = main_container.volume_mounts {
+            mounts.push(VolumeMount {
+                name: "docker-config".into(),
+                mount_path: "/kaniko/.docker".into(),
+                read_only: Some(true),
+                ..Default::default()
+            });
+        }
     }
 }
 
@@ -159,6 +193,8 @@ pub fn build_agent_pod(params: &PodBuildParams<'_>) -> Pod {
             });
         }
     }
+
+    mount_docker_config(params, &mut volumes, &mut main_container);
 
     let mut containers = vec![main_container];
 
@@ -271,6 +307,10 @@ const RESERVED_ENV_VARS: &[&str] = &[
     "SESSION_NAMESPACE",
     "REGISTRY_URL",
     "REGISTRY_AUTH_SECRET",
+    "DOCKER_CONFIG",
+    "REGISTRY",
+    "PROJECT",
+    "SESSION_SHORT_ID",
 ];
 
 fn is_reserved_env_var(name: &str) -> bool {
@@ -338,6 +378,19 @@ fn build_env_vars(
     }
     if let Some(reg_url) = params.registry_url {
         vars.push(env_var("REGISTRY_URL", reg_url));
+    }
+    // Kaniko registry push env vars
+    if params.registry_push_secret_name.is_some() {
+        vars.push(env_var("DOCKER_CONFIG", "/kaniko/.docker"));
+    }
+    if let Some(reg_url) = params.registry_url {
+        vars.push(env_var("REGISTRY", reg_url));
+    }
+    if let Some(project_name) = params.project_name {
+        vars.push(env_var("PROJECT", project_name));
+    }
+    if let Some(sid) = params.session_short_id {
+        vars.push(env_var("SESSION_SHORT_ID", sid));
     }
     // Browser sidecar env vars
     if let Some(ref browser) = params.config.browser {
@@ -469,20 +522,15 @@ fi"#
 }
 
 fn setup_kaniko_script() -> &'static str {
-    r#"# 4. Setup kaniko: prefer baked-in binary, fallback to download
-if [ -x /kaniko/executor ]; then
+    r#"# 4. Setup kaniko: prefer baked-in binary (COPY --from kaniko image in Dockerfile)
+# Validate with --version since a broken download may leave a non-ELF file with +x
+if [ -x /kaniko/executor ] && /kaniko/executor version >/dev/null 2>&1; then
   echo "[setup] kaniko found at /kaniko/executor"
 elif command -v kaniko-executor >/dev/null 2>&1; then
   echo "[setup] kaniko found on PATH"
 else
-  ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-  echo "[setup] Downloading kaniko executor ($ARCH)..."
-  if curl -sf "https://github.com/GoogleContainerTools/kaniko/releases/latest/download/executor-linux-${ARCH}" -o "$BIN_DIR/kaniko-executor"; then
-    chmod +x "$BIN_DIR/kaniko-executor"
-    echo "[setup] kaniko downloaded to $BIN_DIR/kaniko-executor"
-  else
-    echo "[setup] WARNING: kaniko download failed — image builds require kaniko" >&2
-  fi
+  echo "[setup] WARNING: kaniko not available — image builds require kaniko" >&2
+  echo "[setup] Ensure your Dockerfile includes: COPY --from=gcr.io/kaniko-project/executor:latest /kaniko/executor /kaniko/executor" >&2
 fi"#
 }
 
@@ -822,6 +870,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         assert_eq!(pod.metadata.name.as_deref(), Some("agent-12345678"));
         assert_eq!(pod.metadata.namespace.as_deref(), Some("platform-agents"));
@@ -848,6 +899,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let labels = pod.metadata.labels.unwrap();
         assert_eq!(labels["platform.io/component"], "agent-session");
@@ -879,6 +933,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let claude_container = &spec.containers[0];
@@ -908,6 +965,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -939,6 +999,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -969,6 +1032,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1013,6 +1079,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1046,6 +1115,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let args = spec.containers[0].args.as_ref().unwrap();
@@ -1078,6 +1150,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let args = spec.containers[0].args.as_ref().unwrap();
@@ -1108,6 +1183,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -1160,6 +1238,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -1192,6 +1273,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -1235,6 +1319,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let resources = spec.containers[0].resources.as_ref().unwrap();
@@ -1264,6 +1351,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.restart_policy.as_deref(), Some("Never"));
@@ -1358,6 +1448,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let main = &spec.containers[0];
@@ -1386,6 +1479,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let main = &spec.containers[0];
@@ -1418,6 +1514,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1454,6 +1553,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1481,6 +1583,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1510,6 +1615,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1543,6 +1651,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1584,6 +1695,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1614,6 +1728,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1642,6 +1759,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let pod_spec = pod.spec.unwrap();
         let init = pod_spec.init_containers.unwrap();
@@ -1684,6 +1804,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.containers.len(), 2, "should have claude + browser");
@@ -1712,6 +1835,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.containers.len(), 1, "should have only claude");
@@ -1739,6 +1865,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let volumes = spec.volumes.unwrap();
@@ -1774,6 +1903,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let volumes = spec.volumes.unwrap();
@@ -1802,6 +1934,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1838,6 +1973,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1873,6 +2011,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let browser = &spec.containers[1];
@@ -1904,6 +2045,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let browser = &spec.containers[1];
@@ -1937,6 +2081,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let psc = spec.security_context.unwrap();
@@ -1967,6 +2114,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let container = &spec.containers[0];
@@ -1998,6 +2148,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -2034,6 +2187,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2067,6 +2223,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod_without.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2104,6 +2263,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2151,6 +2313,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let secrets = spec.image_pull_secrets.unwrap();
@@ -2179,6 +2344,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         assert!(
@@ -2210,6 +2378,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2241,6 +2412,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2271,6 +2445,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2322,6 +2499,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2359,6 +2539,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2393,6 +2576,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: Some("agent-sa"),
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.service_account_name.as_deref(), Some("agent-sa"));
@@ -2419,6 +2605,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         assert!(spec.service_account_name.is_none());
@@ -2446,6 +2635,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2477,6 +2669,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2507,6 +2702,9 @@ mod tests {
             host_mount_path: None,
             claude_cli_path: None,
             service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2522,5 +2720,180 @@ mod tests {
         assert!(is_reserved_env_var("SESSION_NAMESPACE"));
         assert!(is_reserved_env_var("REGISTRY_URL"));
         assert!(is_reserved_env_var("REGISTRY_AUTH_SECRET"));
+    }
+
+    #[test]
+    fn reserved_env_vars_includes_kaniko_vars() {
+        assert!(is_reserved_env_var("DOCKER_CONFIG"));
+        assert!(is_reserved_env_var("REGISTRY"));
+        assert!(is_reserved_env_var("PROJECT"));
+        assert!(is_reserved_env_var("SESSION_SHORT_ID"));
+    }
+
+    // -- Registry push secret (Docker config) tests --
+
+    #[test]
+    fn push_secret_mounts_docker_config_volume() {
+        let session = test_session();
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &ProviderConfig::default(),
+            agent_api_token: "tok",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: None,
+            cli_oauth_token: None,
+            extra_env_vars: &[],
+            registry_url: Some("host.docker.internal:55534"),
+            registry_secret_name: None,
+            valkey_url: None,
+            claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
+            service_account_name: None,
+            registry_push_secret_name: Some("registry-push-abc12345"),
+            project_name: Some("myproject"),
+            session_short_id: Some("abc12345"),
+        });
+        let spec = pod.spec.unwrap();
+
+        // Volume exists
+        let volumes = spec.volumes.unwrap();
+        let docker_vol = volumes
+            .iter()
+            .find(|v| v.name == "docker-config")
+            .expect("docker-config volume should exist");
+        let secret_src = docker_vol.secret.as_ref().unwrap();
+        assert_eq!(
+            secret_src.secret_name.as_deref(),
+            Some("registry-push-abc12345")
+        );
+
+        // Mount exists on main container
+        let mounts = spec.containers[0].volume_mounts.as_ref().unwrap();
+        let docker_mount = mounts
+            .iter()
+            .find(|m| m.name == "docker-config")
+            .expect("docker-config mount should exist");
+        assert_eq!(docker_mount.mount_path, "/kaniko/.docker");
+        assert_eq!(docker_mount.read_only, Some(true));
+    }
+
+    #[test]
+    fn no_push_secret_no_docker_config_volume() {
+        let session = test_session();
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &ProviderConfig::default(),
+            agent_api_token: "tok",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: None,
+            cli_oauth_token: None,
+            extra_env_vars: &[],
+            registry_url: None,
+            registry_secret_name: None,
+            valkey_url: None,
+            claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
+            service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
+        });
+        let spec = pod.spec.unwrap();
+        let volumes = spec.volumes.unwrap();
+        assert!(
+            volumes.iter().all(|v| v.name != "docker-config"),
+            "docker-config volume should not exist without push secret"
+        );
+    }
+
+    #[test]
+    fn push_secret_sets_kaniko_env_vars() {
+        let session = test_session();
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &ProviderConfig::default(),
+            agent_api_token: "tok",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: None,
+            cli_oauth_token: None,
+            extra_env_vars: &[],
+            registry_url: Some("host.docker.internal:55534"),
+            registry_secret_name: None,
+            valkey_url: None,
+            claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
+            service_account_name: None,
+            registry_push_secret_name: Some("registry-push-abc12345"),
+            project_name: Some("myproject"),
+            session_short_id: Some("abc12345"),
+        });
+        let spec = pod.spec.unwrap();
+        let env = spec.containers[0].env.as_ref().unwrap();
+        let get = |name: &str| {
+            env.iter()
+                .find(|e| e.name == name)
+                .and_then(|e| e.value.as_deref())
+        };
+        assert_eq!(get("DOCKER_CONFIG"), Some("/kaniko/.docker"));
+        assert_eq!(get("REGISTRY"), Some("host.docker.internal:55534"));
+        assert_eq!(get("PROJECT"), Some("myproject"));
+        assert_eq!(get("SESSION_SHORT_ID"), Some("abc12345"));
+    }
+
+    #[test]
+    fn no_push_secret_no_kaniko_env_vars() {
+        let session = test_session();
+        let pod = build_agent_pod(&PodBuildParams {
+            session: &session,
+            config: &ProviderConfig::default(),
+            agent_api_token: "tok",
+            platform_api_url: "http://platform:8080",
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            namespace: "ns",
+            project_agent_image: None,
+            anthropic_api_key: None,
+            cli_oauth_token: None,
+            extra_env_vars: &[],
+            registry_url: None,
+            registry_secret_name: None,
+            valkey_url: None,
+            claude_cli_version: "stable",
+            host_mount_path: None,
+            claude_cli_path: None,
+            service_account_name: None,
+            registry_push_secret_name: None,
+            project_name: None,
+            session_short_id: None,
+        });
+        let spec = pod.spec.unwrap();
+        let env = spec.containers[0].env.as_ref().unwrap();
+        assert!(
+            env.iter().all(|e| e.name != "DOCKER_CONFIG"),
+            "DOCKER_CONFIG should not be set without push secret"
+        );
+        assert!(
+            env.iter().all(|e| e.name != "REGISTRY"),
+            "REGISTRY should not be set without registry_url"
+        );
+        assert!(
+            env.iter().all(|e| e.name != "PROJECT"),
+            "PROJECT should not be set without project_name"
+        );
+        assert!(
+            env.iter().all(|e| e.name != "SESSION_SHORT_ID"),
+            "SESSION_SHORT_ID should not be set without session_short_id"
+        );
     }
 }

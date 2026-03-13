@@ -685,6 +685,7 @@ async fn create_session_empty_prompt(pool: PgPool) {
     let app = test_router(state);
     let project_id = create_project(&app, &admin_token, "sess-no-prompt", "private").await;
 
+    // Empty prompt is allowed — session starts idle and waits for first message via pub/sub
     let (status, _) = helpers::post_json(
         &app,
         &admin_token,
@@ -692,7 +693,7 @@ async fn create_session_empty_prompt(pool: PgPool) {
         serde_json::json!({ "prompt": "" }),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::CREATED);
 }
 
 #[sqlx::test(migrations = "./migrations")]

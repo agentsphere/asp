@@ -121,6 +121,12 @@ pub async fn create_session(
     .await
     .map_err(|e| AgentError::Other(e.into()))?;
 
+    // 2b. Look up project name (needed for identity tag pattern and PROJECT env var)
+    let project_name: Option<String> =
+        sqlx::query_scalar!("SELECT name FROM projects WHERE id = $1", project_id)
+            .fetch_optional(&state.pool)
+            .await?;
+
     // 3. Create ephemeral agent identity with role-based permissions
     let agent_identity = identity::create_agent_identity(
         &state.pool,
@@ -130,6 +136,7 @@ pub async fn create_session(
         project_id,
         workspace_id,
         agent_role,
+        project_name.as_deref(),
     )
     .await?;
 
@@ -159,7 +166,7 @@ pub async fn create_session(
     };
 
     // 4b. Query project secrets scoped to agent/all
-    let mut extra_env_vars = resolve_agent_secrets(state, project_id).await;
+    let extra_env_vars = resolve_agent_secrets(state, project_id).await;
 
     // 4c. Create registry pull secret if registry is configured
     // Use registry_node_url (DaemonSet proxy) for image refs that containerd pulls;
@@ -191,33 +198,48 @@ pub async fn create_session(
         None
     };
 
-    // 4d. Create registry push secret for Kaniko builds (tag-scoped)
-    let registry_push_secret = if let Some(reg_url) = node_registry_url {
-        // Look up project name for tag pattern
-        let project_name: Option<String> =
-            sqlx::query_scalar!("SELECT name FROM projects WHERE id = $1", project_id)
-                .fetch_optional(&state.pool)
-                .await?;
-        if let Some(ref pname) = project_name {
-            match crate::registry::pull_secret::create_push_secret(
-                &state.pool,
-                &state.kube,
-                reg_url,
-                user_id,
-                &session_ns,
-                pname,
-                short_id,
-            )
+    // 4d. Create Docker config K8s Secret for Kaniko push auth using agent's own token.
+    // The agent token already has a registry_tag_pattern scoping pushes to session repos.
+    let registry_push_secret_name = if let Some(reg_url) = node_registry_url {
+        let agent_username = format!("agent-{short_id}");
+        let docker_config = crate::registry::pull_secret::build_docker_config(
+            reg_url,
+            &agent_username,
+            &agent_identity.api_token,
+        );
+        let secret_name = format!("registry-push-{short_id}");
+
+        let secret = k8s_openapi::api::core::v1::Secret {
+            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                name: Some(secret_name.clone()),
+                labels: Some(std::collections::BTreeMap::from([(
+                    "platform.io/session".to_string(),
+                    session_id.to_string(),
+                )])),
+                ..Default::default()
+            },
+            type_: Some("Opaque".into()),
+            string_data: Some(std::collections::BTreeMap::from([(
+                "config.json".into(),
+                docker_config.to_string(),
+            )])),
+            ..Default::default()
+        };
+
+        let secrets: kube::Api<k8s_openapi::api::core::v1::Secret> =
+            kube::Api::namespaced(state.kube.clone(), &session_ns);
+        match secrets
+            .create(&kube::api::PostParams::default(), &secret)
             .await
-            {
-                Ok(result) => Some(result),
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to create registry push secret for agent, continuing without");
-                    None
-                }
+        {
+            Ok(_) => {
+                tracing::debug!(%secret_name, "created registry push secret for agent");
+                Some(secret_name)
             }
-        } else {
-            None
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to create registry push secret for agent, continuing without");
+                None
+            }
         }
     } else {
         None
@@ -254,11 +276,6 @@ pub async fn create_session(
         session_namespace: Some(session_ns.clone()),
     };
 
-    // Inject REGISTRY_AUTH_SECRET env var if push secret was created
-    if let Some(ref ps) = registry_push_secret {
-        extra_env_vars.push(("REGISTRY_AUTH_SECRET".to_owned(), ps.secret_name.clone()));
-    }
-
     // Test/dev: mount host fixture path and set CLAUDE_CLI_PATH for mock CLI
     let host_mount_path = std::env::var("PLATFORM_HOST_MOUNT_PATH").ok();
     let claude_cli_path = std::env::var("CLAUDE_CLI_PATH").ok();
@@ -283,7 +300,18 @@ pub async fn create_session(
         host_mount_path: host_mount_path.as_deref(),
         claude_cli_path: claude_cli_path.as_deref(),
         service_account_name: Some("agent-sa"),
+        registry_push_secret_name: registry_push_secret_name.as_deref(),
+        project_name: project_name.as_deref(),
+        session_short_id: Some(short_id),
     })?;
+
+    tracing::info!(
+        ?node_registry_url,
+        ?registry_push_secret_name,
+        ?project_name,
+        short_id,
+        "agent pod env: registry/project/session vars"
+    );
 
     let pod_name = pod
         .metadata

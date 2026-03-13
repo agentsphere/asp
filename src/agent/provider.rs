@@ -173,6 +173,12 @@ pub struct BuildPodParams<'a> {
     pub claude_cli_path: Option<&'a str>,
     /// K8s `ServiceAccount` name for the pod (e.g. `agent-sa` for session RBAC).
     pub service_account_name: Option<&'a str>,
+    /// K8s Secret name containing Docker config for Kaniko push auth.
+    pub registry_push_secret_name: Option<&'a str>,
+    /// Human-readable project name (for `PROJECT` env var in agent pod).
+    pub project_name: Option<&'a str>,
+    /// Session short ID for kaniko image naming (e.g., `abc12345`).
+    pub session_short_id: Option<&'a str>,
 }
 
 /// Trait for agent provider implementations.

@@ -2,7 +2,12 @@
 #
 # Contains only Node.js, git, curl, and sudo. The platform's setup-tools init
 # container will download agent-runner and install Claude CLI at pod start.
+FROM gcr.io/kaniko-project/executor:latest AS kaniko
+
 FROM node:22-slim
+
+# Kaniko executor from official image (no standalone binary releases)
+COPY --from=kaniko /kaniko/executor /kaniko/executor
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
@@ -12,10 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /kaniko/ssl/certs \
   && cp /etc/ssl/certs/ca-certificates.crt /kaniko/ssl/certs/ \
-  && ARCH=$(dpkg --print-architecture) \
-  && KANIKO_ARCH=$([ "$ARCH" = "arm64" ] && echo "arm64" || echo "amd64") \
-  && curl -sL "https://github.com/GoogleContainerTools/kaniko/releases/latest/download/executor-linux-${KANIKO_ARCH}" -o /kaniko/executor \
-  && chmod +x /kaniko/executor \
+  && chown -R 1000:1000 /kaniko \
   && userdel -r node 2>/dev/null || true \
   && useradd -m -s /bin/bash -u 1000 agent \
   && echo "agent ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/agent \

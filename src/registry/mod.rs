@@ -409,4 +409,46 @@ mod tests {
         assert!(matches_tag_pattern("myapp:v1", "myapp:v1"));
         assert!(!matches_tag_pattern("myapp:v2", "myapp:v1"));
     }
+
+    // -- Agent session tag pattern tests (project/session-{shortid}-*) --
+
+    #[test]
+    fn agent_tag_pattern_matches_app_image() {
+        assert!(matches_tag_pattern(
+            "myproject/session-abc12345-app:latest",
+            "myproject/session-abc12345-*"
+        ));
+    }
+
+    #[test]
+    fn agent_tag_pattern_matches_test_image() {
+        assert!(matches_tag_pattern(
+            "myproject/session-abc12345-test:v2",
+            "myproject/session-abc12345-*"
+        ));
+    }
+
+    #[test]
+    fn agent_tag_pattern_rejects_other_project() {
+        assert!(!matches_tag_pattern(
+            "otherproject/session-abc12345-app:latest",
+            "myproject/session-abc12345-*"
+        ));
+    }
+
+    #[test]
+    fn agent_tag_pattern_rejects_other_session() {
+        assert!(!matches_tag_pattern(
+            "myproject/session-zzz99999-app:latest",
+            "myproject/session-abc12345-*"
+        ));
+    }
+
+    #[test]
+    fn agent_tag_pattern_rejects_no_session_prefix() {
+        assert!(!matches_tag_pattern(
+            "myproject/app:latest",
+            "myproject/session-abc12345-*"
+        ));
+    }
 }

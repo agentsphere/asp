@@ -94,7 +94,7 @@ test:
     cargo nextest run
 
 test-unit:
-    cargo nextest run --lib
+    cargo nextest run --lib; s=$?; bash hack/generate-test-report.sh 2>/dev/null || true; [ $s -eq 0 ]
     cargo test --manifest-path cli/agent-runner/Cargo.toml --bin agent-runner
 
 test-doc:
@@ -221,6 +221,9 @@ cli-cross dir=agent_runner_dir:
     docker run --rm \
       -v "$(pwd)/cli/agent-runner:/src" \
       -v "{{ dir }}:/out" \
+      -v "platform-cross-cargo-registry:/usr/local/cargo/registry" \
+      -v "platform-cross-cargo-git:/usr/local/cargo/git" \
+      -v "platform-cross-target:/src/target" \
       rust:1.88-slim-bookworm sh -c '\
         apt-get update && apt-get install -y --no-install-recommends \
           gcc-aarch64-linux-gnu libc6-dev-arm64-cross \

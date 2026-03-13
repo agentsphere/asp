@@ -14,6 +14,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Create namespace if needed
 kubectl create namespace "${NS}" --dry-run=client -o yaml | kubectl apply -f -
 
+# Wait for default service account (K8s creates it asynchronously after namespace)
+for _ in $(seq 1 30); do
+  kubectl get serviceaccount default -n "${NS}" &>/dev/null && break
+  sleep 0.2
+done
+
 echo "==> Deploying services into namespace: ${NS}"
 kubectl apply -n "${NS}" -f "${SCRIPT_DIR}/test-manifests/postgres.yaml"
 kubectl apply -n "${NS}" -f "${SCRIPT_DIR}/test-manifests/valkey.yaml"

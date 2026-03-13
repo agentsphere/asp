@@ -63,7 +63,7 @@ spec:
             - name: DATABASE_URL
               value: "postgresql://app:{{ values.db_password | default('changeme') }}@{{ project_name }}-db:5432/app"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://otel-collector.platform.svc.cluster.local:4318"
+              value: "{{ platform_api_url }}"
             - name: OTEL_SERVICE_NAME
               value: "{{ project_name }}"
           readinessProbe:

@@ -7,6 +7,8 @@ pub struct RenderVars {
     pub project_name: String,
     pub environment: String,
     pub values: serde_json::Value,
+    /// Platform API URL for OTLP endpoint, service discovery, etc.
+    pub platform_api_url: String,
 }
 
 /// Render a manifest template with the given variables using minijinja.
@@ -27,6 +29,7 @@ pub fn render(template_content: &str, vars: &RenderVars) -> Result<String, Deplo
         project_name => &vars.project_name,
         environment => &vars.environment,
         values => &vars.values,
+        platform_api_url => &vars.platform_api_url,
     })
     .map_err(|e| DeployerError::RenderFailed(e.to_string()))
 }
@@ -72,6 +75,7 @@ spec:
             project_name: "myapp".into(),
             environment: "production".into(),
             values: serde_json::json!({"replicas": 3}),
+            platform_api_url: "http://platform:8080".into(),
         };
 
         let result = render(template, &vars).unwrap();
@@ -88,6 +92,7 @@ spec:
             project_name: "app".into(),
             environment: "staging".into(),
             values: serde_json::json!({"resources": {"cpu": "500m", "memory": "256Mi"}}),
+            platform_api_url: "http://platform:8080".into(),
         };
 
         let result = render(template, &vars).unwrap();
@@ -103,6 +108,7 @@ spec:
             project_name: "app".into(),
             environment: "staging".into(),
             values: serde_json::json!({}),
+            platform_api_url: "http://platform:8080".into(),
         };
 
         // minijinja renders undefined as empty string by default (not an error)
@@ -178,6 +184,7 @@ spec:
             project_name: "app".into(),
             environment: "staging".into(),
             values: serde_json::json!({}),
+            platform_api_url: "http://platform:8080".into(),
         };
         assert!(render(template, &vars).is_err());
     }

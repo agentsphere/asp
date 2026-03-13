@@ -150,14 +150,22 @@ python -m pytest tests/unit/ -v
 # Level 2: Local API tests (app running in pod)
 python -m pytest tests/ -v
 
-# Level 3: Build test image
+# Level 3: Build app image (requires $REGISTRY env var — skip if not set)
 # Use kaniko to build directly in the pod (no Docker daemon needed)
-/kaniko/executor --context=dir:///workspace --dockerfile=/workspace/Dockerfile \
-  --destination=$REGISTRY/$PROJECT/app:dev --insecure --cache=true 2>&1 || echo "BUILD FAILED"
+if [ -n "${REGISTRY:-}" ]; then
+  /kaniko/executor --context=dir:///workspace --dockerfile=/workspace/Dockerfile \
+    --destination=$REGISTRY/$PROJECT/session-$SESSION_SHORT_ID-app:latest --insecure --cache=true 2>&1 || echo "BUILD FAILED"
+else
+  echo "REGISTRY not set — skipping local kaniko build (CI pipeline will build)"
+fi
 
 # Level 4: Build test runner image
-/kaniko/executor --context=dir:///workspace --dockerfile=/workspace/Dockerfile.test \
-  --destination=$REGISTRY/$PROJECT/test:dev --insecure 2>&1 || echo "TEST IMAGE BUILD FAILED"
+if [ -n "${REGISTRY:-}" ]; then
+  /kaniko/executor --context=dir:///workspace --dockerfile=/workspace/Dockerfile.test \
+    --destination=$REGISTRY/$PROJECT/session-$SESSION_SHORT_ID-test:latest --insecure 2>&1 || echo "TEST IMAGE BUILD FAILED"
+else
+  echo "REGISTRY not set — skipping test image build"
+fi
 
 # Level 5: Deploy to session namespace and verify
 kubectl apply -f <(cat deploy/production.yaml)  # apply rendered manifests
@@ -198,7 +206,9 @@ After pushing:
 ## Pipeline
 
 Pushing triggers the pipeline defined in `.platform.yaml`.
-Available env vars in pipeline steps: `$REGISTRY`, `$PROJECT`, `$COMMIT_SHA`, `$COMMIT_BRANCH`, `$PIPELINE_TRIGGER`
+Available env vars in pipeline steps: `$REGISTRY`, `$PROJECT`, `$COMMIT_SHA`, `$COMMIT_BRANCH`, `$PIPELINE_TRIGGER`.
+
+Available env vars in agent pods: `$REGISTRY` (registry push URL), `$PROJECT` (project name), `$SESSION_SHORT_ID` (8-char session prefix), `$DOCKER_CONFIG` (kaniko config path, auto-configured).
 
 ### Per-Step Conditions
 
@@ -285,18 +295,23 @@ The same pattern works for Redis, MinIO, or any other dependency. Deploy to the 
 You can build and test images directly from your agent pod using kaniko:
 
 ```bash
+# Check that registry env vars are available
+echo "REGISTRY=$REGISTRY PROJECT=$PROJECT SESSION_SHORT_ID=$SESSION_SHORT_ID"
+
 # Build app image
 /kaniko/executor --context=dir:///workspace --dockerfile=/workspace/Dockerfile \
-  --destination=$REGISTRY/$PROJECT/app:dev --insecure --cache=true
+  --destination=$REGISTRY/$PROJECT/session-$SESSION_SHORT_ID-app:latest --insecure --cache=true
 
 # Build test image
 /kaniko/executor --context=dir:///workspace --dockerfile=/workspace/Dockerfile.test \
-  --destination=$REGISTRY/$PROJECT/test:dev --insecure
+  --destination=$REGISTRY/$PROJECT/session-$SESSION_SHORT_ID-test:latest --insecure
 
 # Deploy to your session namespace
 kubectl apply -f deploy/production.yaml
 kubectl rollout status deployment/$(basename $PWD) --timeout=120s
 ```
+
+If `$REGISTRY` is not set, kaniko builds are not available — push your code and the CI pipeline will build instead.
 
 This lets you verify everything works before committing and running the full pipeline.
 

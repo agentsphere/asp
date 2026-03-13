@@ -805,6 +805,7 @@ async fn render_manifests(
             project_name: deployment.project_name.clone(),
             environment: deployment.environment.clone(),
             values: base_values,
+            platform_api_url: state.config.platform_api_url.clone(),
         };
 
         let rendered = renderer::render(&template_content, &vars)?;

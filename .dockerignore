@@ -1,8 +1,15 @@
-target/
-.git/
-node_modules/
-ui/node_modules/
-ui/dist/
-*.swp
-*.swo
-.env
+# Ignore everything by default — only whitelist what Dockerfiles need.
+# This keeps the build context small (~10MB instead of ~400MB).
+*
+
+# Needed by Dockerfile.platform-runner (agent-runner build + runtime)
+!cli/agent-runner/
+!mcp/
+!docker/entrypoint.sh
+!docker/platform-build-status.sh
+
+# Exclude build artifacts that sneak in via whitelisted dirs
+**/target/
+**/node_modules/
+**/*.swp
+**/*.swo
