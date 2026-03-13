@@ -73,6 +73,10 @@ pub struct Config {
     /// Idle timeout for agent sessions in seconds (default 1800 = 30 min).
     /// Sessions with no messages for this duration are auto-completed by the reaper.
     pub session_idle_timeout_secs: u64,
+    /// External URL for preview proxy (dev only).
+    /// When set, preview requests route through this proxy instead of direct K8s DNS.
+    /// Example: `http://172.18.0.2:31500`
+    pub preview_proxy_url: Option<String>,
 }
 
 fn parse_cors_origins(s: &str) -> Vec<String> {
@@ -169,6 +173,7 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1800),
+            preview_proxy_url: env::var("PLATFORM_PREVIEW_PROXY_URL").ok(),
         }
     }
 
@@ -240,6 +245,7 @@ impl Config {
             health_check_interval_secs: 15,
             self_observe_level: "warn".into(),
             session_idle_timeout_secs: 1800,
+            preview_proxy_url: None,
         }
     }
 }

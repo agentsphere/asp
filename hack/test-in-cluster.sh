@@ -164,9 +164,11 @@ echo "==> Discovering NodePorts"
 PG_PORT=$(kubectl get svc -n "${SVC_NS}" postgres -o jsonpath='{.spec.ports[0].nodePort}')
 VALKEY_PORT=$(kubectl get svc -n "${SVC_NS}" valkey -o jsonpath='{.spec.ports[0].nodePort}')
 MINIO_PORT=$(kubectl get svc -n "${SVC_NS}" minio -o jsonpath='{.spec.ports[0].nodePort}')
-echo "  Postgres: ${NODE_IP}:${PG_PORT}"
-echo "  Valkey:   ${NODE_IP}:${VALKEY_PORT}"
-echo "  MinIO:    ${NODE_IP}:${MINIO_PORT}"
+PREVIEW_PROXY_PORT=$(kubectl get svc -n "${SVC_NS}" preview-proxy -o jsonpath='{.spec.ports[0].nodePort}')
+echo "  Postgres:      ${NODE_IP}:${PG_PORT}"
+echo "  Valkey:        ${NODE_IP}:${VALKEY_PORT}"
+echo "  MinIO:         ${NODE_IP}:${MINIO_PORT}"
+echo "  Preview proxy: ${NODE_IP}:${PREVIEW_PROXY_PORT}"
 
 # Wait for NodePort connectivity (direct to Kind node — no port-forward)
 echo -n "  Waiting for NodePort connectivity"
@@ -222,6 +224,7 @@ export PLATFORM_API_URL="http://${PLATFORM_HOST}:${BACKEND_PORT}"
 export PLATFORM_PIPELINE_NAMESPACE="${PIPELINE_NS}"
 export PLATFORM_AGENT_NAMESPACE="${AGENT_NS}"
 export PLATFORM_VALKEY_AGENT_HOST="valkey.${SVC_NS}.svc.cluster.local:6379"
+export PLATFORM_PREVIEW_PROXY_URL="http://${NODE_IP}:${PREVIEW_PROXY_PORT}"
 export PLATFORM_SEED_IMAGES_PATH="/tmp/platform-e2e/${WORKTREE}/seed-images"
 export PLATFORM_AGENT_RUNNER_DIR="${RUNNER_DIR}"
 export CLAUDE_CLI_PATH="${PROJECT_DIR}/tests/fixtures/mock-claude-cli.sh"

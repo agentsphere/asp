@@ -24,11 +24,13 @@ echo "==> Deploying services into namespace: ${NS}"
 kubectl apply -n "${NS}" -f "${SCRIPT_DIR}/test-manifests/postgres.yaml"
 kubectl apply -n "${NS}" -f "${SCRIPT_DIR}/test-manifests/valkey.yaml"
 kubectl apply -n "${NS}" -f "${SCRIPT_DIR}/test-manifests/minio.yaml"
+kubectl apply -n "${NS}" -f "${SCRIPT_DIR}/test-manifests/preview-proxy.yaml"
 
 echo "==> Waiting for services to be ready"
 kubectl wait -n "${NS}" --for=condition=Ready pod/postgres --timeout=60s
 kubectl wait -n "${NS}" --for=condition=Ready pod/valkey --timeout=30s
 kubectl wait -n "${NS}" --for=condition=Ready pod/minio --timeout=30s
+kubectl wait -n "${NS}" --for=condition=Ready pod/preview-proxy --timeout=30s
 echo "  All services ready"
 
 # Grant CREATEDB (required by sqlx::test macro)

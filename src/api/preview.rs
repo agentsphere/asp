@@ -13,6 +13,7 @@ use axum::extract::{FromRequest, Path, Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::routing::any;
+use tower_http::set_header::SetResponseHeaderLayer;
 use uuid::Uuid;
 
 use crate::auth::middleware::AuthUser;
@@ -34,7 +35,14 @@ static PREVIEW_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/preview/{session_id}", any(preview_proxy))
+        .route("/preview/{session_id}/", any(preview_proxy))
         .route("/preview/{session_id}/{*path}", any(preview_proxy))
+        // All preview responses (including errors) must allow framing by the platform UI.
+        // This overrides the global X-Frame-Options: DENY set in main.rs.
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("SAMEORIGIN"),
+        ))
 }
 
 /// Validate that a namespace string is safe for URL construction.
@@ -47,14 +55,25 @@ fn validate_namespace_format(ns: &str) -> bool {
 }
 
 /// Build the backend URL for a preview request.
+///
+/// When `proxy_base_url` is set (dev mode), routes through an nginx proxy inside the
+/// Kind cluster that can resolve K8s DNS. The path encodes `{service}.{namespace}` so
+/// the proxy can route to the correct backend.
 pub fn build_target_url(
     svc_name: &str,
     namespace: &str,
     path: &str,
     query: Option<&str>,
+    proxy_base_url: Option<&str>,
 ) -> String {
     let path = path.trim_start_matches('/');
-    let base = format!("http://{svc_name}.{namespace}.svc.cluster.local:8000/{path}");
+    let base = match proxy_base_url {
+        Some(proxy) => format!(
+            "{}/{svc_name}.{namespace}/{path}",
+            proxy.trim_end_matches('/')
+        ),
+        None => format!("http://{svc_name}.{namespace}.svc.cluster.local:8000/{path}"),
+    };
     match query {
         Some(q) if !q.is_empty() => format!("{base}?{q}"),
         _ => base,
@@ -180,7 +199,18 @@ async fn preview_proxy(
     let svc_name = format!("preview-{short_id}");
     let path = params.path.as_deref().unwrap_or("");
     let query = req.uri().query().map(String::from);
-    let target_url = build_target_url(&svc_name, &namespace, path, query.as_deref());
+    let target_url = build_target_url(
+        &svc_name,
+        &namespace,
+        path,
+        query.as_deref(),
+        state.config.preview_proxy_url.as_deref(),
+    );
+    tracing::info!(
+        %target_url,
+        proxy_configured = state.config.preview_proxy_url.is_some(),
+        "preview proxy request"
+    );
 
     // WebSocket upgrade path (for HMR)
     if is_websocket_upgrade(req.headers()) {
@@ -233,13 +263,7 @@ async fn proxy_http(req: Request, target_url: &str) -> Result<Response, ApiError
 
     let status =
         StatusCode::from_u16(backend_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let mut resp_headers = strip_response_headers(backend_resp.headers());
-
-    // Per-route X-Frame-Options: SAMEORIGIN (global is DENY, preview needs framing)
-    resp_headers.insert(
-        HeaderName::from_static("x-frame-options"),
-        HeaderValue::from_static("SAMEORIGIN"),
-    );
+    let resp_headers = strip_response_headers(backend_resp.headers());
 
     let body = Body::from_stream(backend_resp.bytes_stream());
     let mut response = Response::new(body);
@@ -340,7 +364,7 @@ mod tests {
 
     #[test]
     fn test_build_backend_url() {
-        let url = build_target_url("preview-abc12345", "my-ns", "index.html", None);
+        let url = build_target_url("preview-abc12345", "my-ns", "index.html", None, None);
         assert_eq!(
             url,
             "http://preview-abc12345.my-ns.svc.cluster.local:8000/index.html"
@@ -349,7 +373,7 @@ mod tests {
 
     #[test]
     fn test_build_backend_url_empty_path() {
-        let url = build_target_url("preview-abc12345", "my-ns", "", None);
+        let url = build_target_url("preview-abc12345", "my-ns", "", None, None);
         assert_eq!(url, "http://preview-abc12345.my-ns.svc.cluster.local:8000/");
     }
 
@@ -360,6 +384,7 @@ mod tests {
             "my-ns",
             "api/data",
             Some("page=1&limit=10"),
+            None,
         );
         assert_eq!(
             url,
@@ -369,11 +394,53 @@ mod tests {
 
     #[test]
     fn test_build_backend_url_strips_leading_slash() {
-        let url = build_target_url("preview-abc12345", "my-ns", "/assets/app.js", None);
+        let url = build_target_url("preview-abc12345", "my-ns", "/assets/app.js", None, None);
         assert_eq!(
             url,
             "http://preview-abc12345.my-ns.svc.cluster.local:8000/assets/app.js"
         );
+    }
+
+    #[test]
+    fn test_build_backend_url_with_proxy() {
+        let url = build_target_url(
+            "preview-abc12345",
+            "my-ns",
+            "index.html",
+            None,
+            Some("http://172.18.0.2:31500"),
+        );
+        assert_eq!(
+            url,
+            "http://172.18.0.2:31500/preview-abc12345.my-ns/index.html"
+        );
+    }
+
+    #[test]
+    fn test_build_backend_url_with_proxy_trailing_slash() {
+        let url = build_target_url(
+            "preview-abc12345",
+            "my-ns",
+            "api/data",
+            Some("q=1"),
+            Some("http://172.18.0.2:31500/"),
+        );
+        assert_eq!(
+            url,
+            "http://172.18.0.2:31500/preview-abc12345.my-ns/api/data?q=1"
+        );
+    }
+
+    #[test]
+    fn test_build_backend_url_with_proxy_empty_path() {
+        let url = build_target_url(
+            "preview-abc12345",
+            "my-ns",
+            "",
+            None,
+            Some("http://172.18.0.2:31500"),
+        );
+        assert_eq!(url, "http://172.18.0.2:31500/preview-abc12345.my-ns/");
     }
 
     // -- strip_request_headers --

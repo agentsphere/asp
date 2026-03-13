@@ -85,9 +85,11 @@ echo "==> Discovering NodePorts"
 PG_PORT=$(kubectl get svc -n "${NS}" postgres -o jsonpath='{.spec.ports[0].nodePort}')
 VALKEY_PORT=$(kubectl get svc -n "${NS}" valkey -o jsonpath='{.spec.ports[0].nodePort}')
 MINIO_PORT=$(kubectl get svc -n "${NS}" minio -o jsonpath='{.spec.ports[0].nodePort}')
-echo "  Postgres: ${NODE_IP}:${PG_PORT}"
-echo "  Valkey:   ${NODE_IP}:${VALKEY_PORT}"
-echo "  MinIO:    ${NODE_IP}:${MINIO_PORT}"
+PREVIEW_PROXY_PORT=$(kubectl get svc -n "${NS}" preview-proxy -o jsonpath='{.spec.ports[0].nodePort}')
+echo "  Postgres:      ${NODE_IP}:${PG_PORT}"
+echo "  Valkey:        ${NODE_IP}:${VALKEY_PORT}"
+echo "  MinIO:         ${NODE_IP}:${MINIO_PORT}"
+echo "  Preview proxy: ${NODE_IP}:${PREVIEW_PROXY_PORT}"
 
 # Wait for NodePort connectivity (direct to Kind node — no port-forward)
 echo -n "  Waiting for NodePort connectivity"
@@ -150,6 +152,9 @@ PLATFORM_AGENT_RUNNER_DIR=/tmp/platform-e2e/${WORKTREE}/agent-runner
 # --- K8s config ---
 KUBECONFIG=${HOME}/.kube/kind-platform
 
+# --- Preview proxy (host → cluster bridge for iframe previews) ---
+PLATFORM_PREVIEW_PROXY_URL=http://${NODE_IP}:${PREVIEW_PROXY_PORT}
+
 # --- WebAuthn / Passkeys ---
 WEBAUTHN_RP_ID=localhost
 WEBAUTHN_RP_ORIGIN=http://localhost:${BACKEND_PORT}
@@ -159,13 +164,14 @@ EOF
 # ── Summary ──────────────────────────────────────────────────────────────
 echo ""
 echo "==> Dev environment ready (${WORKTREE})"
-echo "  Namespace:  ${NS}"
-echo "  Postgres:   ${NODE_IP}:${PG_PORT}"
-echo "  Valkey:     ${NODE_IP}:${VALKEY_PORT}"
-echo "  MinIO:      ${NODE_IP}:${MINIO_PORT}"
-echo "  Backend:    0.0.0.0:${BACKEND_PORT}"
-echo "  Registry:   Kind node:${REGISTRY_NODE_PORT} → ${PLATFORM_HOST}:${BACKEND_PORT}"
-echo "  .env.dev:   ${ENV_FILE}"
+echo "  Namespace:     ${NS}"
+echo "  Postgres:      ${NODE_IP}:${PG_PORT}"
+echo "  Valkey:        ${NODE_IP}:${VALKEY_PORT}"
+echo "  MinIO:         ${NODE_IP}:${MINIO_PORT}"
+echo "  Preview proxy: ${NODE_IP}:${PREVIEW_PROXY_PORT}"
+echo "  Backend:       0.0.0.0:${BACKEND_PORT}"
+echo "  Registry:      Kind node:${REGISTRY_NODE_PORT} → ${PLATFORM_HOST}:${BACKEND_PORT}"
+echo "  .env.dev:      ${ENV_FILE}"
 echo ""
 echo "  Run: just run"
 echo "  Stop: just dev-env-stop"
