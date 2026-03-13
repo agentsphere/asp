@@ -30,6 +30,7 @@ impl AgentProvider for ClaudeCodeProvider {
             claude_cli_path: params.claude_cli_path,
             service_account_name: params.service_account_name,
             registry_push_secret_name: params.registry_push_secret_name,
+            registry_push_url: params.registry_push_url,
             project_name: params.project_name,
             session_short_id: params.session_short_id,
         }))

@@ -301,6 +301,7 @@ pub async fn create_session(
         claude_cli_path: claude_cli_path.as_deref(),
         service_account_name: Some("agent-sa"),
         registry_push_secret_name: registry_push_secret_name.as_deref(),
+        registry_push_url: state.config.registry_url.as_deref(),
         project_name: project_name.as_deref(),
         session_short_id: Some(short_id),
     })?;

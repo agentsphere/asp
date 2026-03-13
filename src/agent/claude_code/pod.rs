@@ -70,6 +70,9 @@ pub struct PodBuildParams<'a> {
     pub service_account_name: Option<&'a str>,
     /// K8s Secret name containing Docker config for Kaniko push auth.
     pub registry_push_secret_name: Option<&'a str>,
+    /// Registry URL reachable from inside the pod (for kaniko `--destination`).
+    /// Distinct from `registry_url` which is the node-level URL for containerd pulls.
+    pub registry_push_url: Option<&'a str>,
     /// Human-readable project name (for `PROJECT` env var in agent pod).
     pub project_name: Option<&'a str>,
     /// Session short ID for kaniko image naming (e.g., `abc12345`).
@@ -385,8 +388,8 @@ fn build_env_vars(
     if params.registry_push_secret_name.is_some() {
         vars.push(env_var("DOCKER_CONFIG", "/kaniko/.docker"));
     }
-    if let Some(reg_url) = params.registry_url {
-        vars.push(env_var("REGISTRY", reg_url));
+    if let Some(push_url) = params.registry_push_url.or(params.registry_url) {
+        vars.push(env_var("REGISTRY", push_url));
     }
     if let Some(project_name) = params.project_name {
         vars.push(env_var("PROJECT", project_name));
@@ -881,6 +884,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -910,6 +914,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -944,6 +949,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -976,6 +982,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1010,6 +1017,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1043,6 +1051,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1090,6 +1099,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1126,6 +1136,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1161,6 +1172,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1194,6 +1206,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1249,6 +1262,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1284,6 +1298,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1330,6 +1345,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1362,6 +1378,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1459,6 +1476,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1490,6 +1508,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1525,6 +1544,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1564,6 +1584,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1594,6 +1615,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1626,6 +1648,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1662,6 +1685,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1706,6 +1730,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1739,6 +1764,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1770,6 +1796,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1815,6 +1842,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1846,6 +1874,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1876,6 +1905,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1914,6 +1944,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1945,6 +1976,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -1984,6 +2016,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2022,6 +2055,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2056,6 +2090,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2092,6 +2127,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2125,6 +2161,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2159,6 +2196,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2198,6 +2236,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2234,6 +2273,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2274,6 +2314,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2324,6 +2365,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2355,6 +2397,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2389,6 +2432,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2423,6 +2467,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2456,6 +2501,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2510,6 +2556,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2550,6 +2597,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2587,6 +2635,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: Some("agent-sa"),
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2616,6 +2665,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2646,6 +2696,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2680,6 +2731,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2713,6 +2765,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2764,6 +2817,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: Some("registry-push-abc12345"),
+            registry_push_url: Some("host.docker.internal:55534"),
             project_name: Some("myproject"),
             session_short_id: Some("abc12345"),
         });
@@ -2813,6 +2867,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2846,6 +2901,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: Some("registry-push-abc12345"),
+            registry_push_url: Some("host.docker.internal:55534"),
             project_name: Some("myproject"),
             session_short_id: Some("abc12345"),
         });
@@ -2884,6 +2940,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2931,6 +2988,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });
@@ -2966,6 +3024,7 @@ mod tests {
             claude_cli_path: None,
             service_account_name: None,
             registry_push_secret_name: None,
+            registry_push_url: None,
             project_name: None,
             session_short_id: None,
         });

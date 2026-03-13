@@ -177,6 +177,8 @@ pub struct BuildPodParams<'a> {
     pub service_account_name: Option<&'a str>,
     /// K8s Secret name containing Docker config for Kaniko push auth.
     pub registry_push_secret_name: Option<&'a str>,
+    /// Registry URL reachable from inside the pod (for kaniko `--destination`).
+    pub registry_push_url: Option<&'a str>,
     /// Human-readable project name (for `PROJECT` env var in agent pod).
     pub project_name: Option<&'a str>,
     /// Session short ID for kaniko image naming (e.g., `abc12345`).
