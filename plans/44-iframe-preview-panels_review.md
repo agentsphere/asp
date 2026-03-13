@@ -1,129 +1,94 @@
-# Review: 44-iframe-preview-panels (PR 1)
+# Review: 44-iframe-preview-panels (PR 2)
 
 **Date:** 2026-03-13
-**Scope:** `src/api/preview.rs` (new), `src/agent/service.rs`, `src/agent/claude_code/pod.rs`, `src/deployer/namespace.rs`, `src/error.rs`, `src/main.rs`, `src/api/mod.rs`, `ui/index.html`, `Cargo.toml`, `tests/preview_integration.rs` (new), `tests/helpers/mod.rs`, `tests/e2e_helpers/mod.rs`
+**Scope:** `src/agent/preview_watcher.rs` (new), `src/agent/provider.rs`, `src/agent/mod.rs`, `src/api/sessions.rs`, `src/main.rs`, `ui/src/lib/types.ts`, `ui/src/pages/SessionDetail.tsx`, `ui/src/components/AgentChatPanel.tsx`
 **Overall:** PASS WITH FINDINGS
 
 ## Summary
-- Solid reverse proxy implementation with auth, permission checks, WebSocket HMR support, header stripping, and K8s Service auto-creation. Good test coverage for auth/permission paths.
-- 1 critical, 2 high, 4 medium, 4 low findings
-- 9 integration tests + 13 unit tests added; 2 integration test gaps identified
-- Touched-line coverage: not measured (no `just cov-diff` run); estimated high from test count
+- Clean K8s Service informer implementation with proper shutdown handling, error restart, and well-tested pure helper functions. ProgressKind enum extension is backward-compatible.
+- 0 critical, 1 high, 4 medium, 4 low findings
+- 11 unit tests added (8 preview_watcher + 3 provider); 0 integration tests for new handler (gap)
+- Touched-line coverage: not measured; `list_iframes` handler entirely uncovered by tests
 
 ## Critical & High Findings (must fix)
 
-### R1: [CRITICAL] Global X-Frame-Options DENY overwrites preview SAMEORIGIN
-- **File:** `src/main.rs:220`
-- **Domain:** Security
-- **Description:** `SetResponseHeaderLayer::overriding` for `X-Frame-Options: DENY` runs as global middleware. Since tower layers execute outer-to-inner on response (i.e., the global layer runs AFTER the handler), `overriding` replaces the preview handler's `SAMEORIGIN` with `DENY`. This completely breaks iframe embedding — the core purpose of this feature.
-- **Risk:** Preview iframes will never render in the browser. The entire feature is non-functional.
-- **Suggested fix:** Change `SetResponseHeaderLayer::overriding` to `SetResponseHeaderLayer::if_not_present` for the X-Frame-Options layer only. This lets the preview handler set SAMEORIGIN while all other routes get DENY from the global layer.
-
-### R2: [HIGH] Orphaned WebSocket bridge task leaks on disconnect
-- **File:** `src/api/preview.rs:272-275`
-- **Domain:** Rust Quality
-- **Description:** `tokio::select!` picks the first completed branch (c2b or b2c) but does NOT abort the other spawned task. The losing task continues running until its WebSocket connection eventually errors or times out, leaking resources.
-- **Risk:** Under sustained WebSocket use (HMR with many open tabs), orphaned tasks accumulate, consuming memory and file descriptors.
-- **Suggested fix:** Capture the `JoinHandle` from both spawns and abort the loser:
-  ```rust
-  tokio::select! {
-      _ = &mut c2b => { b2c.abort(); },
-      _ = &mut b2c => { c2b.abort(); },
-  }
-  ```
-
-### R3: [HIGH] BadGateway error leaks internal K8s service URL
-- **File:** `src/api/preview.rs:224`
-- **Domain:** Security
-- **Description:** The reqwest error message from `.map_err(|e| ApiError::BadGateway(format!("preview backend unreachable: {e}")))` includes the full target URL (`http://preview-{id}.{ns}.svc.cluster.local:8000/...`), which is returned to the client in the JSON error response.
-- **Risk:** Leaks internal K8s service naming convention, namespace names, and cluster DNS structure to end users.
-- **Suggested fix:** Log the full error with `tracing::warn!`, return a generic message to the client:
-  ```rust
-  .map_err(|e| {
-      tracing::warn!(error = %e, "preview backend unreachable");
-      ApiError::BadGateway("preview backend unreachable".into())
-  })?;
-  ```
+### R1: [HIGH] `list_iframes` handler has zero integration tests
+- **File:** `src/api/sessions.rs:903-955`
+- **Domain:** Tests
+- **Description:** The new `list_iframes` handler has 5 distinct code paths (happy path, auth failure, permission denial, session not found, project mismatch) with no integration tests. Every other handler in `sessions.rs` has integration tests in `tests/session_integration.rs`.
+- **Risk:** Regressions in auth checks, permission enforcement, or error handling will not be caught.
+- **Suggested fix:** Add 5 integration tests to `tests/session_integration.rs`:
+  - `list_iframes_returns_empty_for_session` — happy path (empty result since no K8s Services exist in test)
+  - `list_iframes_no_auth_returns_401` — GET without token
+  - `list_iframes_no_permission_returns_404` — unprivileged user on private project
+  - `list_iframes_nonexistent_session_returns_404` — random session UUID
+  - `list_iframes_wrong_project_returns_404` — session belongs to different project
 
 ## Medium Findings (should fix)
 
-### R4: [MEDIUM] insert() drops multi-valued headers in strip functions
-- **File:** `src/api/preview.rs:74,99`
+### R2: [MEDIUM] `handle_service_applied` and `handle_service_deleted` are 90% duplicated
+- **File:** `src/agent/preview_watcher.rs:59-108`
 - **Domain:** Rust Quality
-- **Description:** Both `strip_request_headers` and `strip_response_headers` use `out.insert()` which overwrites previous values for the same header name. Standard HTTP headers like `Cache-Control` or `Accept` can have multiple values. Using `insert()` silently drops all but the last.
-- **Suggested fix:** Use `out.append(name.clone(), value.clone())` instead of `out.insert()`.
-
-### R5: [MEDIUM] Missing tracing::instrument on key functions
-- **File:** `src/api/preview.rs:169`, `src/agent/service.rs:410`
-- **Domain:** Rust Quality / Observability
-- **Description:** `preview_proxy` and `create_preview_service` are async functions with side effects but lack `#[tracing::instrument]`. This makes debugging proxy failures and K8s service creation issues harder in production.
-- **Suggested fix:** Add instrumentation:
+- **Description:** Both functions have identical logic: extract session_id, get service name, iterate iframe ports, build event, publish. Only the `ProgressKind` differs.
+- **Suggested fix:** Extract a shared helper:
   ```rust
-  #[tracing::instrument(skip(state, auth, req), fields(session_id = %params.session_id), err)]
-  async fn preview_proxy(...) { ... }
+  async fn handle_service_event(state: &AppState, svc: &Service, kind: ProgressKind) { ... }
   ```
 
-### R6: [MEDIUM] WebSocket upgrade error leaks internal details
-- **File:** `src/api/preview.rs:188`
+### R3: [MEDIUM] Missing `#[tracing::instrument]` on async functions with side effects
+- **File:** `src/api/sessions.rs:903`, `src/agent/preview_watcher.rs:59,85`
+- **Domain:** Observability
+- **Description:** `list_iframes` performs K8s API calls and `handle_service_applied`/`handle_service_deleted` perform Valkey pub/sub, but none have tracing instrumentation. Other mutation handlers in sessions.rs have it.
+- **Suggested fix:** Add `#[tracing::instrument(skip(state), fields(%id, %session_id), err)]` to `list_iframes` and `#[tracing::instrument(skip_all)]` to the watcher helpers.
+
+### R4: [MEDIUM] `SessionDetail.tsx` normalizeKind missing `WaitingForInput` mapping
+- **File:** `ui/src/pages/SessionDetail.tsx:18-28`
+- **Domain:** UI
+- **Description:** `SessionDetail.tsx`'s `normalizeKind` map does NOT include `waiting_for_input: 'WaitingForInput'` or `WaitingForInput: 'WaitingForInput'`. `AgentChatPanel.tsx` has them. This pre-dates PR 2 but was exposed when both files were updated for iframe events.
+- **Suggested fix:** Add the missing entries to SessionDetail.tsx's normalizeKind map.
+
+### R5: [MEDIUM] All-namespace watcher trusts K8s labels without namespace cross-check
+- **File:** `src/agent/preview_watcher.rs:26-28`
 - **Domain:** Security
-- **Description:** `format!("websocket upgrade failed: {e}")` passes axum's internal error message to the client via `ApiError::BadRequest`.
-- **Suggested fix:** Log the detail, return generic message:
-  ```rust
-  .map_err(|e| {
-      tracing::warn!(error = %e, "websocket upgrade failed");
-      ApiError::BadRequest("websocket upgrade failed".into())
-  })?;
-  ```
-
-### R7: [MEDIUM] Missing integration tests for edge cases
-- **File:** `tests/preview_integration.rs`
-- **Domain:** Tests
-- **Description:** Two testable error paths lack integration tests:
-  1. Session with `project_id = NULL` and non-owner access (hits the `else` branch at line 140-142)
-  2. Session with invalid namespace format (hits the `validate_namespace_format` rejection at line 149-151)
-- **Suggested fix:** Add two tests:
-  - `proxy_null_project_non_owner_returns_404` — insert session with `project_id = NULL`, access as non-owner
-  - `proxy_invalid_namespace_returns_400` — insert session with namespace containing uppercase/special chars
+- **Description:** The watcher uses `Api::all()` and trusts the `platform.io/session` label to route events. A Service in any namespace with a valid session UUID label could inject iframe events into that session's Valkey channel. Impact is limited to bogus notifications (no data exfiltration), and K8s RBAC restricts Service creation.
+- **Suggested fix:** After extracting session_id, verify the Service's namespace matches the session's expected namespace. Alternatively, add `.page_size(100)` to the watcher config for defensive memory management. Given the controlled environment, this can be deferred.
 
 ## Low Findings (optional)
 
-- [LOW] R8: `src/api/preview.rs` — No `boundary_project_id` scope check for API token access. Currently only checks RBAC permissions but doesn't enforce token boundary restrictions. Low risk since preview access already requires session ownership or ProjectRead. Fix: add `auth.check_project_scope(project_id)?` in `resolve_session`.
-- [LOW] R9: `src/error.rs` — No unit test for the new `BadGateway` variant's status code mapping. Fix: add `assert_eq!(ApiError::BadGateway("test".into()).status_code(), StatusCode::BAD_GATEWAY)` to existing error tests.
-- [LOW] R10: `src/api/preview.rs` — `is_websocket_upgrade` and WS message converter functions lack unit tests. Fix: add tests for upgrade detection (present/absent/wrong value) and message round-trip conversion.
-- [LOW] R11: `src/deployer/namespace.rs` — `ensure_session_network_policy` error is logged but silently discarded, same as `ensure_session_namespace`. Acceptable since namespace creation already succeeded and policy failure shouldn't block sessions. No fix needed.
-- [LOW] R12: `src/api/preview.rs` — No WebSocket connection limit per session. An attacker with valid credentials could open many WS connections. Low risk since auth is required. Defer to future hardening.
+- [LOW] R6: `src/api/sessions.rs:924` — No namespace format validation before K8s API call. The `preview.rs` handler validates via `validate_namespace_format()` but `list_iframes` uses `session_namespace` directly. Defense-in-depth; namespace is constructed from validated slugs. Fix: add validation or extract shared helper.
+- [LOW] R7: `src/agent/preview_watcher.rs:67-68` — Unnecessary `String` allocation: `.unwrap_or("unknown").to_owned()` when `build_iframe_event` takes `&str`. Fix: use `as_deref().unwrap_or("unknown")` without `.to_owned()`.
+- [LOW] R8: `src/api/sessions.rs:934-952` — `filter_map().flatten()` allocates intermediate `Vec` per service. Fix: replace with `.flat_map()` returning an iterator directly.
+- [LOW] R9: `src/agent/preview_watcher.rs` — Minor edge case tests missing: unnamed ports, multiple iframe ports on one Service, empty ports vec, non-iframe ProgressKind branch in `build_iframe_event`.
 
 ## Coverage — Touched Lines
 
-| File | Lines changed | Tests covering | Notes |
-|---|---|---|---|
-| `src/api/preview.rs` | ~325 (new) | 7 unit + 9 integration | Missing: null project_id path, invalid namespace path, WS helpers |
-| `src/agent/service.rs` | ~55 (create_preview_service) | 0 direct | Non-fatal helper; would need K8s mock for unit test |
-| `src/agent/claude_code/pod.rs` | ~15 | 3 unit | Full coverage on new lines |
-| `src/deployer/namespace.rs` | ~60 | 3 unit | Full coverage on policy building |
-| `src/error.rs` | ~5 | 0 direct | BadGateway variant untested |
-| `src/main.rs` | ~2 | 0 direct | Route wiring; covered by integration tests |
-| `ui/index.html` | ~1 | 0 | CSP change; manual verification |
+| File | Lines changed | Lines covered | Coverage % | Uncovered lines |
+|---|---|---|---|---|
+| `src/agent/preview_watcher.rs` | 163 (new) | ~75 (unit-testable helpers) | ~46% | 22-56 (run loop), 59-108 (handlers) |
+| `src/agent/provider.rs` | 36 | 36 | 100% | — |
+| `src/agent/mod.rs` | 1 | — | N/A | Module declaration |
+| `src/api/sessions.rs` | 72 | 0 | 0% | 886-955 (entire list_iframes) |
+| `src/main.rs` | 4 | 0 | N/A | Background task spawn wiring |
+| `ui/src/lib/types.ts` | 10 | N/A | N/A | TypeScript |
+| `ui/src/pages/SessionDetail.tsx` | 4 | N/A | N/A | TypeScript |
+| `ui/src/components/AgentChatPanel.tsx` | 2 | N/A | N/A | TypeScript |
 
 ### Uncovered Paths
-- `src/api/preview.rs:140-142` — `project_id = NULL` + non-owner → 404; needs integration test (R7)
-- `src/api/preview.rs:149-151` — invalid namespace format → 400; needs integration test (R7)
-- `src/api/preview.rs:184-194` — WebSocket upgrade path; requires WS client in test (deferred)
-- `src/api/preview.rs:244-278` — WebSocket bridge; requires real WS backend (deferred)
-- `src/agent/service.rs:410-463` — K8s Service creation; covered by E2E only
+- `src/api/sessions.rs:903-955` — Entire `list_iframes` handler (0% coverage); needs 5 integration tests (R1)
+- `src/agent/preview_watcher.rs:22-56` — `run()` loop; requires live K8s watcher (covered by E2E only)
+- `src/agent/preview_watcher.rs:59-108` — `handle_service_applied/deleted`; requires live Valkey pub/sub (covered by E2E only)
 
 ## Checklist Results
 
 | Category | Status | Notes |
 |---|---|---|
-| Error handling | PASS | Proper error types, no unwrap in production code |
-| Auth & permissions | PASS | AuthUser + owner/ProjectRead check + 404 for unauthorized |
-| Input validation | PASS | Namespace format validated; session_id is Uuid (type-safe) |
-| Audit logging | N/A | Read-only proxy — no mutations requiring audit |
-| Tracing instrumentation | FAIL | Missing `#[tracing::instrument]` on preview_proxy and create_preview_service (R5) |
-| Clippy compliance | PASS | All clippy warnings resolved |
-| Test patterns | PASS | Correct use of helpers, dynamic queries, proper assertions |
-| Migration safety | N/A | No new migrations in PR 1 |
-| X-Frame-Options | FAIL | Global DENY overwrites handler SAMEORIGIN (R1) |
-| Header security | PASS | Request/response header stripping correct |
-| WebSocket safety | FAIL | Task leak on disconnect (R2) |
+| Error handling | PASS | Proper use of `?`, `map_err`, no unwrap in production |
+| Auth & permissions | PASS | `require_project_read` + session-project ownership check |
+| Input validation | PASS | UUID path params type-safe; namespace from DB |
+| Audit logging | N/A | Read-only endpoint — no mutations |
+| Tracing instrumentation | FAIL | Missing `#[tracing::instrument]` on list_iframes and watcher helpers (R3) |
+| Clippy compliance | PASS | Clean |
+| Test patterns | FAIL | Zero integration tests for new handler (R1) |
+| Migration safety | N/A | No migrations in PR 2 |
+| Backward compatibility | PASS | `#[serde(other)] Unknown` remains last variant |
+| UI consistency | FAIL | SessionDetail.tsx normalizeKind diverges from AgentChatPanel.tsx (R4) |

@@ -335,12 +335,12 @@ The iframe uses `sandbox="allow-scripts allow-same-origin allow-forms allow-popu
 
 Watches for Services in session namespaces and pushes iframe discovery events through the existing SSE pipeline.
 
-- [ ] Types & errors defined
-- [ ] Migration applied
-- [ ] Tests written (red phase)
-- [ ] Implementation complete (green phase)
-- [ ] Integration/E2E tests passing
-- [ ] Quality gate passed
+- [x] Types & errors defined
+- [x] Migration applied (no migration needed — K8s resources only)
+- [x] Tests written (red phase)
+- [x] Implementation complete (green phase)
+- [x] Integration/E2E tests passing
+- [x] Quality gate passed
 
 ### No migration needed
 

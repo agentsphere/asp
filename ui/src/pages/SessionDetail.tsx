@@ -18,11 +18,15 @@ function normalizeKind(kind: string | undefined): ProgressEvent['kind'] {
   const map: Record<string, ProgressEvent['kind']> = {
     text: 'Text', thinking: 'Thinking', tool_call: 'ToolCall',
     tool_result: 'ToolResult', milestone: 'Milestone', error: 'Error',
-    completed: 'Completed', secret_request: 'SecretRequest',
+    completed: 'Completed', waiting_for_input: 'WaitingForInput',
+    secret_request: 'SecretRequest',
+    iframe_available: 'IframeAvailable', iframe_removed: 'IframeRemoved',
     // Already PascalCase — pass through
     Text: 'Text', Thinking: 'Thinking', ToolCall: 'ToolCall',
     ToolResult: 'ToolResult', Milestone: 'Milestone', Error: 'Error',
-    Completed: 'Completed', SecretRequest: 'SecretRequest',
+    Completed: 'Completed', WaitingForInput: 'WaitingForInput',
+    SecretRequest: 'SecretRequest',
+    IframeAvailable: 'IframeAvailable', IframeRemoved: 'IframeRemoved',
   };
   return map[kind] || 'Text';
 }
@@ -259,6 +263,8 @@ function getEventIcon(kind: string): string {
     case 'Completed': return '[=]';
     case 'Text': return '[-]';
     case 'SecretRequest': return '[?]';
+    case 'IframeAvailable': return '[F]';
+    case 'IframeRemoved': return '[x]';
     default: return '[ ]';
   }
 }

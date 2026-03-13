@@ -268,6 +268,10 @@ fn spawn_background_tasks(
         state.clone(),
         shutdown_tx.subscribe(),
     ));
+    tokio::spawn(agent::preview_watcher::run(
+        state.clone(),
+        shutdown_tx.subscribe(),
+    ));
     let observe_channels = observe::spawn_background_tasks(state.clone(), shutdown_tx.subscribe());
     tokio::spawn(registry::gc::run(state.clone(), shutdown_tx.subscribe()));
     if state.config.ssh_listen.is_some() {
