@@ -94,6 +94,7 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
         preview_proxy_url: None,
         pipeline_max_parallel: 4,
         mcp_servers_tarball: "/tmp/mcp-servers.tar.gz".into(),
+        seed_commands_path: "/tmp/seed-commands".into(),
     };
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");
@@ -115,6 +116,7 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
             platform::health::HealthSnapshot::default(),
         )),
         task_registry: std::sync::Arc::new(platform::health::TaskRegistry::new()),
+        cli_auth_manager: std::sync::Arc::new(platform::onboarding::claude_auth::CliAuthManager::new()),
     };
 
     (state, setup_token)

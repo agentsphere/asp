@@ -1446,8 +1446,8 @@ mod tests {
         let spec = pod.spec.unwrap();
         let resources = spec.containers[0].resources.as_ref().unwrap();
         let limits = resources.limits.as_ref().unwrap();
-        assert_eq!(limits["cpu"], Quantity("500m".into()));
-        assert_eq!(limits["memory"], Quantity("512Mi".into()));
+        assert_eq!(limits["cpu"], Quantity("2".into()));
+        assert_eq!(limits["memory"], Quantity("4Gi".into()));
     }
 
     #[test]

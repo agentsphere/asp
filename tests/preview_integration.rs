@@ -127,11 +127,12 @@ async fn proxy_owner_can_access(pool: PgPool) {
     let project_id = create_project(&app, &admin_token, "preview-owner", "private").await;
     let session_id = insert_session(&pool, project_id, admin_id, "running", Some("test-ns")).await;
 
-    // Owner can access — gets 502 because no real backend is running
-    let (status, body) =
+    // Owner can access — gets 502 because no real backend is running.
+    // When PLATFORM_PREVIEW_PROXY_URL is set, the response comes from the proxy pod
+    // (non-JSON nginx 502), otherwise from platform's own error handler (JSON).
+    let (status, _body) =
         helpers::get_json(&app, &admin_token, &format!("/preview/{session_id}")).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert!(body["error"].as_str().unwrap().contains("preview backend"));
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -159,10 +160,9 @@ async fn proxy_project_reader_can_access(pool: PgPool) {
     .await;
 
     // Reader can access — gets 502 because no real backend
-    let (status, body) =
+    let (status, _body) =
         helpers::get_json(&app, &reader_token, &format!("/preview/{session_id}")).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert!(body["error"].as_str().unwrap().contains("preview backend"));
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -208,7 +208,6 @@ async fn proxy_backend_unreachable_returns_502(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert!(body["error"].as_str().unwrap().contains("preview backend"));
 }
 
 // ---------------------------------------------------------------------------
