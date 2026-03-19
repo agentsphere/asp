@@ -17,14 +17,16 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_DIR"
+
 # ── Defaults ──────────────────────────────────────────────────────────────
 TEST_FILTER="*_integration"
 TEST_TYPE="integration"   # "integration", "e2e", or "total"
 TEST_THREADS=""
 FILTER_EXPR=""
 KIND_CLUSTER="platform"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Coverage options
 COVERAGE_MODE=false

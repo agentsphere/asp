@@ -5,9 +5,10 @@ interface Props {
   onClose: () => void;
   title: string;
   children: any;
+  wide?: boolean;
 }
 
-export function Modal({ open, onClose, title, children }: Props) {
+export function Modal({ open, onClose, title, children, wide }: Props) {
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -19,7 +20,7 @@ export function Modal({ open, onClose, title, children }: Props) {
 
   return (
     <div class="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div class="modal">
+      <div class={`modal${wide ? ' modal-wide' : ''}`}>
         <div class="modal-title">{title}</div>
         {children}
       </div>

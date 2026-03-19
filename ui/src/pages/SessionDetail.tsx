@@ -317,7 +317,7 @@ export function SessionDetail({ id: projectId, sessionId }: Props) {
           <StatusDot status={session.status} label={session.status} />
           <span class="text-sm text-muted">{duration(elapsed)}</span>
           {session.branch && <span class="mono text-xs text-muted">{session.branch}</span>}
-          {hasIframes && <Badge label={`Preview (${iframes.length})`} />}
+          {hasIframes && <Badge>{`Preview (${iframes.length})`}</Badge>}
         </div>
         <div class="session-bar-right">
           {isLive && (

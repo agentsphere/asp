@@ -353,12 +353,12 @@ export function Onboarding() {
                           {tokenVerifying ? <><span class="spinner" /> Verifying</> : 'Verify'}
                         </button>
                       </div>
-                      {tokenValid === true && (
+                      {(tokenValid as boolean | null) === true && (
                         <p style="color:var(--success);font-size:12px;margin-top:0.5rem">
                           Token verified and saved
                         </p>
                       )}
-                      {tokenValid === false && (
+                      {(tokenValid as boolean | null) === false && (
                         <p style="color:var(--danger);font-size:12px;margin-top:0.5rem">
                           {tokenError || 'Invalid token'}
                         </p>
@@ -431,12 +431,12 @@ export function Onboarding() {
                             {codeVerifying ? <><span class="spinner" /> Verifying</> : 'Verify'}
                           </button>
                         </div>
-                        {codeResult === 'success' && (
+                        {(codeResult as string | null) === 'success' && (
                           <p style="color:var(--success);font-size:12px;margin-top:0.5rem">
                             Authentication successful
                           </p>
                         )}
-                        {codeResult === 'error' && (
+                        {(codeResult as string | null) === 'error' && (
                           <p style="color:var(--danger);font-size:12px;margin-top:0.5rem">
                             Verification failed — check the code and try again
                           </p>
