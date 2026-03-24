@@ -1,0 +1,290 @@
+erDiagram
+    %% Identity & Auth
+    users {
+        uuid id PK
+        text name UK
+        text email UK
+        text password_hash
+        text user_type "human|agent|service_account"
+        boolean is_active
+    }
+    workspaces {
+        uuid id PK
+        text name UK
+        uuid owner_id FK
+        boolean is_active
+    }
+    workspace_members {
+        uuid id PK
+        uuid workspace_id FK
+        uuid user_id FK
+        text role "owner|admin|member"
+    }
+    roles {
+        uuid id PK
+        text name UK
+        boolean is_system
+    }
+    permissions {
+        uuid id PK
+        text name UK
+        text resource
+        text action
+    }
+    role_permissions {
+        uuid role_id FK
+        uuid permission_id FK
+    }
+    user_roles {
+        uuid id PK
+        uuid user_id FK
+        uuid role_id FK
+        uuid project_id FK
+    }
+    delegations {
+        uuid id PK
+        uuid delegator_id FK
+        uuid delegate_id FK
+        uuid permission_id FK
+        uuid project_id FK
+        timestamptz expires_at
+    }
+    auth_sessions {
+        uuid id PK
+        uuid user_id FK
+        text token_hash UK
+        timestamptz expires_at
+    }
+    api_tokens {
+        uuid id PK
+        uuid user_id FK
+        text token_hash UK
+        text[] scopes
+        uuid project_id FK
+    }
+    passkey_credentials {
+        uuid id PK
+        uuid user_id FK
+        bytea credential_id UK
+    }
+
+    %% Projects & PM
+    projects {
+        uuid id PK
+        uuid owner_id FK
+        uuid workspace_id FK
+        text name
+        text namespace_slug UK
+        text visibility "private|internal|public"
+        boolean is_active
+    }
+    issues {
+        uuid id PK
+        uuid project_id FK
+        integer number
+        uuid author_id FK
+        text title
+        text status "open|closed"
+    }
+    merge_requests {
+        uuid id PK
+        uuid project_id FK
+        integer number
+        uuid author_id FK
+        text source_branch
+        text target_branch
+        text status "open|merged|closed"
+        boolean auto_merge
+    }
+    mr_reviews {
+        uuid id PK
+        uuid mr_id FK
+        uuid reviewer_id FK
+        text verdict "approve|request_changes|comment"
+    }
+    comments {
+        uuid id PK
+        uuid project_id FK
+        uuid issue_id FK
+        uuid mr_id FK
+        uuid author_id FK
+        text body
+    }
+    webhooks {
+        uuid id PK
+        uuid project_id FK
+        text url
+        text[] events
+    }
+
+    %% Pipeline
+    pipelines {
+        uuid id PK
+        uuid project_id FK
+        text trigger "push|api|schedule|mr|tag"
+        text status "pending|running|success|failure|cancelled"
+    }
+    pipeline_steps {
+        uuid id PK
+        uuid pipeline_id FK
+        text name
+        text step_type "command|imagebuild|deploy_test|gitops_sync|deploy_watch"
+        text status "pending|running|success|failure|skipped"
+    }
+    artifacts {
+        uuid id PK
+        uuid pipeline_id FK
+        text minio_path
+    }
+
+    %% Deploy
+    ops_repos {
+        uuid id PK
+        uuid project_id FK
+        text name UK
+        text repo_path
+    }
+    deploy_targets {
+        uuid id PK
+        uuid project_id FK
+        text environment "preview|staging|production"
+        text default_strategy "rolling|canary|ab_test"
+    }
+    deploy_releases {
+        uuid id PK
+        uuid target_id FK
+        uuid project_id FK
+        text image_ref
+        text strategy "rolling|canary|ab_test"
+        text phase "pending|progressing|holding|paused|promoting|completed|rolling_back|rolled_back|cancelled|failed"
+        integer traffic_weight
+    }
+    release_history {
+        uuid id PK
+        uuid release_id FK
+        text action
+        text phase
+    }
+
+    %% Agent
+    agent_sessions {
+        uuid id PK
+        uuid project_id FK
+        uuid user_id FK
+        uuid agent_user_id FK
+        text status "pending|running|completed|failed|stopped"
+        text execution_mode "pod|cli_subprocess"
+    }
+    agent_messages {
+        uuid id PK
+        uuid session_id FK
+        text role
+        text content
+    }
+
+    %% Observability
+    traces {
+        uuid id PK
+        text trace_id UK
+        uuid project_id FK
+        text root_span
+    }
+    spans {
+        uuid id PK
+        text trace_id
+        text span_id UK
+        text name
+    }
+    log_entries {
+        uuid id PK
+        timestamptz timestamp
+        uuid project_id FK
+        text level "trace|debug|info|warn|error|fatal"
+        text message
+    }
+    metric_series {
+        uuid id PK
+        text name
+        jsonb labels
+    }
+    metric_samples {
+        uuid series_id FK
+        timestamptz timestamp
+        float8 value
+    }
+    alert_rules {
+        uuid id PK
+        text name
+        text query
+        text severity "info|warning|critical"
+    }
+    alert_events {
+        uuid id PK
+        uuid rule_id FK
+        text status "firing|resolved"
+    }
+
+    %% Secrets & Config
+    secrets {
+        uuid id PK
+        uuid project_id FK
+        text name
+        bytea encrypted_value
+        text scope "all|pipeline|agent|test|staging|prod"
+    }
+    feature_flags {
+        uuid id PK
+        uuid project_id FK
+        text key
+        text flag_type "boolean|percentage|variant|json"
+    }
+    notifications {
+        uuid id PK
+        uuid user_id FK
+        text subject
+        text channel "in_app|email|webhook"
+        text status "pending|sent|read|failed"
+    }
+    audit_log {
+        uuid id PK
+        uuid actor_id
+        text action
+        text resource
+        uuid project_id FK
+    }
+
+    %% Relationships
+    users ||--o{ workspaces : owns
+    users ||--o{ workspace_members : member_of
+    workspaces ||--o{ workspace_members : has
+    users ||--o{ projects : owns
+    workspaces ||--o{ projects : contains
+    roles ||--o{ role_permissions : has
+    permissions ||--o{ role_permissions : granted_by
+    users ||--o{ user_roles : has
+    roles ||--o{ user_roles : assigned_to
+    users ||--o{ delegations : delegates
+    users ||--o{ delegations : receives
+    users ||--o{ auth_sessions : has
+    users ||--o{ api_tokens : has
+    users ||--o{ passkey_credentials : has
+    projects ||--o{ issues : has
+    projects ||--o{ merge_requests : has
+    merge_requests ||--o{ mr_reviews : has
+    projects ||--o{ comments : has
+    projects ||--o{ webhooks : has
+    projects ||--o{ pipelines : has
+    pipelines ||--o{ pipeline_steps : has
+    pipelines ||--o{ artifacts : produces
+    projects ||--o{ ops_repos : has
+    projects ||--o{ deploy_targets : has
+    deploy_targets ||--o{ deploy_releases : has
+    deploy_releases ||--o{ release_history : has
+    projects ||--o{ agent_sessions : has
+    agent_sessions ||--o{ agent_messages : has
+    projects ||--o{ secrets : has
+    projects ||--o{ feature_flags : has
+    users ||--o{ notifications : receives
+    projects ||--o{ traces : has
+    metric_series ||--o{ metric_samples : has
+    alert_rules ||--o{ alert_events : fires

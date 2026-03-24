@@ -1,0 +1,148 @@
+{
+  "architecture": {
+    "c1": {
+      "file": "context.mmd",
+      "label": "System Context",
+      "description": "Platform and all external actors/systems"
+    },
+    "c2": {
+      "file": "containers.mmd",
+      "label": "Containers (Modules)",
+      "description": "15 modules inside the single Rust binary"
+    },
+    "c3": [
+      {
+        "file": "components-agent.mmd",
+        "parent": "Agent Orchestrator",
+        "label": "Agent Components",
+        "description": "Session service, identity, CLI, pub/sub, preview watcher"
+      },
+      {
+        "file": "components-deployer.mmd",
+        "parent": "Deployer",
+        "label": "Deployer Components",
+        "description": "Reconciler, applier, renderer, ops repo, gateway, analysis"
+      },
+      {
+        "file": "components-pipeline.mmd",
+        "parent": "Pipeline Engine",
+        "label": "Pipeline Components",
+        "description": "Definition parser, trigger, executor"
+      }
+    ],
+    "deployment": [
+      {
+        "file": "deployment-kind.mmd",
+        "label": "Kind Dev Cluster",
+        "description": "Single-node Kind cluster with platform, infra, and tenant namespaces"
+      },
+      {
+        "file": "deployment-prod.mmd",
+        "label": "Production Cluster",
+        "description": "Multi-node cluster with ingress, cert-manager, CNPG, per-tenant namespaces"
+      }
+    ]
+  },
+
+  "flows": [
+    {
+      "file": "runtime-cicd-overview.mmd",
+      "name": "Full CI/CD Lifecycle",
+      "category": "CI/CD",
+      "description": "MR creation through build, merge, staging deploy, canary, and production promotion"
+    },
+    {
+      "file": "runtime-mr-pipeline.mmd",
+      "name": "MR Pipeline",
+      "category": "CI/CD",
+      "description": "Feature branch push triggers pipeline: image builds + deploy_test"
+    },
+    {
+      "file": "runtime-merge-gitops.mmd",
+      "name": "Auto-Merge + GitOps Sync",
+      "category": "CI/CD",
+      "description": "MR auto-merge triggers main pipeline, gitops_sync copies to ops repo"
+    },
+    {
+      "file": "runtime-deploy-canary.mmd",
+      "name": "Deploy + Canary Progression",
+      "category": "CI/CD",
+      "description": "OpsRepoUpdated triggers reconciler: namespace, secrets, render, apply, canary"
+    },
+    {
+      "file": "runtime-auth.mmd",
+      "name": "Authentication Flow",
+      "category": "Auth",
+      "description": "Login, session creation, AuthUser extraction, RBAC permission check"
+    },
+    {
+      "file": "runtime-agent.mmd",
+      "name": "Agent Session Lifecycle",
+      "category": "Agent",
+      "description": "Create session, spawn pod with ephemeral identity, CLI subprocess, reaper"
+    },
+    {
+      "file": "runtime-observe.mmd",
+      "name": "Observability Pipeline",
+      "category": "Observability",
+      "description": "OTLP ingest through Parquet cold storage to query API and alerts"
+    },
+    {
+      "file": "two-repo-topology.mmd",
+      "name": "Two-Repo Topology",
+      "category": "CI/CD",
+      "description": "Code repo and ops repo structure, gitops_sync copy flow"
+    },
+    {
+      "file": "step-types.mmd",
+      "name": "Pipeline Step Types",
+      "category": "CI/CD",
+      "description": "Step type taxonomy: which spawn pods vs run in-process"
+    }
+  ],
+
+  "concepts": [
+    {
+      "file": "module-communication.mmd",
+      "name": "Module Communication",
+      "category": "Architecture",
+      "description": "All 15 modules connected through shared AppState"
+    },
+    {
+      "file": "state-pipeline.mmd",
+      "name": "Pipeline State Machine",
+      "category": "State Machines",
+      "description": "PipelineStatus transitions: Pending → Running → Success/Failure/Cancelled"
+    },
+    {
+      "file": "state-step.mmd",
+      "name": "Step State Machine",
+      "category": "State Machines",
+      "description": "StepStatus transitions: Pending → Running/Skipped → Success/Failure"
+    },
+    {
+      "file": "state-deployment.mmd",
+      "name": "Deployment State Machine",
+      "category": "State Machines",
+      "description": "DeploymentPhase transitions through canary progression"
+    },
+    {
+      "file": "state-agent-session.mmd",
+      "name": "Agent Session State Machine",
+      "category": "State Machines",
+      "description": "SessionStatus transitions: Pending → Running → Completed/Failed/Stopped"
+    },
+    {
+      "file": "er-schema.mmd",
+      "name": "Database Schema",
+      "category": "Data Model",
+      "description": "Complete ER diagram across all 64 migrations"
+    },
+    {
+      "file": "container-image.mmd",
+      "name": "Container Image Build",
+      "category": "Deployment",
+      "description": "Multi-stage Dockerfile build and deployment pipeline"
+    }
+  ]
+}

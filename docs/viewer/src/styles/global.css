@@ -1,0 +1,133 @@
+/* ── Theme variables ─────────────────────────────────────────────── */
+:root {
+  --bg-app: #0a0a1a;
+  --bg-sidebar: #12122a;
+  --bg-header: #16162a;
+  --bg-input: #1e1e3a;
+  --bg-canvas: #1e1e3a;
+  --bg-canvas-edge: #0a0a1a;
+  --bg-card: #12122a;
+  --bg-btn: #2d2d4e;
+  --bg-btn-hover: #3d3d5c;
+  --bg-active: #1e1e3a;
+  --bg-even-row: rgba(30, 30, 58, 0.4);
+  --border: #2d2d4e;
+  --border-light: #3d3d5c;
+  --border-heading: #1e1e3a;
+  --text-primary: #ccd6f6;
+  --text-secondary: #8892b0;
+  --text-muted: #4a4a6a;
+  --text-heading: #6272a4;
+  --text-body: #a8b2d1;
+  --text-subtle: #b8c4de;
+  --accent: #64ffda;
+  --accent-bg: rgba(100, 255, 218, 0.1);
+  --primary: #1168bd;
+  --primary-dark: #0b4884;
+  --primary-light: #438dd5;
+  --error: #ff6b6b;
+  --doc-tag-bg: #2d4e2d;
+  --doc-tag-color: #a3e4a3;
+  --code-bg: #1e1e3a;
+  --code-color: #64ffda;
+  --blockquote-bg: rgba(17, 104, 189, 0.08);
+  --selection-bg: rgba(17, 104, 189, 0.3);
+  --scrollbar-thumb: #2d2d4e;
+  --scrollbar-hover: #3d3d5c;
+}
+
+:root.light {
+  --bg-app: #f5f6fa;
+  --bg-sidebar: #ffffff;
+  --bg-header: #f0f1f5;
+  --bg-input: #ffffff;
+  --bg-canvas: #e8eaf0;
+  --bg-canvas-edge: #f5f6fa;
+  --bg-card: #ffffff;
+  --bg-btn: #e2e4ea;
+  --bg-btn-hover: #d0d3dc;
+  --bg-active: #e8eaf0;
+  --bg-even-row: rgba(0, 0, 0, 0.03);
+  --border: #d4d6de;
+  --border-light: #c0c3cc;
+  --border-heading: #e2e4ea;
+  --text-primary: #1a1a2e;
+  --text-secondary: #4a5568;
+  --text-muted: #9ca3af;
+  --text-heading: #6b7280;
+  --text-body: #374151;
+  --text-subtle: #4b5563;
+  --accent: #0d9488;
+  --accent-bg: rgba(13, 148, 136, 0.1);
+  --primary: #1168bd;
+  --primary-dark: #0b4884;
+  --primary-light: #438dd5;
+  --error: #dc2626;
+  --doc-tag-bg: #d1fae5;
+  --doc-tag-color: #065f46;
+  --code-bg: #f3f4f6;
+  --code-color: #0d9488;
+  --blockquote-bg: rgba(17, 104, 189, 0.05);
+  --selection-bg: rgba(17, 104, 189, 0.2);
+  --scrollbar-thumb: #c0c3cc;
+  --scrollbar-hover: #9ca3af;
+}
+
+/* ── Base reset ──────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#app {
+  height: 100%;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-hover);
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+button:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Selection */
+::selection {
+  background: var(--selection-bg);
+}

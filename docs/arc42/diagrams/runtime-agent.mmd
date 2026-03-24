@@ -1,0 +1,42 @@
+sequenceDiagram
+    participant User
+    participant API as Session API
+    participant Svc as agent::service
+    participant ID as agent::identity
+    participant DB as PostgreSQL
+    participant VK as Valkey
+    participant K8s as Kubernetes
+    participant Pod as Agent Pod
+    participant Claude as Claude API
+
+    User->>API: POST /api/sessions {project_id, prompt, role}
+    API->>Svc: create_session()
+
+    Svc->>DB: INSERT agent_sessions (status=pending)
+    Svc->>ID: create_ephemeral_identity(role)
+    ID->>DB: INSERT users (type=agent)
+    ID->>DB: INSERT user_roles (role per agent role)
+    ID->>DB: INSERT delegations (time-bounded)
+    ID->>DB: INSERT api_tokens (scoped to project)
+    ID-->>Svc: agent_user_id + api_token
+
+    Svc->>K8s: Create session namespace
+    Svc->>K8s: Create registry pull/push secrets
+    Svc->>VK: Configure Valkey ACL for session
+
+    Note over Svc: Start pub/sub subscriber BEFORE pod
+    Svc->>VK: Subscribe to agent:{session_id}
+
+    Svc->>K8s: Create Pod (Claude Code image)
+    Note over K8s: Pod env: PLATFORM_API_TOKEN,<br/>PLATFORM_API_URL, session config
+
+    Svc->>DB: UPDATE status=running, pod_name, namespace
+
+    Pod->>Claude: LLM inference (via Claude CLI)
+    Pod->>VK: Publish NDJSON to agent:{session_id}
+    VK-->>Svc: Forward messages to client
+
+    Note over Svc: Reaper (30min idle timeout)
+    Svc->>DB: UPDATE status=completed
+    Svc->>K8s: Delete pod
+    Svc->>ID: Cleanup ephemeral identity

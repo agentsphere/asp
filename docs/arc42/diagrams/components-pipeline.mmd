@@ -1,0 +1,11 @@
+C4Component
+    title Pipeline Engine — Components
+
+    Component(def, "Definition", "src/pipeline/definition.rs", "Parse .platform.yaml, validate steps, images, commands")
+    Component(trigger, "Trigger", "src/pipeline/trigger.rs", "on_push, on_mr, on_tag, on_api — create pipeline + steps")
+    Component(executor, "Executor", "src/pipeline/executor.rs", "Background loop: claim pending, spawn K8s pods, poll status")
+    Component(error, "Error", "src/pipeline/error.rs", "PipelineError enum with thiserror")
+
+    Rel(trigger, def, "Parses definition at SHA")
+    Rel(trigger, executor, "Wakes via pipeline_notify")
+    Rel(executor, def, "Reads step config")

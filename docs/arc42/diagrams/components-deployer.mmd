@@ -1,0 +1,20 @@
+C4Component
+    title Deployer — Components
+
+    Component(recon, "Reconciler", "src/deployer/reconciler.rs", "Continuous loop: poll pending releases, apply manifests")
+    Component(analysis, "Analysis", "src/deployer/analysis.rs", "Canary analysis: error rate, latency, custom metrics")
+    Component(applier, "Applier", "src/deployer/applier.rs", "Server-side apply of K8s manifests")
+    Component(renderer, "Renderer", "src/deployer/renderer.rs", "Render Kustomize/minijinja templates with values")
+    Component(ops, "Ops Repo", "src/deployer/ops_repo.rs", "Clone/pull ops repos, read manifests, commit changes")
+    Component(preview, "Preview", "src/deployer/preview.rs", "Ephemeral branch-scoped namespaces with TTL cleanup")
+    Component(gateway, "Gateway", "src/deployer/gateway.rs", "Traffic routing for canary/AB deployments")
+    Component(ns, "Namespace", "src/deployer/namespace.rs", "K8s namespace creation, secret injection, RBAC setup")
+    Component(types, "Types", "src/deployer/types.rs", "ReleasePhase state machine, DeployTarget, TrackedResource")
+
+    Rel(recon, applier, "Applies manifests")
+    Rel(recon, renderer, "Renders templates")
+    Rel(recon, ops, "Reads ops repo")
+    Rel(recon, analysis, "Evaluates canary health")
+    Rel(recon, ns, "Ensures namespace")
+    Rel(recon, gateway, "Routes traffic")
+    Rel(preview, ns, "Creates/deletes namespaces")

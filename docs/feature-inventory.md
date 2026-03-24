@@ -323,6 +323,6 @@ Preact SPA served via `rust-embed`. SPA-aware fallback to `index.html`. Cache he
 | Tier | Count | Runtime | Infrastructure |
 |---|---|---|---|
 | Unit | 1220+ | ~1s | None |
-| Integration | 574 | ~2.5 min | Kind cluster (Postgres, Valkey, MinIO, K8s) |
-| E2E | 49 | ~2.5 min | Kind cluster |
-| FE-BE | 33+ | ~30s | Kind cluster |
+| Integration | 574 | ~2.5 min | dev cluster (Postgres, Valkey, MinIO, K8s) |
+| E2E | 49 | ~2.5 min | dev cluster |
+| FE-BE | 33+ | ~30s | dev cluster |

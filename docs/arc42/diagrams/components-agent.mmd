@@ -1,0 +1,23 @@
+C4Component
+    title Agent Orchestrator — Components
+
+    Component(svc, "Service", "src/agent/service.rs", "Session lifecycle: create, status, reaper")
+    Component(id, "Identity", "src/agent/identity.rs", "Ephemeral agent users with role-based permissions")
+    Component(prov, "Provider", "src/agent/provider.rs", "Provider interface, image resolution")
+    Component(cli, "Claude CLI", "src/agent/claude_cli.rs", "Claude CLI integration and subprocess management")
+    Component(invoke, "CLI Invoke", "src/agent/cli_invoke.rs", "CLI invocation and NDJSON streaming")
+    Component(code, "Claude Code", "src/agent/claude_code.rs", "Claude Code protocol handling")
+    Component(pubsub, "PubSub Bridge", "src/agent/pubsub_bridge.rs", "Valkey pub/sub for agent-platform communication")
+    Component(create, "Create App", "src/agent/create_app.rs", "App scaffolding agent")
+    Component(preview, "Preview Watcher", "src/agent/preview_watcher.rs", "Monitor preview endpoint availability")
+    Component(acl, "Valkey ACL", "src/agent/valkey_acl.rs", "Per-session Valkey ACL configuration")
+    Component(cmds, "Commands", "src/agent/commands.rs", "Agent command management")
+
+    Rel(svc, id, "Creates ephemeral identity")
+    Rel(svc, prov, "Resolves container image")
+    Rel(svc, pubsub, "Subscribes before pod creation")
+    Rel(svc, acl, "Configures session ACL")
+    Rel(svc, cli, "Manages CLI subprocesses")
+    Rel(cli, invoke, "Invokes Claude CLI")
+    Rel(invoke, code, "Handles protocol")
+    Rel(create, svc, "Creates agent session")

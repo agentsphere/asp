@@ -1,0 +1,13 @@
+flowchart LR
+    subgraph Build["Multi-stage Dockerfile"]
+        stage1[rust:latest<br/>cargo build --release]
+        stage2[gcr.io/distroless/cc<br/>Copy binary only]
+    end
+
+    subgraph Deploy["Deployment"]
+        docker[just docker tag]
+        kind_load[just deploy-local tag]
+        kubectl[kubectl apply]
+    end
+
+    stage1 --> stage2 --> docker --> kind_load --> kubectl

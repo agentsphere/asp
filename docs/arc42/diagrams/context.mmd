@@ -1,0 +1,28 @@
+C4Context
+    title System Context — Platform
+
+    Person(dev, "Developer", "Creates projects, pushes code, reviews MRs")
+    Person(ops, "Operator", "Manages platform, monitors health")
+    Person(agent, "AI Agent", "Autonomous code changes via Claude Code")
+
+    System(platform, "Platform", "Unified AI-first DevOps platform — single Rust binary")
+
+    System_Ext(claude, "Anthropic Claude API", "LLM provider for agent sessions")
+    System_Ext(smtp, "SMTP Server", "Email notifications")
+    SystemDb(pg, "PostgreSQL", "Primary database (28 migrations)")
+    SystemDb(valkey, "Valkey", "Cache, pub/sub, rate limiting")
+    SystemDb(minio, "MinIO", "Object storage (S3 API)")
+    System_Ext(k8s, "Kubernetes API", "Pod orchestration for pipelines, agents, deploys")
+    System_Ext(sandbox, "Agent Sandboxes", "Isolated K8s namespaces with NetworkPolicies per agent session")
+
+    Rel(dev, platform, "Git push/pull, API, Web UI", "HTTPS / SSH")
+    Rel(ops, platform, "Admin API, health checks", "HTTPS")
+    Rel(agent, platform, "MCP servers, API tokens", "HTTPS")
+    Rel(platform, claude, "Agent LLM calls", "HTTPS")
+    Rel(platform, smtp, "Email delivery", "SMTP/TLS")
+    Rel(platform, pg, "Queries (sqlx)", "TCP/TLS")
+    Rel(platform, valkey, "Cache, pub/sub", "RESP protocol")
+    Rel(platform, minio, "Artifacts, Parquet, LFS, OCI blobs", "S3 API")
+    Rel(platform, k8s, "Pod CRUD, namespace mgmt", "HTTPS")
+    Rel(platform, sandbox, "Spawns isolated agent pods", "K8s API")
+    Rel(agent, sandbox, "Executes in sandbox", "ephemeral pod")

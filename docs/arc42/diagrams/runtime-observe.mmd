@@ -1,0 +1,62 @@
+flowchart TD
+    subgraph Ingest["OTLP Ingest (HTTP/Protobuf)"]
+        traces_in[POST /v1/traces]
+        logs_in[POST /v1/logs]
+        metrics_in[POST /v1/metrics]
+    end
+
+    subgraph Channels["Buffered Channels"]
+        traces_ch[spans_tx channel]
+        logs_ch[logs_tx channel]
+        metrics_ch[metrics_tx channel]
+    end
+
+    subgraph Flush["Background Flush Tasks"]
+        traces_flush["Traces flush<br/>1s / 500 buffer"]
+        logs_flush["Logs flush<br/>1s / 500 buffer"]
+        metrics_flush["Metrics flush<br/>1s / 500 buffer"]
+    end
+
+    subgraph Hot["Hot Storage (Postgres)"]
+        traces_db[(traces + spans)]
+        logs_db[(log_entries)]
+        metrics_db[(metric_series + samples)]
+    end
+
+    subgraph Cold["Cold Storage (MinIO)"]
+        parquet["Parquet files<br/>time-based rotation"]
+    end
+
+    subgraph Query["Query API"]
+        q_traces[GET /api/observe/traces]
+        q_logs[GET /api/observe/logs]
+        q_metrics[GET /api/observe/metrics]
+    end
+
+    subgraph Alerts["Alert Evaluation"]
+        eval[Periodic rule evaluation]
+        notify_dispatch[Notification dispatch]
+    end
+
+    traces_in --> traces_ch --> traces_flush --> traces_db
+    logs_in --> logs_ch --> logs_flush --> logs_db
+    metrics_in --> metrics_ch --> metrics_flush --> metrics_db
+
+    logs_flush -.->|"pub/sub live tail"| VK[Valkey]
+
+    traces_db --> parquet
+    logs_db --> parquet
+    metrics_db --> parquet
+
+    traces_db --> q_traces
+    logs_db --> q_logs
+    metrics_db --> q_metrics
+    parquet --> q_traces
+    parquet --> q_logs
+
+    metrics_db --> eval --> notify_dispatch
+
+    subgraph Self["Platform Self-Observability"]
+        bridge[tracing_layer bridge]
+    end
+    bridge -.->|"warn+ logs"| logs_ch

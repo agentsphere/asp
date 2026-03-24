@@ -1,0 +1,31 @@
+flowchart TD
+    subgraph Cluster["Production K8s Cluster"]
+        subgraph Ingress["Ingress Layer"]
+            traefik[Traefik IngressRoute]
+            cert[cert-manager]
+        end
+
+        subgraph Platform["Namespace: platform"]
+            deploy[Platform Deployment<br/>replicas: 1]
+            pvc_git[PVC: git-repos]
+            pvc_ops[PVC: ops-repos]
+        end
+
+        subgraph Infra["Infrastructure"]
+            pg[PostgreSQL<br/>CNPG operator<br/>PVC: data]
+            vk[Valkey<br/>PVC: data]
+            minio[MinIO<br/>PVC: data]
+        end
+
+        subgraph Tenants["Per-Project Namespaces"]
+            t1["{project}-staging"]
+            t2["{project}-production"]
+            t3["{project}-preview-*"]
+        end
+    end
+
+    traefik --> deploy
+    deploy --> pg
+    deploy --> vk
+    deploy --> minio
+    deploy --> Tenants

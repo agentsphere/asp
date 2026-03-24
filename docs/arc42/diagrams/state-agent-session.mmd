@@ -1,0 +1,9 @@
+stateDiagram-v2
+    [*] --> Pending
+    Pending --> Running : Pod created
+    Running --> Completed : Normal exit
+    Running --> Failed : Pod error
+    Running --> Stopped : User/reaper stop
+    Completed --> [*]
+    Failed --> [*]
+    Stopped --> [*]

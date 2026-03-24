@@ -49,7 +49,7 @@ Does it use a real Claude CLI with live Anthropic credentials?
 | Integration | Single endpoint + all side effects (K8s pods, workers, mock CLI) | Postgres, Valkey, MinIO, K8s API | Mock (`CLAUDE_CLI_PATH`) | `just test-integration` |
 | E2E | Multi-step business workflows across multiple endpoints | All real + background tasks | Disabled (`cli_spawn_enabled: false`) | `just test-e2e` |
 | LLM | Claude CLI protocol with real Anthropic API | Real Claude CLI + credentials | Real | `just test-llm` |
-| FE-BE | API contract + Playwright browser tests | Kind cluster | N/A | `just test-integration` / `just types` / `just test-ui` |
+| FE-BE | API contract + Playwright browser tests | dev cluster | N/A | `just test-integration` / `just types` / `just ui test` |
 
 All tests use [cargo-nextest](https://nexte.st/) as the test runner.
 
@@ -98,14 +98,14 @@ just test-doc           # cargo test --doc (doc examples)
 
 **Run**:
 ```bash
-just test-integration   # ephemeral services in Kind, auto port-forward
+just test-integration   # ephemeral services in cluster, auto port-forward
 ```
 
 ### How it works
 
 Integration tests run via `hack/test-in-cluster.sh`, which automates the entire lifecycle:
 
-1. **Creates a fresh K8s namespace** (`test-{timestamp}-{random}`) in the Kind cluster
+1. **Creates a fresh K8s namespace** (`test-{timestamp}-{random}`) in the dev cluster
 2. **Deploys lightweight service pods** — Postgres, Valkey, MinIO (~5s to ready)
 3. **Finds free local ports** dynamically (no port conflicts)
 4. **Port-forwards** from cluster services to localhost
@@ -116,7 +116,7 @@ This means each test run gets fully isolated services with zero chance of cross-
 
 ### Prerequisites
 
-A Kind cluster must be running:
+A dev cluster must be running:
 
 ```bash
 just cluster-up    # one-time setup
@@ -195,7 +195,7 @@ All shared helpers are in `tests/helpers/mod.rs`:
 - `get_bytes(&app, token, path) -> (StatusCode, Vec<u8>)` — GET raw bytes (for non-JSON endpoints).
 
 **Git**:
-- `create_bare_repo() -> (TempDir, PathBuf)` — bare git repo under `/tmp/platform-e2e/` (visible to Kind).
+- `create_bare_repo() -> (TempDir, PathBuf)` — bare git repo under `/tmp/platform-e2e/` (visible to cluster).
 - `create_working_copy(&bare_path) -> (TempDir, PathBuf)` — clone + initial commit + push to main.
 - `git_cmd(&dir, &[args]) -> String` — run git command, panic on failure.
 
@@ -209,13 +209,13 @@ All shared helpers are in `tests/helpers/mod.rs`:
 
 ### Prerequisites
 
-A Kind cluster with all services running. One-time setup:
+A dev cluster with all services running. One-time setup:
 
 ```bash
 just cluster-up
 ```
 
-This creates the Kind cluster with shared mount, Postgres, Valkey, MinIO, namespaces, and buckets. See [Cluster Management](#cluster-management) for details.
+This creates the dev cluster with shared mount, Postgres, Valkey, MinIO, namespaces, and buckets. See [Cluster Management](#cluster-management) for details.
 
 ### Running E2E Tests
 
@@ -258,7 +258,7 @@ All helpers are in `tests/e2e_helpers/mod.rs`:
 - `assign_role(&app, admin_token, user_id, role_name, project_id, &pool)` — assign role to user.
 
 **Git**:
-- `create_bare_repo() -> (TempDir, PathBuf)` — bare git repo under `/tmp/platform-e2e/` (visible to Kind).
+- `create_bare_repo() -> (TempDir, PathBuf)` — bare git repo under `/tmp/platform-e2e/` (visible to cluster).
 - `create_working_copy(&bare_path) -> (TempDir, PathBuf)` — clone + initial commit + push to main.
 - `git_cmd(&dir, &[args]) -> String` — run git command, panic on failure.
 
@@ -346,7 +346,7 @@ Both integration and E2E tests use the same orchestration script (`hack/test-in-
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Kind cluster (platform)                                    │
+│  dev cluster (platform)                                    │
 │                                                             │
 │  ┌─ test-{timestamp}-{random} namespace ──────────────────┐ │
 │  │                                                         │ │
@@ -440,13 +440,13 @@ Single-endpoint tests have been migrated from E2E to integration per the new bou
 
 ## Common Pitfalls
 
-1. **Kind cluster not running** — `just test-integration` and `just test-e2e` require a Kind cluster. Run `just cluster-up` first.
+1. **dev cluster not running** — `just test-integration` and `just test-e2e` require a dev cluster. Run `just cluster-up` first.
 
 2. **Stale `.sqlx/` cache** — never use `sqlx::query!` macros in `tests/` files. Use dynamic `sqlx::query()` / `sqlx::query_as()` instead. The compile-time macros require the offline cache to be regenerated every time queries change.
 
-3. **`/tmp/platform-e2e` mount** — pipeline pods use HostPath volumes to mount git repos. If repos are created in macOS temp dirs (`/var/folders/...`), they're invisible inside the Kind Docker container. Always use `/tmp/platform-e2e/` as the base path (the helpers do this automatically).
+3. **`/tmp/platform-e2e` mount** — pipeline pods use HostPath volumes to mount git repos. If repos are created in macOS temp dirs (`/var/folders/...`), they're invisible inside the cluster container. Always use `/tmp/platform-e2e/` as the base path (the helpers do this automatically).
 
-4. **KUBECONFIG path** — in sandboxed environments `$HOME` may resolve to `/`. The script uses `$HOME/.kube/kind-platform`. If running manually, use the full path: `KUBECONFIG=/Users/<you>/.kube/kind-platform`.
+4. **KUBECONFIG path** — in sandboxed environments `$HOME` may resolve to `/`. The script uses `$HOME/.kube/platform`. If running manually, use the full path: `KUBECONFIG=/Users/<you>/.kube/platform`.
 
 5. **Pipeline executor not running** — the test router does NOT spawn background tasks. Pipeline E2E tests must create an `ExecutorGuard` and call `state.pipeline_notify.notify_one()` after triggering.
 
@@ -454,9 +454,9 @@ Single-endpoint tests have been migrated from E2E to integration per the new bou
 
 7. **Race conditions** — after triggering a pipeline, the executor may pick it up before your next assertion. Don't assert `status == "pending"` immediately after trigger — use `poll_pipeline_status()` to wait for completion.
 
-8. **Stale kubeconfig** — after Kind cluster restart or Docker Desktop restart, the kubeconfig may become stale (API server port changes). Refresh it:
+8. **Stale kubeconfig** — after dev cluster restart or Docker Desktop restart, the kubeconfig may become stale (API server port changes). Refresh it:
    ```bash
-   kind get kubeconfig --name platform > $HOME/.kube/kind-platform
+   just cluster-down && just cluster-up
    ```
 
 9. **`.sqlx/` stale after Rust code changes** — `cargo sqlx prepare` must be re-run whenever `sqlx::query!` macros change in Rust code, not just when migration SQL changes. The `SQLX_OFFLINE=true` build will fail if the cache is stale:
@@ -473,16 +473,16 @@ Single-endpoint tests have been migrated from E2E to integration per the new bou
 ## Cluster Management
 
 ```bash
-just cluster-up      # create Kind cluster + all services + buckets + namespaces
-just cluster-down    # destroy Kind cluster completely
+just cluster-up      # create dev cluster + all services + buckets + namespaces
+just cluster-down    # destroy dev cluster completely
 
 # Manual cluster recreation (if config changes)
-kind delete cluster --name platform
+just cluster-down
 just cluster-up
 ```
 
-**What `just cluster-up` provisions** (via `hack/kind-up.sh`):
-- Kind cluster with `hack/kind-config.yaml` (port mappings + `/tmp/platform-e2e` mount)
+**What `just cluster-up` provisions** (via `hack/cluster-up.sh`):
+- dev cluster with `hack/kind-config.yaml` (port mappings + `/tmp/platform-e2e` mount)
 - CNPG-managed Postgres at `localhost:5432` (user: `platform`, password: `dev`, db: `platform_dev`)
 - Valkey at `localhost:6379`
 - MinIO at `localhost:9000` (S3 API) / `localhost:9001` (console), credentials: `platform`/`devdevdev`
@@ -502,7 +502,7 @@ just ci              # fmt + lint + deny + test-unit + test-integration + build
 just ci-full         # ci + test-e2e (the full verification suite)
 ```
 
-Both `just ci` and `just ci-full` require a running Kind cluster since integration tests deploy ephemeral services inside it. `just test-unit` can run standalone without any infrastructure.
+Both `just ci` and `just ci-full` require a running dev cluster since integration tests deploy ephemeral services inside it. `just test-unit` can run standalone without any infrastructure.
 
 **Always run `just ci-full` before considering work complete.** E2E tests catch real issues that unit and integration tests miss.
 
@@ -515,10 +515,10 @@ The CI workflow runs all three test tiers plus linting and build:
 | `fmt` | `cargo fmt --check` | None |
 | `lint` | `cargo clippy -- -D warnings` | None |
 | `test-unit` | `cargo nextest run --lib` | None |
-| `test-integration` | `hack/test-in-cluster.sh --filter '*_integration'` | Kind cluster with ephemeral services |
-| `test-e2e` | `hack/test-in-cluster.sh --type e2e` | Kind cluster with ephemeral services |
+| `test-integration` | `hack/test-in-cluster.sh --filter '*_integration'` | dev cluster with ephemeral services |
+| `test-e2e` | `hack/test-in-cluster.sh --type e2e` | dev cluster with ephemeral services |
 | `deny` | `cargo deny check` | None |
-| `coverage` | Unit + integration coverage → Codecov | Kind cluster with ephemeral services |
+| `coverage` | Unit + integration coverage → Codecov | dev cluster with ephemeral services |
 | `build` | `cargo build --release` (amd64 + arm64) | None (depends on all test jobs) |
 
 The build job gates on all test tiers — a failing E2E test blocks the release build.
@@ -538,22 +538,22 @@ rustup component add llvm-tools-preview
 
 ```bash
 just cov-unit         # unit coverage → coverage-unit.lcov (no infra needed)
-just cov-integration  # integration coverage → coverage-integration.lcov (ephemeral Kind services)
-just cov-e2e          # E2E coverage → coverage-e2e.lcov (ephemeral Kind services)
-just cov-total        # ★ combined report: unit + integration + E2E (ephemeral Kind services)
+just cov-integration  # integration coverage → coverage-integration.lcov (ephemeral cluster services)
+just cov-e2e          # E2E coverage → coverage-e2e.lcov (ephemeral cluster services)
+just cov-total        # ★ combined report: unit + integration + E2E (ephemeral cluster services)
 just cov-html         # unit coverage as HTML report → coverage-html/
 ```
 
 Generated files (`*.lcov`, `coverage-html/`) are gitignored.
 
-All coverage commands except `cov-unit` use `hack/test-in-cluster.sh --coverage` to deploy ephemeral services in isolated Kind namespaces — the same approach used by `just test-integration` and `just test-e2e`. No manual port-forwarding or database setup is needed.
+All coverage commands except `cov-unit` use `hack/test-in-cluster.sh --coverage` to deploy ephemeral services in isolated cluster namespaces — the same approach used by `just test-integration` and `just test-e2e`. No manual port-forwarding or database setup is needed.
 
 ### Combined coverage (the meaningful number)
 
 Separate per-tier coverage is diagnostic. The number that matters is combined: "when all tests run, what % of lines are hit?"
 
 ```bash
-# Prerequisites: Kind cluster running (just cluster-up)
+# Prerequisites: dev cluster running (just cluster-up)
 just cov-total
 ```
 
@@ -576,7 +576,7 @@ Under the hood, `just cov-total` runs `hack/test-in-cluster.sh --type total` whi
 
 ### CI coverage
 
-The `coverage` job in `.github/workflows/ci.yaml` runs after unit tests pass, generates unit and integration lcov reports (unit tests run directly, integration coverage uses `hack/test-in-cluster.sh` with ephemeral Kind services), and uploads them to Codecov with separate flags (`unit`, `integration`). E2E coverage runs locally via `just cov-total`.
+The `coverage` job in `.github/workflows/ci.yaml` runs after unit tests pass, generates unit and integration lcov reports (unit tests run directly, integration coverage uses `hack/test-in-cluster.sh` with ephemeral cluster services), and uploads them to Codecov with separate flags (`unit`, `integration`). E2E coverage runs locally via `just cov-total`.
 
 Codecov configuration is in `codecov.yml`:
 - **Unit coverage**: gated — target is auto-ratcheting, new code (patch) must have 70% coverage

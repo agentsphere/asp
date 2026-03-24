@@ -1,0 +1,27 @@
+flowchart TD
+    subgraph AppState
+        pool[PgPool]
+        valkey[Valkey Pool]
+        minio[MinIO Operator]
+        kube[K8s Client]
+        config[Config]
+        webauthn[WebAuthn]
+        pn[pipeline_notify]
+        dn[deploy_notify]
+    end
+
+    api --> AppState
+    git --> AppState
+    pipeline --> AppState
+    deployer --> AppState
+    agent --> AppState
+    observe --> AppState
+    registry --> AppState
+    secrets --> AppState
+    notify --> AppState
+    auth --> AppState
+    rbac --> AppState
+    onboarding --> AppState
+    health --> AppState
+    workspace --> AppState
+    store --> AppState

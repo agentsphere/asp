@@ -1,0 +1,52 @@
+sequenceDiagram
+    participant EB as EventBus
+    participant Handler as OpsRepo Handler
+    participant DB as PostgreSQL
+    participant Recon as Reconciler
+    participant K8s as Kubernetes
+    participant Secrets as Secrets Engine
+    participant Renderer as Renderer
+    participant Analysis as Analysis Loop
+
+    EB->>Handler: OpsRepoUpdated(environment)
+    Handler->>Handler: Read .platform.yaml from ops repo
+    Handler->>Handler: Extract strategy + rollout_config
+    Handler->>DB: Upsert deploy_targets
+    Handler->>DB: INSERT deploy_releases (phase=pending)
+    Handler-->>Recon: deploy_notify.notify_one()
+
+    Recon->>DB: Claim release (phase → progressing)
+
+    Note over Recon: handle_pending
+    Recon->>K8s: Create namespace {slug}-{env}
+    Recon->>Secrets: inject_project_secrets()
+    Note over Secrets: Query secrets (scope matching env)<br/>Auto-inject OTEL tokens<br/>Auto-inject PLATFORM_API_TOKEN<br/>Create K8s Secret
+    Recon->>K8s: ensure_registry_pull_secret()
+    Recon->>Renderer: render_manifests(minijinja + values)
+    Recon->>K8s: apply_manifests(server-side apply)
+
+    alt Strategy = canary
+        Recon->>K8s: Set initial traffic weight (10%)
+        Recon->>DB: phase → progressing
+
+        loop Analysis loop (every 15s)
+            Analysis->>Analysis: Check rollback triggers
+            Analysis->>Analysis: Evaluate gates (error_rate < 0.05)
+            alt Pass
+                Analysis->>K8s: Advance weight (10→25→50→100%)
+                Analysis->>DB: Record release_history
+            else Fail
+                Analysis->>DB: phase → rolling_back
+                Analysis->>K8s: Route 100% to stable
+            end
+        end
+
+        Note over Recon: handle_promoting
+        Recon->>K8s: Route 100% to canary (now stable)
+        Recon->>Renderer: Re-render manifests
+        Recon->>DB: phase=completed, health=healthy
+
+    else Strategy = rolling
+        Recon->>K8s: Apply manifests directly
+        Recon->>DB: phase=completed
+    end

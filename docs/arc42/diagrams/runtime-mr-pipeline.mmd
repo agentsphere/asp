@@ -1,0 +1,48 @@
+sequenceDiagram
+    participant Dev as Developer
+    participant Git as Git Server
+    participant Hook as Post-Receive Hook
+    participant EB as EventBus
+    participant Trig as pipeline::trigger
+    participant DB as PostgreSQL
+    participant Exec as Pipeline Executor
+    participant K8s as Kubernetes
+    participant Reg as OCI Registry
+    participant S3 as MinIO
+
+    Dev->>Git: git push (feature branch)
+    Git->>Hook: post-receive
+    Hook->>EB: PushEvent(branch, sha)
+    EB->>Trig: on_mr()
+
+    Note over Trig: Read .platform.yaml at SHA
+    Trig->>Trig: Parse + validate definition
+    Trig->>Trig: Match trigger (mr.actions: [opened])
+    Trig->>DB: INSERT pipelines (status=pending)
+    Trig->>DB: INSERT pipeline_steps (per step)
+    Trig-->>Exec: pipeline_notify.notify_one()
+
+    Exec->>DB: Claim pipeline (status → running)
+    Exec->>K8s: Ensure project namespace
+
+    loop For each step (DAG order)
+        alt imagebuild step
+            Exec->>K8s: Create Pod (init: git clone, main: kaniko)
+            Exec->>K8s: Inject secrets as --build-arg
+            K8s->>Reg: Push built image
+        else deploy_test step
+            Exec->>K8s: Create test namespace
+            Exec->>K8s: Apply testinfra manifests
+            Exec->>K8s: Spawn test runner pod
+            K8s-->>Exec: Test results
+            Exec->>K8s: Cleanup test namespace
+        else command step
+            Exec->>K8s: Spawn pod with user image
+        end
+        Exec->>DB: Update step status
+        Exec->>S3: Store step logs
+    end
+
+    Exec->>DB: finalize_pipeline(success/failure)
+    Exec->>EB: fire_webhooks("build", result)
+    Exec->>Trig: try_auto_merge() if success

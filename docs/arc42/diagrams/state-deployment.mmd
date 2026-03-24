@@ -1,0 +1,33 @@
+stateDiagram-v2
+    [*] --> Pending
+
+    Pending --> Progressing : Apply manifests
+    Pending --> Completed : Rolling fast-path
+    Pending --> Cancelled
+    Pending --> Failed : Unrecoverable error
+
+    Progressing --> Holding : Analysis gate
+    Progressing --> Paused : Manual pause
+    Progressing --> Promoting : All steps pass
+    Progressing --> RollingBack : Analysis fail
+    Progressing --> Failed
+
+    Holding --> Progressing : Resume
+    Holding --> RollingBack : Timeout/fail
+    Holding --> Failed
+
+    Paused --> Progressing : Resume
+    Paused --> Cancelled : Manual cancel
+    Paused --> RollingBack
+    Paused --> Failed
+
+    Promoting --> Completed : 100% traffic routed
+    Promoting --> Failed
+
+    RollingBack --> RolledBack : Rollback complete
+    RollingBack --> Failed
+
+    Completed --> [*]
+    RolledBack --> [*]
+    Cancelled --> [*]
+    Failed --> [*]

@@ -9,6 +9,8 @@ cli/*/target/
 # Node / UI
 ui/node_modules/
 mcp/node_modules/
+docs/viewer/node_modules/
+docs/viewer/dist/
 ui/dist/
 ui/test-results/
 

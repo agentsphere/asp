@@ -1,0 +1,17 @@
+{
+  "docs": [
+    { "id": "about",                  "file": "00-about.md",                  "title": "About This Document",        "section": 0  },
+    { "id": "introduction-goals",     "file": "01-introduction-goals.md",     "title": "Introduction and Goals",      "section": 1  },
+    { "id": "constraints",            "file": "02-constraints.md",            "title": "Constraints",                 "section": 2  },
+    { "id": "context-scope",          "file": "03-context-scope.md",          "title": "Context and Scope",           "section": 3  },
+    { "id": "solution-strategy",      "file": "04-solution-strategy.md",      "title": "Solution Strategy",           "section": 4  },
+    { "id": "building-blocks",        "file": "05-building-blocks.md",        "title": "Building Block View",         "section": 5  },
+    { "id": "runtime-view",           "file": "06-runtime-view.md",           "title": "Runtime View",                "section": 6  },
+    { "id": "deployment-view",        "file": "07-deployment-view.md",        "title": "Deployment View",             "section": 7  },
+    { "id": "crosscutting-concepts",  "file": "08-crosscutting-concepts.md",  "title": "Crosscutting Concepts",       "section": 8  },
+    { "id": "architecture-decisions", "file": "09-architecture-decisions.md", "title": "Architecture Decisions",      "section": 9  },
+    { "id": "quality-requirements",   "file": "10-quality-requirements.md",   "title": "Quality Requirements",        "section": 10 },
+    { "id": "risks-technical-debt",   "file": "11-risks-technical-debt.md",   "title": "Risks and Technical Debt",    "section": 11 },
+    { "id": "glossary",               "file": "12-glossary.md",               "title": "Glossary",                    "section": 12 }
+  ]
+}

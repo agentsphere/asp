@@ -1,0 +1,37 @@
+sequenceDiagram
+    participant Client
+    participant API as API Handler
+    participant MW as AuthUser Extractor
+    participant DB as PostgreSQL
+    participant VK as Valkey
+    participant RBAC as Permission Resolver
+
+    Client->>API: POST /api/auth/login {name, password}
+    API->>VK: check_rate("login", identifier, 10, 300s)
+    API->>DB: SELECT user by name
+    API->>API: argon2::verify (timing-safe, dummy hash if missing)
+    API->>DB: INSERT auth_sessions (token_hash, expires_at)
+    API-->>Client: Set-Cookie: session=token
+
+    Note over Client,API: Subsequent request
+    Client->>MW: GET /api/projects (Cookie or Bearer)
+
+    MW->>MW: Extract IP (trust_proxy check)
+    alt Bearer token present
+        MW->>DB: SELECT api_tokens WHERE token_hash = hash
+        MW->>MW: Check expiry, extract scopes + boundaries
+    else Session cookie present
+        MW->>DB: SELECT auth_sessions WHERE token_hash = hash
+        MW->>MW: Check expiry
+    end
+    MW->>MW: Build AuthUser struct
+
+    API->>RBAC: require_project_read(state, auth, project_id)
+    RBAC->>VK: GET perms:{user_id}:{project_id}
+    alt Cache hit
+        RBAC->>RBAC: Check permission in cached set
+    else Cache miss
+        RBAC->>DB: SELECT role_perms + delegations + workspace perms
+        RBAC->>VK: SET perms:{user_id}:{project_id} (TTL 300s)
+    end
+    RBAC-->>API: Ok(()) or Err(NotFound)

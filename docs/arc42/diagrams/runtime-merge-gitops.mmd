@@ -1,0 +1,40 @@
+sequenceDiagram
+    participant Exec as Pipeline Executor
+    participant Git as Git Server
+    participant DB as PostgreSQL
+    participant Ops as Ops Repo
+    participant EB as EventBus
+
+    Note over Exec: MR pipeline succeeded
+    Exec->>DB: Check auto_merge=true on MR
+    Exec->>Git: do_merge() (git worktree --no-ff)
+    Git->>Exec: merge_sha
+
+    Exec->>DB: on_push(main, merge_sha)
+    Exec->>DB: Parse .platform.yaml
+    Exec->>DB: INSERT pipeline (trigger=push)
+    Exec-->>Exec: pipeline_notify.notify_one()
+
+    Note over Exec: Main pipeline steps
+    par Build images
+        Exec->>Exec: build-app (imagebuild)
+        Exec->>Exec: build-canary (imagebuild)
+        Exec->>Exec: build-dev (imagebuild)
+    end
+
+    Note over Exec: gitops_sync step (in-process)
+    Exec->>Ops: Look up ops repo for project
+    Exec->>Ops: Copy deploy/ + .platform.yaml
+    Exec->>Ops: Merge variables_staging.yaml → values/staging.yaml
+    Exec->>Ops: Build values JSON (image_ref, canary_image_ref)
+    Exec->>Ops: Commit to ops repo staging branch
+    Exec->>EB: Publish OpsRepoUpdated(staging)
+    Exec->>DB: Register feature flags + prune old
+
+    Note over Exec: deploy_watch step (in-process)
+    loop Poll every 5s
+        Exec->>DB: Check deploy_releases for staging
+        alt Phase is terminal
+            Exec->>Exec: Write result to step log
+        end
+    end

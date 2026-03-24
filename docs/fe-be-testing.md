@@ -115,7 +115,7 @@ Helper functions: `assert_uuid`, `assert_timestamp`, `assert_number`, `assert_li
 just run
 
 # 2. Run Playwright tests
-just test-ui
+just ui test
 
 # Or with custom URL:
 PLATFORM_URL=http://localhost:8080 cd ui && npx playwright test
@@ -149,6 +149,6 @@ Use `apiLogin()` for speed (skips the login form). Use `login()` only when testi
 
 ```
 just ci              # includes test-unit (has ts-rs export tests) + test-integration (has contract tests)
-just test-ui         # run separately (needs running server)
+just ui test         # run separately (needs running server)
 just ci-full         # ci + E2E tests (excludes Playwright)
 ```

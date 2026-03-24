@@ -1,0 +1,49 @@
+flowchart LR
+    subgraph CodeRepo["Code Repo"]
+        push[git push]
+        mr[MR Created]
+        yaml[.platform.yaml]
+    end
+
+    subgraph MRPipeline["MR Pipeline"]
+        build_mr[imagebuild x4]
+        test[deploy_test]
+    end
+
+    subgraph MergeGate["Merge Gate"]
+        auto[auto_merge check]
+        merge["--no-ff merge"]
+    end
+
+    subgraph MainPipeline["Main Pipeline"]
+        build_main[imagebuild x3]
+        sync[gitops_sync]
+        watch[deploy_watch]
+    end
+
+    subgraph OpsRepo["Ops Repo"]
+        copy[Copy deploy/]
+        values[Merge variables]
+        commit[Commit to staging]
+    end
+
+    subgraph Staging["Staging Deploy"]
+        recon_s[Reconciler]
+        ns_s[Create namespace]
+        apply_s[Apply manifests]
+        canary_s[Canary analysis]
+        promote_s[Promote 100%]
+    end
+
+    subgraph Production["Production Deploy"]
+        manual[Manual promote]
+        recon_p[Reconciler]
+        canary_p[Canary analysis]
+        promote_p[Promote 100%]
+    end
+
+    push --> mr --> yaml --> build_mr --> test --> auto
+    auto --> merge --> build_main --> sync --> watch
+    sync --> copy --> values --> commit
+    commit --> recon_s --> ns_s --> apply_s --> canary_s --> promote_s
+    promote_s --> manual --> recon_p --> canary_p --> promote_p

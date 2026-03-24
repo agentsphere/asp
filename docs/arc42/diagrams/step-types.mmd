@@ -1,0 +1,14 @@
+flowchart TD
+    subgraph StepTypes["Pipeline Step Types"]
+        cmd["command<br/>Run arbitrary container<br/>with setup commands"]
+        ib["imagebuild<br/>Generate kaniko command<br/>inject secrets as --build-arg<br/>push to registry"]
+        dt["deploy_test<br/>Create test namespace<br/>apply testinfra<br/>spawn test pod<br/>cleanup"]
+        gs["gitops_sync<br/>Copy files to ops repo<br/>merge variables<br/>commit + publish event"]
+        dw["deploy_watch<br/>Poll deploy_releases<br/>until terminal phase"]
+    end
+
+    cmd -->|"Spawns Pod"| pod1[User Image Pod]
+    ib -->|"Spawns Pod"| pod2[Kaniko Pod]
+    dt -->|"Spawns Pod"| pod3[Test Runner Pod]
+    gs -->|"In-Process"| ip1[No Pod]
+    dw -->|"In-Process"| ip2[No Pod]

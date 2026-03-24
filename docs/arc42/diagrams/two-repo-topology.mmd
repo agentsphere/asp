@@ -1,0 +1,26 @@
+flowchart LR
+    subgraph Code["Code Repo"]
+        platform_yaml[.platform.yaml]
+        deploy_dir["deploy/"]
+        vars_staging["deploy/variables_staging.yaml"]
+        vars_prod["deploy/variables_prod.yaml"]
+        testinfra["testinfra/"]
+        dockerfile[Dockerfile]
+    end
+
+    subgraph Ops["Ops Repo"]
+        ops_platform["platform.yaml"]
+        ops_deploy["deploy/ (copied)"]
+        ops_staging["values/staging.yaml (merged)"]
+        ops_prod["values/production.yaml (merged)"]
+        staging_branch["staging branch"]
+        main_branch["main branch (production)"]
+    end
+
+    platform_yaml -->|"gitops_sync copies"| ops_platform
+    deploy_dir -->|"gitops_sync copies"| ops_deploy
+    vars_staging -->|"merge with image_ref"| ops_staging
+    vars_prod -->|"merge with image_ref"| ops_prod
+    ops_staging --> staging_branch
+    ops_prod --> main_branch
+    staging_branch -->|"manual promote"| main_branch

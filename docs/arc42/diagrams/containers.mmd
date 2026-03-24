@@ -1,0 +1,26 @@
+C4Container
+    title Building Block View — Level 1
+
+    Enterprise_Boundary(core, "Core Services") {
+        Container(api, "API Layer", "axum 0.8", "25+ HTTP sub-routers, auth extractors, validation")
+        Container(auth, "Auth", "argon2 + WebAuthn", "Passwords, sessions, API tokens, passkeys")
+        Container(rbac, "RBAC", "Valkey-cached", "Roles, permissions, delegation, resolution")
+        Container(store, "Store", "AppState", "Postgres pool, Valkey pool, MinIO, K8s client, bootstrap")
+    }
+
+    Enterprise_Boundary(cicd, "CI/CD & Deployment") {
+        Container(git, "Git Server", "russh + smart HTTP", "Push/pull, LFS, SSH, file browser, branch protection")
+        Container(pipeline, "Pipeline Engine", "K8s pods", "YAML definition, step execution, triggers")
+        Container(deployer, "Deployer", "Reconciler loop", "Ops repos, Kustomize rendering, canary, preview envs")
+        Container(registry, "OCI Registry", "v2 API", "Image push/pull, tags, garbage collection")
+    }
+
+    Enterprise_Boundary(ai, "AI Agent Runtime") {
+        Container(agent, "Agent Orchestrator", "K8s pods + CLI", "Session lifecycle, ephemeral identity, sandboxed execution")
+    }
+
+    Enterprise_Boundary(ops, "Operations & Observability") {
+        Container(observe, "Observability", "OTLP + Parquet", "Ingest, flush, store, query, alerts")
+        Container(secrets, "Secrets Engine", "AES-256-GCM", "Encrypt-at-rest, CRUD, LLM provider keys")
+        Container(notify, "Notifications", "lettre + HMAC", "Email, webhooks, in-app dispatch")
+    }

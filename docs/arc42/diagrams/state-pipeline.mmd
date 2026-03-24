@@ -1,0 +1,13 @@
+stateDiagram-v2
+    [*] --> Pending
+
+    state "Pipeline Status" as ps {
+        Pending --> Running
+        Pending --> Cancelled
+        Running --> Success
+        Running --> Failure
+        Running --> Cancelled
+        Success --> [*]
+        Failure --> [*]
+        Cancelled --> [*]
+    }

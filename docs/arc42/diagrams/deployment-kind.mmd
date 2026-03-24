@@ -1,0 +1,29 @@
+flowchart TD
+    subgraph Cluster["Development Cluster (Kind)"]
+        subgraph Platform["Namespace: platform"]
+            pod[Platform<br/>Single binary, port 8080]
+            pg[PostgreSQL<br/>Port 5432]
+            vk[Valkey<br/>Port 6379]
+            minio[MinIO<br/>Ports 9000/9001]
+        end
+
+        subgraph Project["Namespace: {slug}-dev"]
+            pipeline[Pipeline Pods<br/>Per-step K8s pods]
+            agent[Agent Pods<br/>Claude Code sessions]
+        end
+
+        subgraph Staging["Namespace: {slug}-staging"]
+            stable[Stable<br/>Production image]
+            canary[Canary<br/>New image, partial traffic]
+        end
+
+        subgraph Test["Namespace: platform-test-*"]
+            testinfra[Test Infrastructure<br/>Ephemeral per test run]
+        end
+    end
+
+    pod --> pg
+    pod --> vk
+    pod --> minio
+    pod --> Project
+    pod --> Staging
