@@ -17,6 +17,8 @@ use crate::error::ApiError;
 use crate::store::AppState;
 use crate::validation;
 
+use super::helpers::ListResponse;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -96,8 +98,8 @@ pub fn router() -> Router<AppState> {
             delete(delete_passkey).patch(rename_passkey),
         )
         // Authentication (unauthenticated)
-        .route("/api/auth/passkey/login/begin", post(begin_login))
-        .route("/api/auth/passkey/login/complete", post(complete_login))
+        .route("/api/auth/passkeys/login/begin", post(begin_login))
+        .route("/api/auth/passkeys/login/complete", post(complete_login))
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +224,7 @@ async fn complete_register(
 async fn list_passkeys(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<Vec<PasskeyResponse>>, ApiError> {
+) -> Result<Json<ListResponse<PasskeyResponse>>, ApiError> {
     let rows = sqlx::query!(
         r#"
         SELECT id, name, created_at, last_used_at, backup_eligible, backup_state, transports
@@ -234,7 +236,7 @@ async fn list_passkeys(
     .fetch_all(&state.pool)
     .await?;
 
-    let items = rows
+    let items: Vec<PasskeyResponse> = rows
         .into_iter()
         .map(|r| PasskeyResponse {
             id: r.id,
@@ -247,7 +249,8 @@ async fn list_passkeys(
         })
         .collect();
 
-    Ok(Json(items))
+    let total = i64::try_from(items.len()).unwrap_or(0);
+    Ok(Json(ListResponse { items, total }))
 }
 
 #[tracing::instrument(skip(state), fields(%id, user_id = %auth.user_id), err)]
@@ -272,6 +275,21 @@ async fn rename_passkey(
         return Err(ApiError::NotFound("passkey".into()));
     }
 
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "auth.passkey_rename",
+            resource: "passkey",
+            resource_id: Some(id),
+            project_id: None,
+            detail: Some(serde_json::json!({"name": body.name})),
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
+
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
@@ -280,7 +298,7 @@ async fn delete_passkey(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     let result = sqlx::query!(
         "DELETE FROM passkey_credentials WHERE id = $1 AND user_id = $2",
         id,
@@ -308,7 +326,7 @@ async fn delete_passkey(
     )
     .await;
 
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +334,9 @@ async fn delete_passkey(
 // ---------------------------------------------------------------------------
 
 async fn begin_login(State(state): State<AppState>) -> Result<Json<BeginLoginResponse>, ApiError> {
+    // S39: Rate limit — each call creates a Valkey challenge object (120s TTL)
+    crate::auth::rate_limit::check_rate(&state.valkey, "passkey_begin", "global", 60, 60).await?;
+
     let (rcr, challenge_id) =
         passkey::begin_discoverable_authentication(&state.webauthn, &state.valkey)
             .await
@@ -332,36 +353,34 @@ async fn complete_login(
     State(state): State<AppState>,
     Json(body): Json<CompleteLoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Rate-limit passkey login attempts
-    crate::auth::rate_limit::check_rate(
-        &state.valkey,
-        "passkey_login",
-        &body.challenge_id,
-        10,
-        300,
-    )
-    .await?;
+    // Rate-limit passkey login attempts (global key — challenge_id is per-ceremony
+    // and would allow unlimited attempts across ceremonies)
+    crate::auth::rate_limit::check_rate(&state.valkey, "passkey_login", "global", 50, 300).await?;
 
-    // Look up all passkey credentials to build the discoverable keys list
-    let cred_rows = sqlx::query!(
-        r#"
-        SELECT pc.id, pc.user_id, pc.credential_id, pc.public_key, pc.sign_count,
-               u.is_active, u.name as user_name, u.user_type,
-               u.display_name, u.email, u.created_at as user_created_at,
-               u.updated_at as user_updated_at
-        FROM passkey_credentials pc
-        JOIN users u ON u.id = pc.user_id
-        WHERE u.is_active = true
-        "#
+    // Extract the credential ID from the request to pre-filter the DB query,
+    // rather than loading ALL credentials for ALL active users.
+    let cred_id_filter: Vec<u8> = body.credential.raw_id.to_vec();
+
+    let cred_rows = sqlx::query(
+        "SELECT pc.id, pc.user_id, pc.credential_id, pc.public_key, pc.sign_count, \
+               u.is_active, u.name as user_name, u.user_type, \
+               u.display_name, u.email, u.created_at as user_created_at, \
+               u.updated_at as user_updated_at \
+         FROM passkey_credentials pc \
+         JOIN users u ON u.id = pc.user_id \
+         WHERE pc.credential_id = $1 AND u.is_active = true",
     )
+    .bind(&cred_id_filter)
     .fetch_all(&state.pool)
     .await?;
 
     // Build discoverable keys from stored credentials
+    use sqlx::Row;
     let discoverable_keys: Vec<DiscoverableKey> = cred_rows
         .iter()
         .filter_map(|row| {
-            let pk: Passkey = serde_json::from_slice(&row.public_key).ok()?;
+            let pk_bytes: Vec<u8> = row.get("public_key");
+            let pk: Passkey = serde_json::from_slice(&pk_bytes).ok()?;
             Some(DiscoverableKey::from(pk))
         })
         .collect();
@@ -384,16 +403,29 @@ async fn complete_login(
     let cred_id_bytes = auth_result.cred_id().to_vec();
     let matched_row = cred_rows
         .iter()
-        .find(|r| r.credential_id == cred_id_bytes)
+        .find(|r| {
+            let cid: Vec<u8> = r.get("credential_id");
+            cid == cred_id_bytes
+        })
         .ok_or(ApiError::Unauthorized)?;
+
+    let row_id: Uuid = matched_row.get("id");
+    let row_user_id: Uuid = matched_row.get("user_id");
+    let row_sign_count: i64 = matched_row.get("sign_count");
+    let row_user_name: String = matched_row.get("user_name");
+    let row_user_type: String = matched_row.get("user_type");
+    let row_display_name: Option<String> = matched_row.get("display_name");
+    let row_email: String = matched_row.get("email");
+    let row_is_active: bool = matched_row.get("is_active");
+    let row_created_at: chrono::DateTime<chrono::Utc> = matched_row.get("user_created_at");
+    let row_updated_at: chrono::DateTime<chrono::Utc> = matched_row.get("user_updated_at");
 
     // Clone detection: verify sign count
     let new_counter = auth_result.counter();
-    let stored_counter = matched_row.sign_count;
-    if new_counter > 0 && stored_counter > 0 && i64::from(new_counter) <= stored_counter {
+    if new_counter > 0 && row_sign_count > 0 && i64::from(new_counter) <= row_sign_count {
         tracing::warn!(
-            credential_id = %matched_row.id,
-            stored = stored_counter,
+            credential_id = %row_id,
+            stored = row_sign_count,
             received = new_counter,
             "passkey clone detection: counter regression"
         );
@@ -401,17 +433,16 @@ async fn complete_login(
     }
 
     // Update sign count and last_used_at
-    sqlx::query!(
+    sqlx::query(
         "UPDATE passkey_credentials SET sign_count = $1, last_used_at = now() WHERE id = $2",
-        i64::from(new_counter),
-        matched_row.id,
     )
+    .bind(i64::from(new_counter))
+    .bind(row_id)
     .execute(&state.pool)
     .await?;
 
     // Verify user type allows login
-    let user_type: crate::auth::user_type::UserType = matched_row
-        .user_type
+    let user_type: crate::auth::user_type::UserType = row_user_type
         .parse()
         .map_err(|e: anyhow::Error| ApiError::Internal(e))?;
     if !user_type.can_login() {
@@ -419,15 +450,15 @@ async fn complete_login(
     }
 
     let login_user = PasskeyLoginUser {
-        user_id: matched_row.user_id,
-        user_name: matched_row.user_name.clone(),
-        display_name: matched_row.display_name.clone(),
-        email: matched_row.email.clone(),
+        user_id: row_user_id,
+        user_name: row_user_name,
+        display_name: row_display_name,
+        email: row_email,
         user_type,
-        is_active: matched_row.is_active,
-        created_at: matched_row.user_created_at,
-        updated_at: matched_row.user_updated_at,
-        credential_id: matched_row.id,
+        is_active: row_is_active,
+        created_at: row_created_at,
+        updated_at: row_updated_at,
+        credential_id: row_id,
     };
 
     build_passkey_session(&state, &login_user).await

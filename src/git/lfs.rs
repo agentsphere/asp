@@ -133,6 +133,17 @@ async fn batch(
     let mut objects = Vec::with_capacity(body.objects.len());
 
     for obj in &body.objects {
+        // A20: Validate LFS object size
+        if obj.size < 0 {
+            return Err(ApiError::BadRequest("invalid object size".into()));
+        }
+        #[allow(clippy::cast_sign_loss)]
+        if (obj.size as u64) > state.config.max_lfs_object_bytes {
+            return Err(ApiError::BadRequest(format!(
+                "LFS object too large: {} bytes exceeds limit of {} bytes",
+                obj.size, state.config.max_lfs_object_bytes
+            )));
+        }
         crate::validation::check_lfs_oid(&obj.oid)?;
         let path = format!("lfs/{}/{}", project.project_id, obj.oid);
 

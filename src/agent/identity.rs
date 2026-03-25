@@ -95,7 +95,8 @@ pub async fn create_agent_identity(
 
     // 4. Create SCOPED API token with hard boundaries
     let (raw_token, token_hash) = token::generate_api_token();
-    let token_expires = Utc::now() + Duration::hours(24);
+    // S65: short-lived agent tokens — 2h instead of 24h
+    let token_expires = Utc::now() + Duration::hours(2);
 
     let (scope_ws, scope_proj) = if agent_role.is_workspace_scoped() {
         (Some(workspace_id), None) // manager: workspace boundary only

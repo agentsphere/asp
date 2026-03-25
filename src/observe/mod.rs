@@ -47,6 +47,48 @@ pub fn spawn_background_tasks(
         shutdown_rx.clone(),
     ));
     tokio::spawn(parquet::rotation_loop(state.clone(), shutdown_rx.clone()));
+    // S94: Observability data retention — purge old data hourly
+    {
+        let pool = state.pool.clone();
+        let retention_days = state.config.observe_retention_days;
+        let mut shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let cutoff = chrono::Utc::now()
+                            - chrono::Duration::days(i64::from(retention_days));
+                        // spans uses `started_at`; log_entries and metric_samples use `timestamp`
+                        for (table, col) in &[
+                            ("spans", "started_at"),
+                            ("log_entries", "timestamp"),
+                            ("metric_samples", "timestamp"),
+                        ] {
+                            let sql = format!("DELETE FROM {table} WHERE {col} < $1");
+                            match sqlx::query(&sql).bind(cutoff).execute(&pool).await {
+                                Ok(result) => {
+                                    if result.rows_affected() > 0 {
+                                        tracing::info!(
+                                            table,
+                                            rows = result.rows_affected(),
+                                            retention_days,
+                                            "purged old observability data"
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(table, error = %e, "retention cleanup failed");
+                                }
+                            }
+                        }
+                    }
+                    _ = shutdown.changed() => break,
+                }
+            }
+        });
+    }
+
     tokio::spawn(alert::evaluate_alerts_loop(state, shutdown_rx));
 
     channels

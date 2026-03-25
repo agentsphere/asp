@@ -73,7 +73,7 @@ pub async fn get_user_key(
 
     match row {
         Some(r) => {
-            let plaintext = engine::decrypt(&r.encrypted_key, master_key)?;
+            let plaintext = engine::decrypt(&r.encrypted_key, master_key, None)?;
             let key = String::from_utf8(plaintext)
                 .map_err(|e| anyhow::anyhow!("provider key is not valid UTF-8: {e}"))?;
             Ok(Some(key))

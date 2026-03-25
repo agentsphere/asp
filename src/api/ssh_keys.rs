@@ -5,6 +5,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use uuid::Uuid;
 
 use ts_rs::TS;
@@ -16,7 +17,7 @@ use crate::git::ssh_keys;
 use crate::store::AppState;
 use crate::validation;
 
-use super::helpers::require_admin;
+use super::helpers::{ListResponse, require_admin};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,7 +54,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/api/users/me/ssh-keys/{id}",
-            axum::routing::delete(delete_ssh_key),
+            get(get_ssh_key).delete(delete_ssh_key),
         )
         .route(
             "/api/admin/users/{user_id}/ssh-keys",
@@ -153,7 +154,7 @@ async fn add_ssh_key(
 async fn list_ssh_keys(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<Vec<SshKeyResponse>>, ApiError> {
+) -> Result<Json<ListResponse<SshKeyResponse>>, ApiError> {
     let keys = sqlx::query_as!(
         SshKeyResponse,
         r#"SELECT id, user_id, name, algorithm, fingerprint,
@@ -166,7 +167,35 @@ async fn list_ssh_keys(
     .fetch_all(&state.pool)
     .await?;
 
-    Ok(Json(keys))
+    let total = i64::try_from(keys.len()).unwrap_or(0);
+    Ok(Json(ListResponse { items: keys, total }))
+}
+
+/// GET /api/users/me/ssh-keys/{id}
+async fn get_ssh_key(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<SshKeyResponse>, ApiError> {
+    let row = sqlx::query(
+        "SELECT id, user_id, name, algorithm, fingerprint, last_used_at, created_at \
+         FROM user_ssh_keys WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(auth.user_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("ssh key".into()))?;
+
+    Ok(Json(SshKeyResponse {
+        id: row.get("id"),
+        user_id: row.get("user_id"),
+        name: row.get("name"),
+        algorithm: row.get("algorithm"),
+        fingerprint: row.get("fingerprint"),
+        last_used_at: row.get("last_used_at"),
+        created_at: row.get("created_at"),
+    }))
 }
 
 /// DELETE /api/users/me/ssh-keys/{id}
@@ -202,7 +231,7 @@ async fn delete_ssh_key(
     )
     .await;
 
-    Ok(StatusCode::OK)
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// GET /api/admin/users/{user_id}/ssh-keys
@@ -210,7 +239,7 @@ async fn admin_list_ssh_keys(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(user_id): Path<Uuid>,
-) -> Result<Json<Vec<SshKeyResponse>>, ApiError> {
+) -> Result<Json<ListResponse<SshKeyResponse>>, ApiError> {
     require_admin(&state, &auth).await?;
 
     let keys = sqlx::query_as!(
@@ -225,5 +254,6 @@ async fn admin_list_ssh_keys(
     .fetch_all(&state.pool)
     .await?;
 
-    Ok(Json(keys))
+    let total = i64::try_from(keys.len()).unwrap_or(0);
+    Ok(Json(ListResponse { items: keys, total }))
 }

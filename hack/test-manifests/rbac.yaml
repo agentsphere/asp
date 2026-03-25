@@ -11,7 +11,7 @@ metadata:
 rules:
   # Pipeline and agent pod management
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "pods/exec", "services", "configmaps", "secrets", "persistentvolumeclaims"]
+    resources: ["pods", "pods/log", "pods/exec", "services", "configmaps", "persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Job management (for pipeline steps)
   - apiGroups: ["batch"]
@@ -44,4 +44,13 @@ rules:
   # Gateway API (progressive delivery traffic splitting)
   - apiGroups: ["gateway.networking.k8s.io"]
     resources: ["httproutes", "gateways"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: test-platform-secrets-manager
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

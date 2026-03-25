@@ -364,7 +364,7 @@ async fn delete_webhook(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((id, wh_id)): Path<(Uuid, Uuid)>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     require_project_write(&state, &auth, id).await?;
 
     let result = sqlx::query!(
@@ -394,7 +394,7 @@ async fn delete_webhook(
     )
     .await;
 
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[tracing::instrument(skip(state), fields(%id, %wh_id), err)]
@@ -468,6 +468,12 @@ pub async fn fire_webhooks(
 }
 
 pub(crate) async fn dispatch_single(url: &str, secret: Option<&str>, payload: &serde_json::Value) {
+    // S63: Re-validate SSRF before dispatch — URL may have been modified in DB
+    if crate::validation::check_ssrf_url(url, &["http", "https"]).is_err() {
+        tracing::warn!("webhook URL failed SSRF re-validation, skipping dispatch");
+        return;
+    }
+
     // Acquire semaphore permit (concurrency limit)
     let Ok(_permit) = WEBHOOK_SEMAPHORE.try_acquire() else {
         tracing::warn!(url, "webhook dispatch dropped: concurrency limit reached");

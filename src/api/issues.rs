@@ -5,6 +5,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use uuid::Uuid;
 
 use ts_rs::TS;
@@ -81,7 +82,7 @@ pub struct CommentResponse {
     pub updated_at: DateTime<Utc>,
 }
 
-use super::helpers::{ListResponse, require_project_read};
+use super::helpers::{ListResponse, require_project_read, require_project_write};
 
 // ---------------------------------------------------------------------------
 // Router
@@ -95,7 +96,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/api/projects/{id}/issues/{number}",
-            get(get_issue).patch(update_issue),
+            get(get_issue).patch(update_issue).delete(delete_issue),
         )
         .route(
             "/api/projects/{id}/issues/{number}/comments",
@@ -103,7 +104,9 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/api/projects/{id}/issues/{number}/comments/{comment_id}",
-            axum::routing::patch(update_comment),
+            get(get_comment)
+                .patch(update_comment)
+                .delete(delete_comment),
         )
 }
 
@@ -423,6 +426,57 @@ async fn update_issue(
     }))
 }
 
+#[tracing::instrument(skip(state), fields(%id, %number), err)]
+async fn delete_issue(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, number)): Path<(Uuid, i32)>,
+) -> Result<StatusCode, ApiError> {
+    require_project_write(&state, &auth, id).await?;
+
+    let row = sqlx::query(
+        "UPDATE issues SET status = 'closed', updated_at = now() \
+         WHERE project_id = $1 AND number = $2 AND status != 'closed' \
+         RETURNING id",
+    )
+    .bind(id)
+    .bind(number)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    if let Some(row) = row {
+        let issue_id: Uuid = row.get("id");
+
+        write_audit(
+            &state.pool,
+            &AuditEntry {
+                actor_id: auth.user_id,
+                actor_name: &auth.user_name,
+                action: "issue.delete",
+                resource: "issue",
+                resource_id: Some(issue_id),
+                project_id: Some(id),
+                detail: Some(serde_json::json!({"number": number})),
+                ip_addr: auth.ip_addr.as_deref(),
+            },
+        )
+        .await;
+
+        crate::api::webhooks::fire_webhooks(
+            &state.pool,
+            id,
+            "issue",
+            &serde_json::json!({
+                "action": "closed",
+                "issue": {"id": issue_id, "number": number},
+            }),
+        )
+        .await;
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ---------------------------------------------------------------------------
 // Comment handlers
 // ---------------------------------------------------------------------------
@@ -612,4 +666,110 @@ async fn update_comment(
         created_at: comment.created_at,
         updated_at: comment.updated_at,
     }))
+}
+
+async fn get_comment(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, number, comment_id)): Path<(Uuid, i32, Uuid)>,
+) -> Result<Json<CommentResponse>, ApiError> {
+    require_project_read(&state, &auth, id).await?;
+
+    // Verify issue exists
+    let _issue_id: Uuid =
+        sqlx::query("SELECT id FROM issues WHERE project_id = $1 AND number = $2")
+            .bind(id)
+            .bind(number)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("issue".into()))?
+            .get("id");
+
+    let row = sqlx::query(
+        "SELECT id, author_id, body, created_at, updated_at \
+         FROM comments WHERE id = $1 AND project_id = $2",
+    )
+    .bind(comment_id)
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("comment".into()))?;
+
+    Ok(Json(CommentResponse {
+        id: row.get("id"),
+        author_id: row.get("author_id"),
+        body: row.get("body"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
+#[tracing::instrument(skip(state), fields(%id, %number, %comment_id), err)]
+async fn delete_comment(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, number, comment_id)): Path<(Uuid, i32, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    require_project_write(&state, &auth, id).await?;
+
+    // Verify issue exists
+    let _issue_id: Uuid =
+        sqlx::query("SELECT id FROM issues WHERE project_id = $1 AND number = $2")
+            .bind(id)
+            .bind(number)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("issue".into()))?
+            .get("id");
+
+    // Check author or admin
+    let comment_row =
+        sqlx::query("SELECT author_id FROM comments WHERE id = $1 AND project_id = $2")
+            .bind(comment_id)
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("comment".into()))?;
+
+    let comment_author: Uuid = comment_row.get("author_id");
+
+    if comment_author != auth.user_id {
+        let is_admin = crate::rbac::resolver::has_permission_scoped(
+            &state.pool,
+            &state.valkey,
+            auth.user_id,
+            None,
+            Permission::AdminUsers,
+            auth.token_scopes.as_deref(),
+        )
+        .await
+        .map_err(ApiError::Internal)?;
+
+        if !is_admin {
+            return Err(ApiError::Forbidden);
+        }
+    }
+
+    sqlx::query("DELETE FROM comments WHERE id = $1 AND project_id = $2")
+        .bind(comment_id)
+        .bind(id)
+        .execute(&state.pool)
+        .await?;
+
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "comment.delete",
+            resource: "comment",
+            resource_id: Some(comment_id),
+            project_id: Some(id),
+            detail: Some(serde_json::json!({"issue_number": number})),
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
+
+    Ok(StatusCode::NO_CONTENT)
 }

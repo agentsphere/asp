@@ -187,10 +187,10 @@ cov-integration:
 cov-e2e:
     bash {{test_script}} --type e2e --coverage --lcov coverage-e2e.lcov
 
-# Combined: unit + integration + E2E
+# Combined: unit + integration (default coverage target)
 [group('coverage')]
 cov-total:
-    @echo "=== Combined coverage: unit + integration + E2E ==="
+    @echo "=== Combined coverage: unit + integration ==="
     bash {{test_script}} --type total
 
 # Diff coverage: only lines changed vs a branch

@@ -8,10 +8,27 @@ metadata:
   labels:
     app: postgres
 spec:
+  securityContext:
+    fsGroup: 70
+  initContainers:
+    - name: gen-certs
+      image: postgres:16-alpine
+      command: ["sh", "-c"]
+      args:
+        - |
+          apk add --no-cache openssl &&
+          openssl req -new -x509 -days 365 -nodes \
+            -out /certs/server.crt -keyout /certs/server.key \
+            -subj "/CN=postgres" &&
+          chown 70:70 /certs/server.crt /certs/server.key &&
+          chmod 600 /certs/server.key
+      volumeMounts:
+        - name: certs
+          mountPath: /certs
   containers:
     - name: postgres
       image: postgres:16-alpine
-      args: ["-c", "max_connections=300"]
+      args: ["-c", "max_connections=300", "-c", "ssl=on", "-c", "ssl_cert_file=/certs/server.crt", "-c", "ssl_key_file=/certs/server.key"]
       env:
         - name: POSTGRES_USER
           value: platform
@@ -26,12 +43,19 @@ spec:
           command: ["pg_isready", "-U", "platform"]
         initialDelaySeconds: 2
         periodSeconds: 1
+      volumeMounts:
+        - name: certs
+          mountPath: /certs
+          readOnly: true
       resources:
         requests:
           cpu: 100m
           memory: 128Mi
         limits:
           memory: 512Mi
+  volumes:
+    - name: certs
+      emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

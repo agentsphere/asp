@@ -33,6 +33,9 @@ pub struct AuthUser {
     /// Agent session ID, extracted from token name `agent-session-{uuid}`.
     /// Present only when authenticated via an agent API token.
     pub session_id: Option<Uuid>,
+    /// SHA-256 hash of the session token when authenticated via session cookie/bearer.
+    /// `None` when authenticated via API token (no session to target for logout).
+    pub session_token_hash: Option<String>,
 }
 
 impl AuthUser {
@@ -109,7 +112,7 @@ impl FromRequestParts<AppState> for AuthUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let trust_proxy = state.config.trust_proxy_headers;
-        let ip_addr = extract_ip(parts, trust_proxy);
+        let ip_addr = extract_ip(parts, trust_proxy, &state.config.trust_proxy_cidrs);
 
         // Try Bearer token — check API tokens first, then session tokens
         if let Some(raw_token) = extract_bearer_token(parts) {
@@ -136,6 +139,7 @@ impl FromRequestParts<AppState> for AuthUser {
                     boundary_workspace_id: user.scope_workspace_id,
                     boundary_project_id: user.scope_project_id,
                     session_id,
+                    session_token_hash: None,
                 };
                 auth_user.record_to_span();
                 return Ok(auth_user);
@@ -158,6 +162,7 @@ impl FromRequestParts<AppState> for AuthUser {
                     boundary_workspace_id: None,
                     boundary_project_id: None,
                     session_id: None,
+                    session_token_hash: Some(token::hash_token(raw_token)),
                 };
                 auth_user.record_to_span();
                 return Ok(auth_user);
@@ -185,6 +190,7 @@ impl FromRequestParts<AppState> for AuthUser {
                 boundary_workspace_id: None,
                 boundary_project_id: None,
                 session_id: None,
+                session_token_hash: Some(token::hash_token(session_token)),
             };
             auth_user.record_to_span();
             return Ok(auth_user);
@@ -240,20 +246,45 @@ fn extract_session_cookie(parts: &Parts) -> Option<&str> {
     None
 }
 
-fn extract_ip(parts: &Parts, trust_proxy: bool) -> Option<String> {
+fn extract_ip(parts: &Parts, trust_proxy: bool, trust_proxy_cidrs: &[String]) -> Option<String> {
     // Only trust X-Forwarded-For when behind a configured reverse proxy
     if trust_proxy
         && let Some(forwarded) = parts.headers.get("x-forwarded-for")
         && let Ok(val) = forwarded.to_str()
         && let Some(first_ip) = val.split(',').next()
     {
-        return Some(first_ip.trim().to_owned());
+        let ip_str = first_ip.trim();
+        // S59: When CIDRs are configured, only trust if the connecting IP matches
+        if !trust_proxy_cidrs.is_empty() {
+            let connecting_ip = parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|ci| ci.0.ip());
+            if let Some(conn_ip) = connecting_ip
+                && !cidr_matches(conn_ip, trust_proxy_cidrs)
+            {
+                // Connecting IP not in trusted CIDRs — ignore X-Forwarded-For
+                return Some(conn_ip.to_string());
+            }
+            // No ConnectInfo available — fall through to trust the header
+            // (server not using ConnectInfo layer; CIDRs can't be enforced)
+        }
+        return Some(ip_str.to_owned());
     }
     // Fall back to ConnectInfo if available
     parts
         .extensions
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|ci| ci.0.ip().to_string())
+}
+
+/// Check whether an IP address matches any of the configured trusted CIDRs.
+fn cidr_matches(ip: std::net::IpAddr, cidrs: &[String]) -> bool {
+    cidrs.iter().any(|cidr_str| {
+        cidr_str
+            .parse::<ipnetwork::IpNetwork>()
+            .is_ok_and(|net| net.contains(ip))
+    })
 }
 
 /// Look up an API token by its raw value. Updates `last_used_at` on success.
@@ -337,6 +368,7 @@ impl AuthUser {
             boundary_workspace_id: None,
             boundary_project_id: None,
             session_id: None,
+            session_token_hash: None,
         }
     }
 
@@ -351,6 +383,7 @@ impl AuthUser {
             boundary_workspace_id: None,
             boundary_project_id: None,
             session_id: None,
+            session_token_hash: None,
         }
     }
 
@@ -365,6 +398,7 @@ impl AuthUser {
             boundary_workspace_id: None,
             boundary_project_id: None,
             session_id: None,
+            session_token_hash: None,
         }
     }
 
@@ -379,6 +413,7 @@ impl AuthUser {
             boundary_workspace_id: None,
             boundary_project_id: Some(project_id),
             session_id: None,
+            session_token_hash: None,
         }
     }
 
@@ -393,6 +428,7 @@ impl AuthUser {
             boundary_workspace_id: Some(workspace_id),
             boundary_project_id: None,
             session_id: None,
+            session_token_hash: None,
         }
     }
 }
@@ -487,13 +523,13 @@ mod tests {
     #[test]
     fn ip_from_forwarded_for_trusted() {
         let parts = make_parts(&[("x-forwarded-for", "1.2.3.4, 5.6.7.8")]);
-        assert_eq!(extract_ip(&parts, true), Some("1.2.3.4".into()));
+        assert_eq!(extract_ip(&parts, true, &[]), Some("1.2.3.4".into()));
     }
 
     #[test]
     fn ip_forwarded_for_ignored_when_not_trusted() {
         let parts = make_parts(&[("x-forwarded-for", "1.2.3.4")]);
-        assert_eq!(extract_ip(&parts, false), None);
+        assert_eq!(extract_ip(&parts, false, &[]), None);
     }
 
     #[test]
@@ -501,7 +537,7 @@ mod tests {
         let mut parts = make_parts(&[]);
         let addr: std::net::SocketAddr = "127.0.0.1:9000".parse().unwrap();
         parts.extensions.insert(axum::extract::ConnectInfo(addr));
-        assert_eq!(extract_ip(&parts, false), Some("127.0.0.1".into()));
+        assert_eq!(extract_ip(&parts, false, &[]), Some("127.0.0.1".into()));
     }
 
     // -- Edge case tests --
@@ -529,13 +565,13 @@ mod tests {
     #[test]
     fn ip_from_forwarded_for_ipv6() {
         let parts = make_parts(&[("x-forwarded-for", "::1, 2001:db8::1")]);
-        assert_eq!(extract_ip(&parts, true), Some("::1".into()));
+        assert_eq!(extract_ip(&parts, true, &[]), Some("::1".into()));
     }
 
     #[test]
     fn ip_from_forwarded_for_trims_whitespace() {
         let parts = make_parts(&[("x-forwarded-for", "  1.2.3.4 , 5.6.7.8 ")]);
-        assert_eq!(extract_ip(&parts, true), Some("1.2.3.4".into()));
+        assert_eq!(extract_ip(&parts, true, &[]), Some("1.2.3.4".into()));
     }
 
     // -- Additional edge case tests --
@@ -556,13 +592,75 @@ mod tests {
     #[test]
     fn ip_no_headers_no_connect_info_returns_none() {
         let parts = make_parts(&[]);
-        assert_eq!(extract_ip(&parts, true), None);
+        assert_eq!(extract_ip(&parts, true, &[]), None);
     }
 
     #[test]
     fn ip_from_forwarded_for_single_ipv6() {
         let parts = make_parts(&[("x-forwarded-for", "2001:db8::1")]);
-        assert_eq!(extract_ip(&parts, true), Some("2001:db8::1".into()));
+        assert_eq!(extract_ip(&parts, true, &[]), Some("2001:db8::1".into()));
+    }
+
+    // -- S59: CIDR restriction tests --
+
+    #[test]
+    fn ip_cidr_trusted_proxy_allows_forwarded_for() {
+        let cidrs = vec!["10.0.0.0/8".to_string()];
+        let mut parts = make_parts(&[("x-forwarded-for", "1.2.3.4")]);
+        let addr: std::net::SocketAddr = "10.0.0.1:9000".parse().unwrap();
+        parts.extensions.insert(axum::extract::ConnectInfo(addr));
+        assert_eq!(extract_ip(&parts, true, &cidrs), Some("1.2.3.4".into()));
+    }
+
+    #[test]
+    fn ip_cidr_untrusted_proxy_ignores_forwarded_for() {
+        let cidrs = vec!["10.0.0.0/8".to_string()];
+        let mut parts = make_parts(&[("x-forwarded-for", "1.2.3.4")]);
+        // Connecting IP is NOT in the trusted CIDR
+        let addr: std::net::SocketAddr = "192.168.1.1:9000".parse().unwrap();
+        parts.extensions.insert(axum::extract::ConnectInfo(addr));
+        // Should return the connecting IP, not the forwarded one
+        assert_eq!(extract_ip(&parts, true, &cidrs), Some("192.168.1.1".into()));
+    }
+
+    #[test]
+    fn ip_cidr_empty_means_trust_all_proxies() {
+        // Empty CIDRs = trust any proxy (backward compatible)
+        let parts = make_parts(&[("x-forwarded-for", "1.2.3.4")]);
+        assert_eq!(extract_ip(&parts, true, &[]), Some("1.2.3.4".into()));
+    }
+
+    #[test]
+    fn ip_cidr_multiple_cidrs() {
+        let cidrs = vec!["10.0.0.0/8".to_string(), "172.16.0.0/12".to_string()];
+        let mut parts = make_parts(&[("x-forwarded-for", "8.8.8.8")]);
+        let addr: std::net::SocketAddr = "172.16.5.1:9000".parse().unwrap();
+        parts.extensions.insert(axum::extract::ConnectInfo(addr));
+        assert_eq!(extract_ip(&parts, true, &cidrs), Some("8.8.8.8".into()));
+    }
+
+    #[test]
+    fn cidr_matches_valid_cidr() {
+        let ip: std::net::IpAddr = "10.1.2.3".parse().unwrap();
+        assert!(cidr_matches(ip, &["10.0.0.0/8".to_string()]));
+    }
+
+    #[test]
+    fn cidr_matches_outside_range() {
+        let ip: std::net::IpAddr = "192.168.1.1".parse().unwrap();
+        assert!(!cidr_matches(ip, &["10.0.0.0/8".to_string()]));
+    }
+
+    #[test]
+    fn cidr_matches_invalid_cidr_ignored() {
+        let ip: std::net::IpAddr = "10.1.2.3".parse().unwrap();
+        assert!(!cidr_matches(ip, &["not-a-cidr".to_string()]));
+    }
+
+    #[test]
+    fn cidr_matches_single_host() {
+        let ip: std::net::IpAddr = "10.0.0.1".parse().unwrap();
+        assert!(cidr_matches(ip, &["10.0.0.1/32".to_string()]));
     }
 
     // -- AuthUser test constructor tests --

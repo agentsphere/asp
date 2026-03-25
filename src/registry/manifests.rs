@@ -127,6 +127,26 @@ pub async fn put_manifest(
 
     // If the reference is not a digest, treat it as a tag
     if Digest::parse(&reference).is_err() {
+        // S54: Immutable tag policy — v* tags cannot be overwritten once set
+        if reference.starts_with('v') {
+            let existing: Option<String> = sqlx::query_scalar(
+                "SELECT manifest_digest FROM registry_tags WHERE repository_id = $1 AND name = $2",
+            )
+            .bind(repository_id)
+            .bind(&reference)
+            .fetch_optional(&state.pool)
+            .await?;
+
+            if let Some(ref existing_digest) = existing
+                && existing_digest != &digest_str
+            {
+                return Err(RegistryError::TagExists(format!(
+                    "tag '{reference}' is immutable (already points to {existing_digest})"
+                )));
+            }
+            // Same digest = idempotent push, allow through
+        }
+
         sqlx::query!(
             r#"INSERT INTO registry_tags (repository_id, name, manifest_digest)
                VALUES ($1, $2, $3)

@@ -233,8 +233,7 @@ async fn ingest_traces_protobuf(pool: PgPool) {
         spans_rx,
         shutdown_rx,
     ));
-    // Give the flush task a tick
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    // Signal shutdown — the flush task drains remaining items before exiting
     let _ = shutdown_tx.send(());
     let _ = handle.await;
 
@@ -272,7 +271,7 @@ async fn ingest_logs_protobuf(pool: PgPool) {
         logs_rx,
         shutdown_rx,
     ));
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    // Signal shutdown — the flush task drains remaining items before exiting
     let _ = shutdown_tx.send(());
     let _ = handle.await;
 
@@ -309,7 +308,7 @@ async fn ingest_metrics_protobuf(pool: PgPool) {
         metrics_rx,
         shutdown_rx,
     ));
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    // Signal shutdown — the flush task drains remaining items before exiting
     let _ = shutdown_tx.send(());
     let _ = handle.await;
 
@@ -379,8 +378,7 @@ async fn flush_shutdown_drains_remaining(pool: PgPool) {
         shutdown_rx,
     ));
 
-    // Give first tick a chance, then signal shutdown
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    // Signal shutdown — the flush task drains remaining items before exiting
     let _ = shutdown_tx.send(());
     let _ = handle.await;
 

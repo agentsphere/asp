@@ -427,6 +427,9 @@ async fn get_command(
         super::helpers::require_project_read(&state, &auth, pid).await?;
     } else if let Some(wid) = row.workspace_id {
         require_workspace_member(&state, &auth, wid).await?;
+    } else {
+        // A33: global commands require admin access
+        super::helpers::require_admin(&state, &auth).await?;
     }
 
     Ok(Json(CommandResponse {

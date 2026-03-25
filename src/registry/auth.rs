@@ -94,16 +94,31 @@ impl FromRequestParts<AppState> for RegistryUser {
             if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded)
                 && let Ok(creds) = String::from_utf8(decoded)
                 && let Some((username, password)) = creds.split_once(':')
-                && let Some(user) = lookup_basic_auth(&state.pool, username, password).await
-                && user.is_active
             {
-                return Ok(Self {
-                    user_id: user.user_id,
-                    user_name: user.user_name,
-                    boundary_project_id: user.scope_project_id,
-                    boundary_workspace_id: user.scope_workspace_id,
-                    registry_tag_pattern: user.registry_tag_pattern,
-                });
+                // S53: rate-limit registry basic auth
+                if crate::auth::rate_limit::check_rate(
+                    &state.valkey,
+                    "registry_auth",
+                    username,
+                    20,
+                    300,
+                )
+                .await
+                .is_err()
+                {
+                    return Err(RegistryAuthRejection);
+                }
+                if let Some(user) = lookup_basic_auth(&state.pool, username, password).await
+                    && user.is_active
+                {
+                    return Ok(Self {
+                        user_id: user.user_id,
+                        user_name: user.user_name,
+                        boundary_project_id: user.scope_project_id,
+                        boundary_workspace_id: user.scope_workspace_id,
+                        registry_tag_pattern: user.registry_tag_pattern,
+                    });
+                }
             }
             return Err(RegistryAuthRejection);
         }

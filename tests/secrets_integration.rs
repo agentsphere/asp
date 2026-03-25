@@ -74,7 +74,7 @@ async fn delete_project_secret(pool: PgPool) {
         &format!("/api/projects/{proj_id}/secrets/TO_DELETE"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify gone
     let (_, body) = helpers::get_json(
@@ -327,7 +327,7 @@ async fn delete_workspace_secret(pool: PgPool) {
         &format!("/api/workspaces/{}/secrets/DEL_ME", ws.id),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify empty
     let (_, body) = helpers::get_json(
@@ -428,7 +428,7 @@ async fn delete_global_secret(pool: PgPool) {
 
     let (status, _) =
         helpers::delete_json(&app, &admin_token, "/api/admin/secrets/TO_DELETE_GLOBAL").await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify not in list
     let (_, body) = helpers::get_json(&app, &admin_token, "/api/admin/secrets").await;
@@ -1150,4 +1150,97 @@ async fn user_key_delete_nonexistent(pool: PgPool) {
     let (status, _) =
         helpers::delete_json(&app, &token, "/api/users/me/provider-keys/nonexistent").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// T13/T14: Secret decryption round-trip via API
+// ---------------------------------------------------------------------------
+
+/// Read a project secret returns the decrypted value matching what was stored.
+#[sqlx::test(migrations = "./migrations")]
+async fn read_project_secret_returns_decrypted_value(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let project_id = create_project(&app, &admin_token, "secret-read-proj", "private").await;
+
+    // Create a secret
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/secrets"),
+        serde_json::json!({
+            "name": "my-secret",
+            "value": "super-secret-value-42",
+            "scope": "agent",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Read back — should return decrypted value
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/secrets/my-secret"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "read secret failed: {body}");
+    assert_eq!(body["name"], "my-secret");
+    assert_eq!(
+        body["value"], "super-secret-value-42",
+        "decrypted value should match original"
+    );
+}
+
+/// Reading a nonexistent secret returns 404.
+#[sqlx::test(migrations = "./migrations")]
+async fn read_project_secret_not_found(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let project_id = create_project(&app, &admin_token, "secret-nf-proj", "private").await;
+
+    let (status, _) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/secrets/nonexistent"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// Reading a secret without permission returns 404 (not 403).
+#[sqlx::test(migrations = "./migrations")]
+async fn read_project_secret_requires_permission(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let project_id = create_project(&app, &admin_token, "secret-perm-proj", "private").await;
+
+    // Create a secret
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/secrets"),
+        serde_json::json!({
+            "name": "perm-secret",
+            "value": "restricted",
+            "scope": "agent",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // User with no project role
+    let (_uid, user_token) =
+        create_user(&app, &admin_token, "no-secret-perm", "nosecperm@test.com").await;
+
+    let (status, _) = helpers::get_json(
+        &app,
+        &user_token,
+        &format!("/api/projects/{project_id}/secrets/perm-secret"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "should return 404 not 403");
 }

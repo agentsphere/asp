@@ -209,7 +209,7 @@ async fn get_json_app(app: &Router, token: &str, path: &str) -> (StatusCode, ser
     let body = if bytes.is_empty() {
         serde_json::Value::Null
     } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+        serde_json::from_slice(&bytes).expect("response body is not valid JSON")
     };
     (status, body)
 }

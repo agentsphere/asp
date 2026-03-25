@@ -29,7 +29,7 @@ async fn get_with_cookie(
     let body = if bytes.is_empty() {
         serde_json::Value::Null
     } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+        serde_json::from_slice(&bytes).expect("response body is not valid JSON")
     };
     (status, body)
 }
@@ -53,7 +53,7 @@ async fn get_with_auth_header(
     let body = if bytes.is_empty() {
         serde_json::Value::Null
     } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+        serde_json::from_slice(&bytes).expect("response body is not valid JSON")
     };
     (status, body)
 }
@@ -129,7 +129,7 @@ async fn login_inactive_user(pool: PgPool) {
     // Deactivate user
     let (status, _) =
         helpers::delete_json(&app, &admin_token, &format!("/api/users/{user_id}")).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Try to login
     let (status, _) = helpers::post_json(
@@ -183,6 +183,92 @@ async fn login_rate_limited(pool: PgPool) {
         status,
         StatusCode::TOO_MANY_REQUESTS,
         "expected 429 after exceeding rate limit"
+    );
+}
+
+/// T9: Rate limit at threshold minus one — request should NOT be rate-limited.
+/// check_rate uses `count > max`, so count==10 (== max) is allowed.
+#[sqlx::test(migrations = "./migrations")]
+async fn rate_limit_at_threshold_minus_one(pool: PgPool) {
+    use fred::interfaces::KeysInterface;
+
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state.clone());
+
+    let unique_name = format!("rl-below-{}", Uuid::new_v4());
+    helpers::create_user(
+        &app,
+        &admin_token,
+        &unique_name,
+        &format!("{unique_name}@test.com"),
+    )
+    .await;
+
+    // Pre-set counter to 9 (one below the 10 max)
+    let rate_key = format!("rate:login:{unique_name}");
+    let _: () = state
+        .valkey
+        .set(&rate_key, 9i64, None, None, false)
+        .await
+        .unwrap();
+    let _: () = state.valkey.expire(&rate_key, 300, None).await.unwrap();
+
+    // INCR takes 9 → 10. check_rate: 10 > 10 is false → allowed
+    let (status, _) = helpers::post_json(
+        &app,
+        "",
+        "/api/auth/login",
+        serde_json::json!({ "name": &unique_name, "password": "testpass123" }),
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "count at threshold should NOT trigger rate limit"
+    );
+}
+
+/// T9: Rate limit window expiry — counter resets after TTL.
+#[sqlx::test(migrations = "./migrations")]
+async fn rate_limit_window_expiry(pool: PgPool) {
+    use fred::interfaces::KeysInterface;
+
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state.clone());
+
+    let unique_name = format!("rl-expire-{}", Uuid::new_v4());
+    helpers::create_user(
+        &app,
+        &admin_token,
+        &unique_name,
+        &format!("{unique_name}@test.com"),
+    )
+    .await;
+
+    // Pre-set counter above threshold with a 1-second TTL
+    let rate_key = format!("rate:login:{unique_name}");
+    let _: () = state
+        .valkey
+        .set(&rate_key, 15i64, None, None, false)
+        .await
+        .unwrap();
+    let _: () = state.valkey.expire(&rate_key, 1, None).await.unwrap();
+
+    // Wait for TTL to expire
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+    // Counter should be gone — new request starts fresh at count=1
+    let (status, _) = helpers::post_json(
+        &app,
+        "",
+        "/api/auth/login",
+        serde_json::json!({ "name": &unique_name, "password": "testpass123" }),
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate limit should reset after window expires"
     );
 }
 
@@ -307,7 +393,7 @@ async fn list_and_delete_api_token(pool: PgPool) {
 
     // Delete
     let (status, _) = helpers::delete_json(&app, &token, &format!("/api/tokens/{token_id}")).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify gone
     let (status, list_body) = helpers::get_json(&app, &token, "/api/tokens").await;
@@ -592,7 +678,7 @@ async fn deactivated_user_api_token_returns_401(pool: PgPool) {
     // Deactivate the user
     let (status, _) =
         helpers::delete_json(&app, &admin_token, &format!("/api/users/{user_id}")).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // API token for deactivated user should now return 401
     let (status, _) = helpers::get_json(&app, &raw_token, "/api/auth/me").await;
@@ -619,7 +705,7 @@ async fn deactivated_user_session_token_returns_401(pool: PgPool) {
     // Deactivate the user
     let (status, _) =
         helpers::delete_json(&app, &admin_token, &format!("/api/users/{user_id}")).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Session token for deactivated user should now return 401
     // (Bearer token path: tries api_tokens first (miss), then falls back to session lookup)
@@ -654,7 +740,7 @@ async fn deactivated_user_session_cookie_returns_401(pool: PgPool) {
     // Deactivate the user
     let (status, _) =
         helpers::delete_json(&app, &admin_token, &format!("/api/users/{user_id}")).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Cookie-based auth for deactivated user should return 401
     let (status, _) = get_with_cookie(&app, &session_token, "/api/auth/me").await;
@@ -864,19 +950,24 @@ async fn api_token_updates_last_used_at(pool: PgPool) {
     let (status, _) = helpers::get_json(&app, &raw_token, "/api/auth/me").await;
     assert_eq!(status, StatusCode::OK);
 
-    // Wait a bit for the fire-and-forget update to complete
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    // Verify last_used_at is now set
-    let row: (Option<chrono::DateTime<chrono::Utc>>,) =
-        sqlx::query_as("SELECT last_used_at FROM api_tokens WHERE id = $1")
-            .bind(token_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    // Poll for the fire-and-forget last_used_at update (tokio::spawn in middleware)
+    let mut found = false;
+    for _ in 0..20 {
+        let row: (Option<chrono::DateTime<chrono::Utc>>,) =
+            sqlx::query_as("SELECT last_used_at FROM api_tokens WHERE id = $1")
+                .bind(token_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        if row.0.is_some() {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
     assert!(
-        row.0.is_some(),
-        "last_used_at should be set after token use"
+        found,
+        "last_used_at should be set within 2s after token use"
     );
 }
 

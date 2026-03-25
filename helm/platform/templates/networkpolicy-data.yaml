@@ -17,8 +17,8 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # Only allow traffic from pods in this namespace
+    # S58: Only allow traffic from the platform pod — not all pods in the namespace
     - from:
-        - namespaceSelector:
+        - podSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+              app.kubernetes.io/name: {{ include "platform.name" . }}

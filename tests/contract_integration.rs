@@ -687,10 +687,10 @@ async fn contract_admin_user_list(pool: PgPool) {
     let app = test_router(state);
     let token = admin_token.clone();
 
-    let (status, body) = helpers::get_json(&app, &token, "/api/users/list?limit=10").await;
+    let (status, body) = helpers::get_json(&app, &token, "/api/users?limit=10").await;
 
     assert_eq!(status, StatusCode::OK);
-    let items = assert_list_response(&body, "users/list");
+    let items = assert_list_response(&body, "users");
     assert!(!items.is_empty());
 
     let user = &items[0];
@@ -1051,11 +1051,10 @@ async fn contract_mcp_admin_deactivate_user(pool: PgPool) {
     let (user_id, _) =
         create_user(&app, &admin_token, "mcp-deact-user", "mcp-deact@test.com").await;
 
-    let (status, body) =
+    let (status, _) =
         helpers::delete_json(&app, &admin_token, &format!("/api/users/{user_id}")).await;
 
-    assert_eq!(status, StatusCode::OK);
-    assert!(body["ok"].is_boolean(), "missing ok field");
+    assert_eq!(status, StatusCode::NO_CONTENT);
 }
 
 // -- platform-admin MCP: role management --

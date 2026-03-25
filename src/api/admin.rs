@@ -5,6 +5,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use uuid::Uuid;
 
 use ts_rs::TS;
@@ -37,6 +38,12 @@ pub struct RoleResponse {
 #[derive(Debug, Deserialize)]
 pub struct CreateRoleRequest {
     pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateRoleRequest {
+    pub name: Option<String>,
     pub description: Option<String>,
 }
 
@@ -103,6 +110,10 @@ pub fn router() -> Router<AppState> {
         // Roles
         .route("/api/admin/roles", get(list_roles).post(create_role))
         .route(
+            "/api/admin/roles/{id}",
+            get(get_role).patch(update_role).delete(delete_role),
+        )
+        .route(
             "/api/admin/roles/{id}/permissions",
             get(list_role_permissions).put(set_role_permissions),
         )
@@ -119,7 +130,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/api/admin/delegations/{id}",
-            delete(revoke_delegation_handler),
+            get(get_delegation).delete(revoke_delegation_handler),
         )
         // Service accounts
         .route(
@@ -128,7 +139,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/api/admin/service-accounts/{id}",
-            delete(deactivate_service_account),
+            get(get_service_account).delete(deactivate_service_account),
         )
 }
 
@@ -153,7 +164,7 @@ async fn require_delegate(state: &AppState, auth: &AuthUser) -> Result<(), ApiEr
 
 fn parse_user_type(s: &str) -> Result<UserType, ApiError> {
     s.parse::<UserType>()
-        .map_err(|e: anyhow::Error| ApiError::Internal(e))
+        .map_err(|_| ApiError::BadRequest("invalid user_type".into()))
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +174,7 @@ fn parse_user_type(s: &str) -> Result<UserType, ApiError> {
 async fn list_roles(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<Vec<RoleResponse>>, ApiError> {
+) -> Result<Json<ListResponse<RoleResponse>>, ApiError> {
     require_admin(&state, &auth).await?;
 
     let roles = sqlx::query_as!(
@@ -173,7 +184,11 @@ async fn list_roles(
     .fetch_all(&state.pool)
     .await?;
 
-    Ok(Json(roles))
+    let total = i64::try_from(roles.len()).unwrap_or(0);
+    Ok(Json(ListResponse {
+        items: roles,
+        total,
+    }))
 }
 
 #[tracing::instrument(skip(state, body), fields(role_name = %body.name), err)]
@@ -220,11 +235,155 @@ async fn create_role(
     Ok((StatusCode::CREATED, Json(role)))
 }
 
+async fn get_role(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<RoleResponse>, ApiError> {
+    require_admin(&state, &auth).await?;
+
+    let row =
+        sqlx::query("SELECT id, name, description, is_system, created_at FROM roles WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("role".into()))?;
+
+    Ok(Json(RoleResponse {
+        id: row.get("id"),
+        name: row.get("name"),
+        description: row.get("description"),
+        is_system: row.get("is_system"),
+        created_at: row.get("created_at"),
+    }))
+}
+
+#[tracing::instrument(skip(state, body), fields(%id), err)]
+async fn update_role(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateRoleRequest>,
+) -> Result<Json<RoleResponse>, ApiError> {
+    require_admin(&state, &auth).await?;
+
+    if let Some(ref name) = body.name {
+        validation::check_name(name)?;
+    }
+    if let Some(ref desc) = body.description {
+        validation::check_length("description", desc, 0, 10_000)?;
+    }
+
+    // Check if role exists and is not a system role
+    let existing = sqlx::query("SELECT is_system FROM roles WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("role".into()))?;
+
+    let is_system: bool = existing.get("is_system");
+    if is_system {
+        return Err(ApiError::Conflict("cannot modify system role".into()));
+    }
+
+    let row = sqlx::query(
+        "UPDATE roles SET \
+             name = COALESCE($2, name), \
+             description = COALESCE($3, description) \
+         WHERE id = $1 \
+         RETURNING id, name, description, is_system, created_at",
+    )
+    .bind(id)
+    .bind(&body.name)
+    .bind(&body.description)
+    .fetch_one(&state.pool)
+    .await?;
+
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "role.update",
+            resource: "role",
+            resource_id: Some(id),
+            project_id: None,
+            detail: Some(serde_json::json!({"name": body.name, "description": body.description})),
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
+
+    Ok(Json(RoleResponse {
+        id: row.get("id"),
+        name: row.get("name"),
+        description: row.get("description"),
+        is_system: row.get("is_system"),
+        created_at: row.get("created_at"),
+    }))
+}
+
+#[tracing::instrument(skip(state), fields(%id), err)]
+async fn delete_role(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    require_admin(&state, &auth).await?;
+
+    let existing = sqlx::query("SELECT is_system FROM roles WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("role".into()))?;
+
+    let is_system: bool = existing.get("is_system");
+    if is_system {
+        return Err(ApiError::Conflict("cannot delete system role".into()));
+    }
+
+    // Check if any users are assigned this role
+    let assigned_count: i64 =
+        sqlx::query("SELECT COUNT(*) as count FROM user_roles WHERE role_id = $1")
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await?
+            .get("count");
+
+    if assigned_count > 0 {
+        return Err(ApiError::Conflict(
+            "cannot delete role that is assigned to users".into(),
+        ));
+    }
+
+    sqlx::query("DELETE FROM roles WHERE id = $1")
+        .bind(id)
+        .execute(&state.pool)
+        .await?;
+
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "role.delete",
+            resource: "role",
+            resource_id: Some(id),
+            project_id: None,
+            detail: None,
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn list_role_permissions(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<PermissionResponse>>, ApiError> {
+) -> Result<Json<ListResponse<PermissionResponse>>, ApiError> {
     require_admin(&state, &auth).await?;
 
     let perms = sqlx::query_as!(
@@ -241,7 +400,11 @@ async fn list_role_permissions(
     .fetch_all(&state.pool)
     .await?;
 
-    Ok(Json(perms))
+    let total = i64::try_from(perms.len()).unwrap_or(0);
+    Ok(Json(ListResponse {
+        items: perms,
+        total,
+    }))
 }
 
 #[tracing::instrument(skip(state, body), fields(%id), err)]
@@ -291,6 +454,17 @@ async fn set_role_permissions(
     }
 
     tx.commit().await?;
+
+    // A26: invalidate permission cache for all users with this role
+    let affected_users: Vec<Uuid> =
+        sqlx::query_scalar("SELECT user_id FROM user_roles WHERE role_id = $1")
+            .bind(id)
+            .fetch_all(&state.pool)
+            .await
+            .unwrap_or_default();
+    for uid in affected_users {
+        let _ = resolver::invalidate_permissions(&state.valkey, uid, None).await;
+    }
 
     write_audit(
         &state.pool,
@@ -364,7 +538,7 @@ async fn remove_role(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((user_id, role_id)): Path<(Uuid, Uuid)>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     require_admin(&state, &auth).await?;
 
     let result = sqlx::query!(
@@ -393,7 +567,7 @@ async fn remove_role(
     )
     .await;
 
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------
@@ -449,13 +623,77 @@ async fn create_delegation_handler(
     Ok((StatusCode::CREATED, Json(d)))
 }
 
-#[tracing::instrument(skip(state), fields(%id), err)]
-async fn revoke_delegation_handler(
+async fn get_delegation(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     require_delegate(&state, &auth).await?;
+
+    let row = sqlx::query(
+        "SELECT id, delegator_id, delegate_id, permission, project_id, \
+                expires_at, reason, is_active, created_at \
+         FROM delegations WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("delegation".into()))?;
+
+    let delegation_id: Uuid = row.get("id");
+    let delegator_id: Uuid = row.get("delegator_id");
+    let delegate_id: Uuid = row.get("delegate_id");
+    let permission: String = row.get("permission");
+    let project_id: Option<Uuid> = row.get("project_id");
+    let expires_at: Option<DateTime<Utc>> = row.get("expires_at");
+    let reason: Option<String> = row.get("reason");
+    let is_active: bool = row.get("is_active");
+    let created_at: DateTime<Utc> = row.get("created_at");
+
+    Ok(Json(serde_json::json!({
+        "id": delegation_id,
+        "delegator_id": delegator_id,
+        "delegate_id": delegate_id,
+        "permission": permission,
+        "project_id": project_id,
+        "expires_at": expires_at,
+        "reason": reason,
+        "is_active": is_active,
+        "created_at": created_at,
+    })))
+}
+
+#[tracing::instrument(skip(state), fields(%id), err)]
+async fn revoke_delegation_handler(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    require_delegate(&state, &auth).await?;
+
+    // S47: Only the delegator or a full admin can revoke a delegation
+    let delegator_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT delegator_id FROM delegations WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(ApiError::from)?;
+    let delegator_id = delegator_id.ok_or_else(|| ApiError::NotFound("delegation".into()))?;
+    if delegator_id != auth.user_id {
+        let is_admin = crate::rbac::resolver::has_permission_scoped(
+            &state.pool,
+            &state.valkey,
+            auth.user_id,
+            None,
+            crate::rbac::Permission::AdminUsers,
+            auth.token_scopes.as_deref(),
+        )
+        .await
+        .map_err(ApiError::Internal)?;
+        if !is_admin {
+            return Err(ApiError::Forbidden);
+        }
+    }
 
     delegation::revoke_delegation(&state.pool, &state.valkey, id).await?;
 
@@ -474,14 +712,14 @@ async fn revoke_delegation_handler(
     )
     .await;
 
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_delegations(
     State(state): State<AppState>,
     auth: AuthUser,
     Query(params): Query<DelegationQuery>,
-) -> Result<Json<Vec<delegation::Delegation>>, ApiError> {
+) -> Result<Json<ListResponse<delegation::Delegation>>, ApiError> {
     require_delegate(&state, &auth).await?;
 
     let user_id = params.user_id.unwrap_or(auth.user_id);
@@ -489,7 +727,11 @@ async fn list_delegations(
     let offset = params.offset.unwrap_or(0);
     let delegations = delegation::list_delegations(&state.pool, user_id, limit, offset).await?;
 
-    Ok(Json(delegations))
+    let total = i64::try_from(delegations.len()).unwrap_or(0);
+    Ok(Json(ListResponse {
+        items: delegations,
+        total,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -649,12 +891,40 @@ async fn list_service_accounts(
     Ok(Json(ListResponse { items, total }))
 }
 
+async fn get_service_account(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<UserResponse>, ApiError> {
+    require_admin(&state, &auth).await?;
+
+    let row = sqlx::query(
+        "SELECT id, name, display_name, email, user_type, is_active, created_at, updated_at \
+         FROM users WHERE id = $1 AND user_type = 'service_account'",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("service account".into()))?;
+
+    Ok(Json(UserResponse {
+        id: row.get("id"),
+        name: row.get("name"),
+        display_name: row.get("display_name"),
+        email: row.get("email"),
+        user_type: parse_user_type(row.get("user_type"))?,
+        is_active: row.get("is_active"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
 #[tracing::instrument(skip(state), fields(%id), err)]
 async fn deactivate_service_account(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     require_admin(&state, &auth).await?;
 
     // Verify target is actually a service account
@@ -670,6 +940,13 @@ async fn deactivate_service_account(
     sqlx::query!("UPDATE users SET is_active = false WHERE id = $1", id)
         .execute(&state.pool)
         .await?;
+
+    // A29: delete sessions before revoking tokens
+    sqlx::query("DELETE FROM auth_sessions WHERE user_id = $1")
+        .bind(id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
 
     // Revoke all tokens
     sqlx::query("DELETE FROM api_tokens WHERE user_id = $1")
@@ -694,5 +971,5 @@ async fn deactivate_service_account(
     )
     .await;
 
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(StatusCode::NO_CONTENT)
 }

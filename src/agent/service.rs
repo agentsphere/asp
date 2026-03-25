@@ -271,8 +271,15 @@ pub async fn create_session(
         session_namespace: Some(session_ns.clone()),
     };
 
-    // Test/dev: mount host fixture path and set CLAUDE_CLI_PATH for mock CLI
-    let host_mount_path = std::env::var("PLATFORM_HOST_MOUNT_PATH").ok();
+    // S33: Only allow host mounts in dev mode — production must never mount host paths
+    let host_mount_path = if state.config.dev_mode {
+        std::env::var("PLATFORM_HOST_MOUNT_PATH").ok()
+    } else {
+        if std::env::var("PLATFORM_HOST_MOUNT_PATH").is_ok() {
+            tracing::warn!("PLATFORM_HOST_MOUNT_PATH set but dev_mode=false — ignoring");
+        }
+        None
+    };
     let claude_cli_path = std::env::var("CLAUDE_CLI_PATH").ok();
 
     let pod = provider.build_pod(BuildPodParams {

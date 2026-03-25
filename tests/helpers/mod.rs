@@ -17,6 +17,38 @@ use fred::interfaces::ClientLike;
 use platform::config::Config;
 use platform::store::AppState;
 
+// ---------------------------------------------------------------------------
+// Test-name-aware JSON tracing
+// ---------------------------------------------------------------------------
+
+use std::sync::Once;
+
+static INIT_TRACING: Once = Once::new();
+
+/// Initialize test tracing: JSON output to `TEST_LOG_FILE` with `threadName` per line.
+/// nextest names each thread after the test, so `threadName` == test name.
+pub fn init_test_tracing() {
+    INIT_TRACING.call_once(|| {
+        if let Ok(path) = std::env::var("TEST_LOG_FILE") {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("open test log file");
+            tracing_subscriber::fmt()
+                .json()
+                .with_thread_names(true)
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "warn".into()),
+                )
+                .with_writer(std::sync::Mutex::new(file))
+                .try_init()
+                .ok();
+        }
+    });
+}
+
 /// Build a test `AppState` with optional `cli_spawn_enabled`.
 ///
 /// Wrapper around `test_state()` that optionally enables CLI subprocess spawning.
@@ -48,6 +80,7 @@ pub async fn test_state_with_cli(pool: PgPool, cli_spawn_enabled: bool) -> (AppS
 /// Valkey key collision (`rate:login:admin`).
 #[allow(clippy::too_many_lines)]
 pub async fn test_state(pool: PgPool) -> (AppState, String) {
+    init_test_tracing();
     // Ensure a rustls CryptoProvider is installed (needed by reqwest/fred)
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -164,6 +197,12 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
             .unwrap_or_else(|_| "platform-gateway".into()),
         gateway_namespace: std::env::var("PLATFORM_GATEWAY_NAMESPACE")
             .unwrap_or_else(|_| "envoy-gateway-system".into()),
+        pipeline_timeout_secs: 3600,
+        max_lfs_object_bytes: 5_368_709_120,
+        token_max_expiry_days: 365,
+        observe_retention_days: 30,
+        master_key_previous: None,
+        trust_proxy_cidrs: vec![],
     };
 
     // Seed registry images from OCI tarballs (idempotent, uses file-based cache)
@@ -195,6 +234,9 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         task_registry: Arc::new(platform::health::TaskRegistry::new()),
         cli_auth_manager: Arc::new(platform::onboarding::claude_auth::CliAuthManager::new()),
     };
+
+    // Match production behavior: initialize permission cache TTL
+    platform::rbac::resolver::set_cache_ttl(config.permission_cache_ttl_secs);
 
     // Create an API token for the bootstrap admin directly in the DB,
     // bypassing the login endpoint and its rate limiter.
@@ -506,7 +548,7 @@ async fn body_json(resp: axum::http::Response<Body>) -> Value {
     if bytes.is_empty() {
         return Value::Null;
     }
-    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    serde_json::from_slice(&bytes).expect("response body is not valid JSON")
 }
 
 // ---------------------------------------------------------------------------
@@ -614,4 +656,110 @@ fn git_cmd_at(dir: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Merge-gate test helpers
+// ---------------------------------------------------------------------------
+
+/// Get the admin user's UUID from the DB.
+pub async fn admin_user_id(pool: &PgPool) -> Uuid {
+    let row: (Uuid,) = sqlx::query_as("SELECT id FROM users WHERE name = 'admin'")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    row.0
+}
+
+/// Insert a merge request directly in the DB (bypasses git/API).
+/// Returns the MR's UUID.
+pub async fn insert_mr(
+    pool: &PgPool,
+    project_id: Uuid,
+    author_id: Uuid,
+    source_branch: &str,
+    target_branch: &str,
+    number: i32,
+) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO merge_requests (id, project_id, number, author_id, source_branch, target_branch, title, status, head_sha)
+         VALUES ($1, $2, $3, $4, $5, $6, 'Test MR', 'open', 'abc123')",
+    )
+    .bind(id)
+    .bind(project_id)
+    .bind(number)
+    .bind(author_id)
+    .bind(source_branch)
+    .bind(target_branch)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    sqlx::query("UPDATE projects SET next_mr_number = $1 WHERE id = $2")
+        .bind(number + 1)
+        .bind(project_id)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    id
+}
+
+/// Insert a branch protection rule directly in the DB.
+/// Returns the rule's UUID.
+pub async fn insert_branch_protection(
+    pool: &PgPool,
+    project_id: Uuid,
+    pattern: &str,
+    required_approvals: i32,
+    merge_methods: &[&str],
+    required_checks: &[&str],
+    require_up_to_date: bool,
+    allow_admin_bypass: bool,
+) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO branch_protection_rules
+         (id, project_id, pattern, required_approvals, merge_methods, required_checks, require_up_to_date, allow_admin_bypass)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(id)
+    .bind(project_id)
+    .bind(pattern)
+    .bind(required_approvals)
+    .bind(merge_methods)
+    .bind(required_checks)
+    .bind(require_up_to_date)
+    .bind(allow_admin_bypass)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
+/// Insert a pipeline row directly in the DB. Returns the pipeline's UUID.
+pub async fn insert_pipeline(
+    pool: &PgPool,
+    project_id: Uuid,
+    user_id: Uuid,
+    status: &str,
+    git_ref: &str,
+    trigger: &str,
+) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO pipelines (id, project_id, triggered_by, status, git_ref, trigger, commit_sha)
+         VALUES ($1, $2, $3, $4, $5, $6, 'abc123')",
+    )
+    .bind(id)
+    .bind(project_id)
+    .bind(user_id)
+    .bind(status)
+    .bind(git_ref)
+    .bind(trigger)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
 }

@@ -461,6 +461,7 @@ async fn create_release(
     Json(body): Json<CreateReleaseRequest>,
 ) -> Result<(StatusCode, Json<ReleaseResponse>), ApiError> {
     require_deploy_promote(&state, &auth, id).await?;
+    validation::check_length("image_ref", &body.image_ref, 1, 2048)?;
 
     // Find or require a target
     let target = sqlx::query(
@@ -1279,7 +1280,7 @@ async fn delete_ops_repo(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(repo_id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     require_admin(&state, &auth).await?;
 
     // Check if any deploy targets reference this ops repo
@@ -1318,7 +1319,7 @@ async fn delete_ops_repo(
     )
     .await;
 
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------

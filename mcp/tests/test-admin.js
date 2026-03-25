@@ -34,12 +34,12 @@ describe("platform-admin", () => {
     assert.ok(names.includes("revoke_delegation"), "missing revoke_delegation");
   });
 
-  it("list_users sends GET /api/users/list", async () => {
+  it("list_users sends GET /api/users", async () => {
     api.setResponse(200, { items: [], total: 0 });
     await client.callTool("list_users", {});
     const req = api.lastRequest();
     assert.equal(req.method, "GET");
-    assert.ok(req.path.startsWith("/api/users/list"));
+    assert.ok(req.path.startsWith("/api/users"));
   });
 
   it("create_user sends POST /api/users", async () => {

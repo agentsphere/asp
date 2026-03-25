@@ -34,11 +34,6 @@ rules:
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # Secrets (deployer, agent identity)
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-
   # PersistentVolumeClaims (deployer)
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]

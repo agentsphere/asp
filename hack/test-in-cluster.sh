@@ -3,7 +3,7 @@
 #
 # Creates isolated namespaces (platform-test-{id}-*), deploys PG + Valkey + MinIO
 # as NodePort services, deploys a DaemonSet registry proxy, then connects
-# directly to the cluster node IP (OrbStack makes it routable from macOS).
+# directly to the cluster node IP (Kind makes it routable from macOS).
 # Runs tests natively with cargo nextest.
 #
 # Usage:
@@ -200,14 +200,14 @@ echo "==> Running tests"
 echo "────────────────────────────────────────────────────────────────"
 
 # Build env vars
-export DATABASE_URL="postgres://platform:dev@${NODE_IP}:${PG_PORT}/platform_dev"
-export VALKEY_URL="redis://${NODE_IP}:${VALKEY_PORT}"
+export DATABASE_URL="postgres://platform:dev@${NODE_IP}:${PG_PORT}/platform_dev?sslmode=require"
+export VALKEY_URL="redis://:dev@${NODE_IP}:${VALKEY_PORT}"
 export MINIO_ENDPOINT="http://${NODE_IP}:${MINIO_PORT}"
 export MINIO_ACCESS_KEY="platform"
 export MINIO_SECRET_KEY="devdevdev"
 export PLATFORM_MASTER_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 export PLATFORM_DEV=true
-export RUST_LOG="warn"
+export RUST_LOG="${RUST_LOG:-platform=debug}"
 export PLATFORM_NS_PREFIX="${NS_PREFIX}"
 export PLATFORM_LISTEN_PORT="${BACKEND_PORT}"
 export PLATFORM_REGISTRY_URL="${PLATFORM_HOST}:${BACKEND_PORT}"
@@ -237,9 +237,14 @@ export CLAUDE_CLI_PATH="/tmp/platform-e2e/mock-claude-cli.sh"
 # breaks without the offline cache.
 export SQLX_OFFLINE=true
 
-# Test report file — written after tests complete
-REPORT_FILE="${PROJECT_DIR}/test-report.txt"
+# Test output files — RUN_ID-suffixed for parallel safety
+REPORT_FILE="${PROJECT_DIR}/test-report-${RUN_ID}.txt"
+OUTPUT_FILE="${PROJECT_DIR}/test-output-${RUN_ID}.txt"
+LOG_FILE="${PROJECT_DIR}/test-logs-${RUN_ID}.jsonl"
 JUNIT_FILE="${PROJECT_DIR}/target/nextest/ci/junit.xml"
+
+# Structured JSON logs with threadName per line (consumed by helpers::init_test_tracing)
+export TEST_LOG_FILE="${LOG_FILE}"
 
 # ── Coverage: clean previous data ────────────────────────────────────────
 if $COV_CLEAN; then
@@ -253,7 +258,7 @@ COV_REPORT_IGNORE_REGEX='(proto\.rs|ui\.rs|main\.rs)'
 
 # ── Run tests ─────────────────────────────────────────────────────────────
 if [[ "$TEST_TYPE" == "total" ]]; then
-  # Combined coverage: unit + integration + E2E in one instrumented build
+  # Combined coverage: unit + integration (no E2E — use cov-all for that)
   # Track failures but continue through all tiers to generate the report
   TIER_FAILURES=0
 
@@ -267,13 +272,6 @@ if [[ "$TEST_TYPE" == "total" ]]; then
   echo "==> Running integration tests (coverage, no report)"
   cargo llvm-cov nextest --no-report --test '*_integration' \
     --profile ci --test-threads 32 \
-    --ignore-filename-regex "${COV_IGNORE_REGEX}" --no-fail-fast \
-    || TIER_FAILURES=$((TIER_FAILURES + 1))
-
-  echo ""
-  echo "==> Running E2E tests (coverage, no report)"
-  cargo llvm-cov nextest --no-report --test 'e2e_*' \
-    --profile ci --run-ignored ignored-only --test-threads 2 \
     --ignore-filename-regex "${COV_IGNORE_REGEX}" --no-fail-fast \
     || TIER_FAILURES=$((TIER_FAILURES + 1))
 
@@ -329,12 +327,18 @@ else
     elif [[ -n "$LCOV_PATH" ]]; then
       COV_ARGS+=(--lcov --output-path "${LCOV_PATH}")
     fi
-    cargo llvm-cov nextest "${COV_ARGS[@]}" "${NEXTEST_ARGS[@]}" || TEST_EXIT=$?
+    cargo llvm-cov nextest "${COV_ARGS[@]}" "${NEXTEST_ARGS[@]}" 2>&1 | tee "${OUTPUT_FILE}" || TEST_EXIT=$?
   else
-    cargo nextest run "${NEXTEST_ARGS[@]}" || TEST_EXIT=$?
+    cargo nextest run "${NEXTEST_ARGS[@]}" 2>&1 | tee "${OUTPUT_FILE}" || TEST_EXIT=$?
   fi
 fi
 
 # ── Generate test report ──────────────────────────────────────────────────
 bash "${SCRIPT_DIR}/generate-test-report.sh" "${JUNIT_FILE}" "${REPORT_FILE}" || true
+
+echo ""
+echo "==> Test outputs (RUN_ID=${RUN_ID}):"
+echo "    Report: ${REPORT_FILE}"
+[[ -f "${OUTPUT_FILE}" ]] && echo "    Output: ${OUTPUT_FILE}"
+[[ -f "${LOG_FILE}" ]] && echo "    Logs:   ${LOG_FILE}"
 exit "${TEST_EXIT:-0}"

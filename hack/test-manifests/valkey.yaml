@@ -9,7 +9,7 @@ spec:
   containers:
     - name: valkey
       image: valkey/valkey:8-alpine
-      args: ["--save", "", "--appendonly", "no"]
+      args: ["--save", "", "--appendonly", "no", "--requirepass", "dev"]
       ports:
         - containerPort: 6379
       readinessProbe:

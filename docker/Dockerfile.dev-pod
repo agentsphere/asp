@@ -39,9 +39,11 @@ RUN ARCH=$(dpkg --print-architecture) \
   && mv /tmp/kubectl /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl \
   && rm -f /tmp/kubectl.sha256
 
-# Node.js 22
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-    apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
+# Node.js 22 — copy from official image instead of curl|bash (S9 supply chain)
+COPY --from=node:22-slim /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:22-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 # Rust components
 RUN rustup component add rustfmt clippy llvm-tools-preview

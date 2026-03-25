@@ -178,6 +178,17 @@ pub async fn delete_workspace(pool: &PgPool, id: Uuid) -> Result<bool, ApiError>
     )
     .execute(pool)
     .await?;
+
+    if result.rows_affected() > 0 {
+        // A40: Cascade soft-delete to workspace projects
+        sqlx::query(
+            "UPDATE projects SET is_active = false, updated_at = now() WHERE workspace_id = $1 AND is_active = true",
+        )
+        .bind(id)
+        .execute(pool)
+        .await?;
+    }
+
     Ok(result.rows_affected() > 0)
 }
 
@@ -295,7 +306,6 @@ pub async fn get_or_create_default_workspace(
 }
 
 /// Get workspace role for a user. Returns None if not a member.
-#[allow(dead_code)]
 pub async fn get_member_role(
     pool: &PgPool,
     workspace_id: Uuid,

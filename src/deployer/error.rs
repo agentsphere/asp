@@ -1,7 +1,7 @@
 use crate::error::ApiError;
 
 #[derive(Debug, thiserror::Error)]
-#[allow(dead_code)] // Variants consumed as the deployer evolves (e.g. NotFound, ApplyFailed)
+#[allow(dead_code)]
 pub enum DeployerError {
     #[error("deployment not found")]
     NotFound,

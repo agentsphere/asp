@@ -146,7 +146,7 @@ pub async fn get_decrypted_credential(
 
     match row {
         Some(r) => {
-            let plaintext = engine::decrypt(&r.encrypted_data, master_key)?;
+            let plaintext = engine::decrypt(&r.encrypted_data, master_key, None)?;
             let value = String::from_utf8(plaintext)
                 .map_err(|e| anyhow::anyhow!("credential is not valid UTF-8: {e}"))?;
             Ok(Some(DecryptedCredential {
@@ -218,7 +218,7 @@ mod tests {
         let key = [42u8; 32];
         let token = "sk-ant-ccode01-aBcDeFgHiJkLmNoPqRsTuVwXyZ";
         let encrypted = engine::encrypt(token.as_bytes(), &key).unwrap();
-        let decrypted = engine::decrypt(&encrypted, &key).unwrap();
+        let decrypted = engine::decrypt(&encrypted, &key, None).unwrap();
         assert_eq!(String::from_utf8(decrypted).unwrap(), token);
     }
 
@@ -227,7 +227,7 @@ mod tests {
         let key = [42u8; 32];
         let oauth_json = r#"{"access_token":"at-123","refresh_token":"rt-456","expires_at":"2026-03-02T12:00:00Z"}"#;
         let encrypted = engine::encrypt(oauth_json.as_bytes(), &key).unwrap();
-        let decrypted = engine::decrypt(&encrypted, &key).unwrap();
+        let decrypted = engine::decrypt(&encrypted, &key, None).unwrap();
         assert_eq!(String::from_utf8(decrypted).unwrap(), oauth_json);
     }
 
@@ -236,7 +236,7 @@ mod tests {
         let key1 = [42u8; 32];
         let key2 = [99u8; 32];
         let encrypted = engine::encrypt(b"my-token", &key1).unwrap();
-        let result = engine::decrypt(&encrypted, &key2);
+        let result = engine::decrypt(&encrypted, &key2, None);
         assert!(result.is_err());
         assert!(
             result
@@ -249,8 +249,8 @@ mod tests {
     #[test]
     fn decrypt_with_truncated_data_fails() {
         let key = [42u8; 32];
-        // Less than 12 bytes (nonce size)
-        let result = engine::decrypt(&[0u8; 5], &key);
+        // Less than 12 bytes (nonce size) + 1 byte version prefix
+        let result = engine::decrypt(&[0u8; 5], &key, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("too short"));
     }

@@ -40,8 +40,12 @@ async fn create_scoped_client(
     creds: &valkey_acl::SessionValkeyCredentials,
     valkey_url: &str,
 ) -> fred::clients::Client {
-    // Extract host:port from the admin Valkey URL (e.g. "redis://127.0.0.1:55438")
-    let host_port = valkey_url.strip_prefix("redis://").unwrap_or(valkey_url);
+    // Extract host:port from the admin Valkey URL (e.g. "redis://127.0.0.1:55438" or "redis://:dev@127.0.0.1:55438")
+    let after_scheme = valkey_url.strip_prefix("redis://").unwrap_or(valkey_url);
+    let host_port = after_scheme
+        .find('@')
+        .map(|i| &after_scheme[i + 1..])
+        .unwrap_or(after_scheme);
     let scoped_url = format!(
         "redis://{}:{}@{}",
         creds.username, creds.password, host_port
@@ -214,11 +218,15 @@ async fn acl_cleanup_revokes_access(pool: PgPool) {
         .expect("delete ACL");
 
     // New connection with the same credentials should fail
-    let host_port = state
+    let after_scheme2 = state
         .config
         .valkey_url
         .strip_prefix("redis://")
         .unwrap_or(&state.config.valkey_url);
+    let host_port = after_scheme2
+        .find('@')
+        .map(|i| &after_scheme2[i + 1..])
+        .unwrap_or(after_scheme2);
     let scoped_url = format!(
         "redis://{}:{}@{}",
         creds.username, creds.password, host_port

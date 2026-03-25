@@ -4,6 +4,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 
 use ts_rs::TS;
 
@@ -13,6 +14,8 @@ use crate::error::ApiError;
 use crate::secrets::{engine, user_keys};
 use crate::store::AppState;
 use crate::validation;
+
+use super::helpers::ListResponse;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -65,13 +68,42 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/api/users/me/provider-keys/{provider}",
-            axum::routing::put(set_provider_key).delete(delete_provider_key),
+            get(get_provider_key)
+                .put(set_provider_key)
+                .delete(delete_provider_key),
         )
 }
 
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
+
+/// GET /api/users/me/provider-keys/{provider}
+async fn get_provider_key(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(provider): Path<String>,
+) -> Result<Json<user_keys::ProviderKeyMetadata>, ApiError> {
+    validation::check_name(&provider)?;
+
+    let row = sqlx::query(
+        "SELECT provider, key_suffix, created_at, updated_at \
+         FROM user_provider_keys WHERE user_id = $1 AND provider = $2",
+    )
+    .bind(auth.user_id)
+    .bind(&provider)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| ApiError::Internal(e.into()))?
+    .ok_or_else(|| ApiError::NotFound("provider key".into()))?;
+
+    Ok(Json(user_keys::ProviderKeyMetadata {
+        provider: row.get("provider"),
+        key_suffix: row.get("key_suffix"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }))
+}
 
 /// PUT /api/users/me/provider-keys/{provider}
 async fn set_provider_key(
@@ -117,11 +149,12 @@ async fn set_provider_key(
 async fn list_provider_keys(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<Vec<user_keys::ProviderKeyMetadata>>, ApiError> {
-    let keys = user_keys::list_user_keys(&state.pool, auth.user_id)
+) -> Result<Json<ListResponse<user_keys::ProviderKeyMetadata>>, ApiError> {
+    let items = user_keys::list_user_keys(&state.pool, auth.user_id)
         .await
         .map_err(ApiError::Internal)?;
-    Ok(Json(keys))
+    let total = i64::try_from(items.len()).unwrap_or(0);
+    Ok(Json(ListResponse { items, total }))
 }
 
 /// DELETE /api/users/me/provider-keys/{provider}

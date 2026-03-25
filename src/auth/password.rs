@@ -17,7 +17,10 @@ pub fn dummy_hash() -> &'static str {
 
 pub fn hash_password(plain: &str) -> anyhow::Result<String> {
     let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
-    let hash = Argon2::default()
+    // S70: explicit Argon2id params (64 MiB memory, 3 iterations, 1 thread)
+    let params = argon2::Params::new(65536, 3, 1, None)
+        .map_err(|e| anyhow::anyhow!("argon2 params: {e}"))?;
+    let hash = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
         .hash_password(plain.as_bytes(), &salt)
         .map_err(|e| anyhow::anyhow!("password hash failed: {e}"))?
         .to_string();

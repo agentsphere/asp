@@ -1,0 +1,269 @@
+   Compiling platform v0.1.0 (/Users/steven/newKid/business/agentsphere/repos/platform)
+warning: unused import: `delete`
+ --> src/api/users.rs:4:21
+  |
+4 | use axum::routing::{delete, get, post};
+  |                     ^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `extract_secret_patterns` is never used
+   --> src/secrets/engine.rs:481:4
+    |
+481 | fn extract_secret_patterns(template: &str) -> Vec<(usize, usize, String)> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `platform` (lib) generated 2 warnings (run `cargo fix --lib -p platform` to apply 1 suggestion)
+warning: variant `Validation` is never constructed
+  --> src/error.rs:22:5
+   |
+ 5 | pub enum ApiError {
+   |          -------- variant in this enum
+...
+22 |     Validation(Vec<String>),
+   |     ^^^^^^^^^^
+   |
+   = note: `ApiError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `validate_webhook_url` is never used
+  --> src/api/webhooks.rs:46:15
+   |
+46 | pub(crate) fn validate_webhook_url(url_str: &str) -> Result<(), ApiError> {
+   |               ^^^^^^^^^^^^^^^^^^^^
+
+warning: variants `NotFound` and `StepFailed` are never constructed
+  --> src/pipeline/error.rs:9:5
+   |
+ 4 | pub enum PipelineError {
+   |          ------------- variants in this enum
+...
+ 9 |     NotFound,
+   |     ^^^^^^^^
+...
+12 |     StepFailed { name: String, exit_code: i32 },
+   |     ^^^^^^^^^^
+   |
+   = note: `PipelineError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: variants `NotFound`, `ApplyFailed`, `NoPreviousDeployment`, `InvalidTransition`, `GatewayError`, and `AnalysisFailed` are never constructed
+  --> src/deployer/error.rs:6:5
+   |
+ 4 | pub enum DeployerError {
+   |          ------------- variants in this enum
+ 5 |     #[error("deployment not found")]
+ 6 |     NotFound,
+   |     ^^^^^^^^
+...
+18 |     ApplyFailed(String),
+   |     ^^^^^^^^^^^
+...
+24 |     NoPreviousDeployment,
+   |     ^^^^^^^^^^^^^^^^^^^^
+...
+42 |     InvalidTransition(String, String),
+   |     ^^^^^^^^^^^^^^^^^
+...
+45 |     GatewayError(String),
+   |     ^^^^^^^^^^^^
+...
+48 |     AnalysisFailed(String),
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `DeployerError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: function `parse_line` is never used
+  --> src/agent/claude_code/progress.rs:13:8
+   |
+13 | pub fn parse_line(line: &str) -> Option<ProgressEvent> {
+   |        ^^^^^^^^^^
+
+warning: function `parse_assistant_event` is never used
+  --> src/agent/claude_code/progress.rs:36:4
+   |
+36 | fn parse_assistant_event(v: &serde_json::Value) -> Option<ProgressEvent> {
+   |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `parse_result_event` is never used
+  --> src/agent/claude_code/progress.rs:80:4
+   |
+80 | fn parse_result_event(v: &serde_json::Value) -> ProgressEvent {
+   |    ^^^^^^^^^^^^^^^^^^
+
+warning: field `allowed_child_roles` is never read
+  --> src/agent/provider.rs:69:9
+   |
+53 | pub struct AgentSession {
+   |            ------------ field in this struct
+...
+69 |     pub allowed_child_roles: Option<Vec<String>>,
+   |         ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `AgentSession` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: methods `parse_progress` and `name` are never used
+   --> src/agent/provider.rs:196:8
+    |
+191 | pub trait AgentProvider: Send + Sync {
+    |           ------------- methods in this trait
+...
+196 |     fn parse_progress(&self, line: &str) -> Option<ProgressEvent>;
+    |        ^^^^^^^^^^^^^^
+...
+199 |     fn name(&self) -> &'static str;
+    |        ^^^^
+
+warning: variants `InvalidPayload`, `BackpressureFull`, and `InvalidAlertRule` are never constructed
+  --> src/observe/error.rs:6:5
+   |
+ 4 | pub enum ObserveError {
+   |          ------------ variants in this enum
+ 5 |     #[error("invalid OTLP payload: {0}")]
+ 6 |     InvalidPayload(String),
+   |     ^^^^^^^^^^^^^^
+...
+ 9 |     BackpressureFull,
+   |     ^^^^^^^^^^^^^^^^
+...
+12 |     InvalidAlertRule(String),
+   |     ^^^^^^^^^^^^^^^^
+   |
+   = note: `ObserveError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: enum `NotifyChannel` is never used
+  --> src/notify/dispatch.rs:14:10
+   |
+14 | pub enum NotifyChannel {
+   |          ^^^^^^^^^^^^^
+
+warning: method `as_str` is never used
+  --> src/notify/dispatch.rs:21:12
+   |
+20 | impl NotifyChannel {
+   | ------------------ method in this implementation
+21 |     pub fn as_str(&self) -> &'static str {
+   |            ^^^^^^
+
+warning: struct `NewNotification` is never constructed
+  --> src/notify/dispatch.rs:30:12
+   |
+30 | pub struct NewNotification {
+   |            ^^^^^^^^^^^^^^^
+
+warning: function `notify` is never used
+  --> src/notify/dispatch.rs:55:14
+   |
+55 | pub async fn notify(state: &AppState, notification: NewNotification) -> Result<(), ApiError> {
+   |              ^^^^^^
+
+warning: function `send_email_notification` is never used
+   --> src/notify/dispatch.rs:107:10
+    |
+107 | async fn send_email_notification(
+    |          ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `on_build_complete` is never used
+   --> src/notify/dispatch.rs:128:14
+    |
+128 | pub async fn on_build_complete(state: &AppState, project_id: Uuid, status: &str) {
+    |              ^^^^^^^^^^^^^^^^^
+
+warning: function `on_mr_created` is never used
+   --> src/notify/dispatch.rs:160:14
+    |
+160 | pub async fn on_mr_created(state: &AppState, project_id: Uuid, mr_number: i64) {
+    |              ^^^^^^^^^^^^^
+
+warning: function `on_deploy_status` is never used
+   --> src/notify/dispatch.rs:190:14
+    |
+190 | pub async fn on_deploy_status(state: &AppState, project_id: Uuid, status: &str) {
+    |              ^^^^^^^^^^^^^^^^
+
+warning: function `on_agent_completed` is never used
+   --> src/notify/dispatch.rs:220:14
+    |
+220 | pub async fn on_agent_completed(state: &AppState, user_id: Uuid, session_id: Uuid) {
+    |              ^^^^^^^^^^^^^^^^^^
+
+warning: function `on_alert_firing` is never used
+   --> src/notify/dispatch.rs:237:14
+    |
+237 | pub async fn on_alert_firing(state: &AppState, user_id: Uuid, alert_id: Uuid) {
+    |              ^^^^^^^^^^^^^^^
+
+warning: function `send` is never used
+ --> src/notify/email.rs:8:14
+  |
+8 | pub async fn send(config: &Config, to: &str, subject: &str, body: &str) -> anyhow::Result<()> {
+  |              ^^^^
+
+warning: struct `DeliveryResult` is never constructed
+ --> src/notify/webhook.rs:9:12
+  |
+9 | pub struct DeliveryResult {
+  |            ^^^^^^^^^^^^^^
+
+warning: function `compute_signature` is never used
+  --> src/notify/webhook.rs:16:4
+   |
+16 | fn compute_signature(payload: &[u8], secret: &str) -> Option<String> {
+   |    ^^^^^^^^^^^^^^^^^
+
+warning: function `deliver` is never used
+  --> src/notify/webhook.rs:27:14
+   |
+27 | pub async fn deliver(
+   |              ^^^^^^^
+
+warning: function `dev_master_key` is never used
+  --> src/secrets/engine.rs:23:8
+   |
+23 | pub fn dev_master_key() -> [u8; 32] {
+   |        ^^^^^^^^^^^^^^
+
+warning: function `resolve_secret_hierarchical` is never used
+   --> src/secrets/engine.rs:421:14
+    |
+421 | pub async fn resolve_secret_hierarchical(
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `extract_secret_patterns` is never used
+   --> src/secrets/engine.rs:481:4
+    |
+481 | fn extract_secret_patterns(template: &str) -> Vec<(usize, usize, String)> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `resolve_secrets_for_env` is never used
+   --> src/secrets/engine.rs:559:14
+    |
+559 | pub async fn resolve_secrets_for_env(
+    |              ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `platform` (bin "platform") generated 29 warnings (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 48s
+────────────
+ Nextest run ID 1ad570e5-9189-4cb2-b02a-e3781ef4e10d with nextest profile: ci
+    Starting 18 tests across 1 binary
+        PASS [   9.977s] ( 1/18) platform::project_integration create_project_name_too_long
+        PASS [  10.104s] ( 2/18) platform::project_integration create_project_empty_name
+        PASS [  10.105s] ( 3/18) platform::project_integration create_projects_with_same_slug_both_succeed
+        PASS [  10.129s] ( 4/18) platform::project_integration private_project_hidden_from_non_owner
+        PASS [  10.129s] ( 5/18) platform::project_integration create_project_with_visibility
+        PASS [  10.140s] ( 6/18) platform::project_integration update_project
+        PASS [  10.152s] ( 7/18) platform::project_integration create_project_returns_namespace_slug
+        PASS [  10.157s] ( 8/18) platform::project_integration create_project_invalid_name
+        PASS [  10.159s] ( 9/18) platform::project_integration get_project_by_id
+        PASS [  10.167s] (10/18) platform::project_integration delete_project_requires_permission
+        PASS [  10.171s] (11/18) platform::project_integration delete_project_soft_delete
+        PASS [  10.173s] (12/18) platform::project_integration create_project
+        PASS [  10.173s] (13/18) platform::project_integration get_nonexistent_project
+        PASS [  10.175s] (14/18) platform::project_integration project_owner_has_implicit_access
+        PASS [  10.177s] (15/18) platform::project_integration public_project_visible_to_all
+        PASS [  10.183s] (16/18) platform::project_integration create_project_duplicate_name
+        PASS [  10.794s] (17/18) platform::project_integration list_projects_pagination_offset
+        PASS [  10.805s] (18/18) platform::project_integration list_projects_pagination
+────────────
+     Summary [  10.806s] 18 tests run: 18 passed, 0 skipped

@@ -37,7 +37,7 @@ async fn test_list_ssh_keys_empty(pool: PgPool) {
 
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/users/me/ssh-keys").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_array().unwrap().len(), 0);
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -59,7 +59,7 @@ async fn test_list_ssh_keys_with_data(pool: PgPool) {
 
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/users/me/ssh-keys").await;
     assert_eq!(status, StatusCode::OK);
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0]["name"], "test-key");
 }
@@ -87,12 +87,12 @@ async fn test_delete_ssh_key_success(pool: PgPool) {
         &format!("/api/users/me/ssh-keys/{key_id}"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify it's gone
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/users/me/ssh-keys").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_array().unwrap().len(), 0);
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -367,7 +367,7 @@ async fn test_admin_list_user_ssh_keys(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0]["name"], "user-key");
 }
@@ -467,7 +467,7 @@ async fn test_list_ssh_keys_only_own_keys(pool: PgPool) {
 
     let (status, body) = helpers::get_json(&app, &user_token, "/api/users/me/ssh-keys").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_array().unwrap().len(), 0);
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
 }
 
 #[sqlx::test(migrations = "./migrations")]

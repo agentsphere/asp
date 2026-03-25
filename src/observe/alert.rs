@@ -508,7 +508,7 @@ async fn delete_alert(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     require_alert_manage(&state, &auth).await?;
 
     let result = sqlx::query("DELETE FROM alert_rules WHERE id = $1 RETURNING project_id")
@@ -534,7 +534,7 @@ async fn delete_alert(
     )
     .await;
 
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[tracing::instrument(skip(state), fields(%id), err)]

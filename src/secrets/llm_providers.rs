@@ -242,7 +242,7 @@ pub async fn get_config(
         return Ok(None);
     };
 
-    let plaintext = engine::decrypt(&row.encrypted_config, master_key)?;
+    let plaintext = engine::decrypt(&row.encrypted_config, master_key, None)?;
     let blob: EncryptedBlob = serde_json::from_slice(&plaintext)
         .map_err(|e| anyhow::anyhow!("failed to parse encrypted config: {e}"))?;
 
@@ -316,21 +316,22 @@ pub async fn delete_config(pool: &PgPool, config_id: Uuid, user_id: Uuid) -> any
 }
 
 /// Update validation status after running tests.
-#[tracing::instrument(skip(pool), fields(%config_id, %status), err)]
+/// A41: Includes `user_id` in WHERE clause to enforce ownership.
+#[tracing::instrument(skip(pool), fields(%config_id, %user_id, %status), err)]
 pub async fn update_validation_status(
     pool: &PgPool,
     config_id: Uuid,
+    user_id: Uuid,
     status: &str,
 ) -> anyhow::Result<()> {
-    sqlx::query!(
-        r#"
-        UPDATE llm_provider_configs
-        SET validation_status = $2, last_validated_at = now(), updated_at = now()
-        WHERE id = $1
-        "#,
-        config_id,
-        status,
+    sqlx::query(
+        "UPDATE llm_provider_configs \
+         SET validation_status = $2, last_validated_at = now(), updated_at = now() \
+         WHERE id = $1 AND user_id = $3",
     )
+    .bind(config_id)
+    .bind(status)
+    .bind(user_id)
     .execute(pool)
     .await?;
     Ok(())

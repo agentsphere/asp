@@ -52,7 +52,7 @@ RUN npm install -g @anthropic-ai/claude-code@1.0.16
 
 # MCP servers
 COPY mcp/ /usr/local/lib/mcp/
-RUN cd /usr/local/lib/mcp && npm install --omit=dev
+RUN cd /usr/local/lib/mcp && npm ci --ignore-scripts --omit=dev
 
 # Non-root user with sudo access (for installing packages at runtime)
 RUN userdel -r node 2>/dev/null || true \

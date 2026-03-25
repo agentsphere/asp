@@ -239,6 +239,7 @@ async fn handle_pending(state: &AppState, release: &PendingRelease) -> Result<()
         &ns,
         env_suffix(&release.environment),
         &release.project_id.to_string(),
+        &state.config.platform_namespace,
     )
     .await?;
 
@@ -571,7 +572,7 @@ async fn apply_gateway_resources(
             let cw = canary_weight.unsigned_abs();
             let sw = 100 - cw;
 
-            let route = super::gateway::build_weighted_httproute(
+            match super::gateway::build_weighted_httproute(
                 &route_name,
                 namespace,
                 hostname,
@@ -580,8 +581,10 @@ async fn apply_gateway_resources(
                 sw,
                 cw,
                 &gw,
-            );
-            apply_json_to_k8s(state, &route, namespace).await;
+            ) {
+                Ok(route) => apply_json_to_k8s(state, &route, namespace).await,
+                Err(e) => tracing::error!(error = %e, "failed to build weighted HTTPRoute"),
+            }
         }
         "ab_test" => {
             let control_svc = config
@@ -831,7 +834,7 @@ async fn inject_project_secrets(
         for row in &rows {
             let name: String = row.get("name");
             let encrypted: Vec<u8> = row.get("encrypted_value");
-            match crate::secrets::engine::decrypt(&encrypted, &mk) {
+            match crate::secrets::engine::decrypt(&encrypted, &mk, None) {
                 Ok(val) => {
                     if let Ok(s) = String::from_utf8(val) {
                         env_data.insert(name, s);

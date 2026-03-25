@@ -21,7 +21,7 @@ async fn list_passkeys_empty(pool: PgPool) {
 
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/auth/passkeys").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_array().unwrap().len(), 0);
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -46,7 +46,7 @@ async fn list_passkeys_with_data(pool: PgPool) {
 
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/auth/passkeys").await;
     assert_eq!(status, StatusCode::OK);
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0]["name"], "Test Key");
     assert_eq!(keys[0]["transports"][0], "usb");
@@ -77,14 +77,14 @@ async fn delete_passkey_success(pool: PgPool) {
     .await
     .unwrap();
 
-    let (status, body) =
+    let (status, _) =
         helpers::delete_json(&app, &admin_token, &format!("/api/auth/passkeys/{cred_id}")).await;
-    assert_eq!(status, StatusCode::OK, "delete failed: {body}");
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify gone
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/auth/passkeys").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_array().unwrap().len(), 0);
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -219,7 +219,7 @@ async fn begin_login_returns_challenge(pool: PgPool) {
     let (status, body) = helpers::post_json(
         &app,
         "",
-        "/api/auth/passkey/login/begin",
+        "/api/auth/passkeys/login/begin",
         serde_json::json!({}),
     )
     .await;
@@ -263,7 +263,7 @@ async fn complete_login_invalid_challenge_id(pool: PgPool) {
     let (status, _) = helpers::post_json(
         &app,
         "",
-        "/api/auth/passkey/login/complete",
+        "/api/auth/passkeys/login/complete",
         serde_json::json!({
             "challenge_id": "nonexistent-challenge-id",
             "credential": {
@@ -527,7 +527,7 @@ async fn complete_login_no_credentials_in_db(pool: PgPool) {
     let (status, _) = helpers::post_json(
         &app,
         "",
-        "/api/auth/passkey/login/complete",
+        "/api/auth/passkeys/login/complete",
         serde_json::json!({
             "challenge_id": "some-challenge-id",
             "credential": {
@@ -555,7 +555,7 @@ async fn complete_login_invalid_credential_json(pool: PgPool) {
     let (status, _) = helpers::post_json(
         &app,
         "",
-        "/api/auth/passkey/login/complete",
+        "/api/auth/passkeys/login/complete",
         serde_json::json!({"not": "valid"}),
     )
     .await;
@@ -592,13 +592,13 @@ async fn complete_login_deactivated_user_credential(pool: PgPool) {
     // Deactivate the user
     let (status, _) =
         helpers::delete_json(&app, &admin_token, &format!("/api/users/{user_id}")).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Now try passkey login complete — should fail because user is inactive
     let (status, _) = helpers::post_json(
         &app,
         "",
-        "/api/auth/passkey/login/complete",
+        "/api/auth/passkeys/login/complete",
         serde_json::json!({
             "challenge_id": "fake-challenge",
             "credential": {
@@ -728,7 +728,7 @@ async fn list_passkeys_response_fields(pool: PgPool) {
 
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/auth/passkeys").await;
     assert_eq!(status, StatusCode::OK);
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0]["id"], cred_id.to_string());
     assert_eq!(keys[0]["name"], "Full Key");
@@ -781,14 +781,14 @@ async fn list_passkeys_only_own_credentials(pool: PgPool) {
     // Admin sees only their key
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/auth/passkeys").await;
     assert_eq!(status, StatusCode::OK);
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0]["name"], "Admin Key");
 
     // Other user sees only their key
     let (status, body) = helpers::get_json(&app, &other_token, "/api/auth/passkeys").await;
     assert_eq!(status, StatusCode::OK);
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0]["name"], "Other Key");
 }
@@ -821,7 +821,7 @@ async fn delete_passkey_creates_audit_log(pool: PgPool) {
 
     let (status, _) =
         helpers::delete_json(&app, &admin_token, &format!("/api/auth/passkeys/{cred_id}")).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Check that audit log has the delete entry
     let row: Option<(String, String)> = sqlx::query_as(
@@ -849,7 +849,7 @@ async fn begin_login_produces_unique_challenge_ids(pool: PgPool) {
     let (status1, body1) = helpers::post_json(
         &app,
         "",
-        "/api/auth/passkey/login/begin",
+        "/api/auth/passkeys/login/begin",
         serde_json::json!({}),
     )
     .await;
@@ -858,7 +858,7 @@ async fn begin_login_produces_unique_challenge_ids(pool: PgPool) {
     let (status2, body2) = helpers::post_json(
         &app,
         "",
-        "/api/auth/passkey/login/begin",
+        "/api/auth/passkeys/login/begin",
         serde_json::json!({}),
     )
     .await;
@@ -959,7 +959,7 @@ async fn list_passkeys_ordered_by_created_at_desc(pool: PgPool) {
 
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/auth/passkeys").await;
     assert_eq!(status, StatusCode::OK);
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 2);
     // Most recent first (DESC)
     assert_eq!(keys[0]["name"], "Second Key");
@@ -1030,7 +1030,7 @@ async fn full_registration_ceremony(pool: PgPool) {
     // Verify the credential appears in the list
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/auth/passkeys").await;
     assert_eq!(status, StatusCode::OK);
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0]["id"], cred_id.to_string());
 }
@@ -1049,7 +1049,7 @@ async fn register_multiple_passkeys(pool: PgPool) {
     // Verify both appear
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/auth/passkeys").await;
     assert_eq!(status, StatusCode::OK);
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 2);
 }
 
@@ -1075,7 +1075,7 @@ async fn login_passkey_ceremony(
     let (status, body) = helpers::post_json(
         app,
         "",
-        "/api/auth/passkey/login/begin",
+        "/api/auth/passkeys/login/begin",
         serde_json::json!({}),
     )
     .await;
@@ -1110,7 +1110,7 @@ async fn login_passkey_ceremony(
     let (status, body) = helpers::post_json(
         app,
         "",
-        "/api/auth/passkey/login/complete",
+        "/api/auth/passkeys/login/complete",
         serde_json::json!({
             "challenge_id": challenge_id,
             "credential": auth_response,
@@ -1234,7 +1234,7 @@ async fn login_clone_detection_rejects(pool: PgPool) {
     let (status, body) = helpers::post_json(
         &app,
         "",
-        "/api/auth/passkey/login/begin",
+        "/api/auth/passkeys/login/begin",
         serde_json::json!({}),
     )
     .await;
@@ -1266,7 +1266,7 @@ async fn login_clone_detection_rejects(pool: PgPool) {
     let (status, _) = helpers::post_json(
         &app,
         "",
-        "/api/auth/passkey/login/complete",
+        "/api/auth/passkeys/login/complete",
         serde_json::json!({
             "challenge_id": challenge_id,
             "credential": auth_response,

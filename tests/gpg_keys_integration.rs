@@ -107,7 +107,7 @@ async fn test_list_gpg_keys_empty(pool: PgPool) {
 
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/users/me/gpg-keys").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_array().unwrap().len(), 0);
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -128,7 +128,7 @@ async fn test_list_gpg_keys_with_data(pool: PgPool) {
     // List
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/users/me/gpg-keys").await;
     assert_eq!(status, StatusCode::OK);
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 1);
     assert!(keys[0]["fingerprint"].is_string());
 }
@@ -237,7 +237,7 @@ async fn test_delete_gpg_key_success(pool: PgPool) {
         &format!("/api/users/me/gpg-keys/{key_id}"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify deleted
     let (status, _) = helpers::get_json(
@@ -465,7 +465,7 @@ async fn test_admin_list_user_gpg_keys(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
 }
 
 #[sqlx::test(migrations = "./migrations")]

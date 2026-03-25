@@ -34,7 +34,13 @@ pub fn dev_master_key() -> [u8; 32] {
 // Encrypt / Decrypt
 // ---------------------------------------------------------------------------
 
-/// Encrypt plaintext with AES-256-GCM. Returns `nonce (12) || ciphertext || tag`.
+/// Version byte prepended to encrypted output (S44: multi-key rotation support).
+const ENCRYPTION_VERSION: u8 = 0x01;
+
+/// Encrypt plaintext with AES-256-GCM. Returns `0x01 || nonce (12) || ciphertext || tag`.
+///
+/// The leading version byte (`0x01`) identifies data encrypted with the current format.
+/// Legacy data (without version byte) is still decryptable via [`decrypt`].
 pub fn encrypt(plaintext: &[u8], master_key: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
     let cipher = Aes256Gcm::new_from_slice(master_key)
         .map_err(|e| anyhow::anyhow!("failed to create cipher: {e}"))?;
@@ -47,23 +53,60 @@ pub fn encrypt(plaintext: &[u8], master_key: &[u8; 32]) -> anyhow::Result<Vec<u8
         .encrypt(nonce, plaintext)
         .map_err(|e| anyhow::anyhow!("encryption failed: {e}"))?;
 
-    let mut result = Vec::with_capacity(12 + ciphertext.len());
+    let mut result = Vec::with_capacity(1 + 12 + ciphertext.len());
+    result.push(ENCRYPTION_VERSION);
     result.extend_from_slice(&nonce_bytes);
     result.extend_from_slice(&ciphertext);
     Ok(result)
 }
 
-/// Decrypt data produced by [`encrypt`]. Input: `nonce (12) || ciphertext || tag`.
-pub fn decrypt(encrypted: &[u8], master_key: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
-    if encrypted.len() < 12 {
+/// Decrypt data produced by [`encrypt`], with optional previous key for rotation (S44).
+///
+/// Format detection:
+/// - First byte `0x01` → versioned format: strip version byte, decrypt `nonce(12) || ciphertext`.
+/// - Any other first byte → legacy format (no version byte): decrypt entire blob as `nonce(12) || ciphertext`.
+///
+/// If decryption with `master_key` fails and `previous_key` is `Some`, retries with the previous key.
+/// This allows seamless key rotation: re-encrypt data at leisure while both keys work.
+pub fn decrypt(
+    encrypted: &[u8],
+    master_key: &[u8; 32],
+    previous_key: Option<&[u8; 32]>,
+) -> anyhow::Result<Vec<u8>> {
+    // Determine payload (strip version byte if present)
+    let payload = if encrypted.first() == Some(&ENCRYPTION_VERSION) {
+        &encrypted[1..]
+    } else {
+        encrypted
+    };
+
+    if payload.len() < 12 {
         anyhow::bail!("encrypted data too short (need at least 12 bytes for nonce)");
     }
 
-    let cipher = Aes256Gcm::new_from_slice(master_key)
+    // Try current key first
+    match decrypt_raw(payload, master_key) {
+        Ok(plaintext) => Ok(plaintext),
+        Err(current_err) => {
+            // If a previous key is available, try it
+            if let Some(prev) = previous_key
+                && let Ok(plaintext) = decrypt_raw(payload, prev)
+            {
+                return Ok(plaintext);
+            }
+            // Return the original error from the current key attempt
+            Err(current_err)
+        }
+    }
+}
+
+/// Low-level AES-256-GCM decryption: `nonce (12) || ciphertext || tag`.
+fn decrypt_raw(payload: &[u8], key: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
+    let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| anyhow::anyhow!("failed to create cipher: {e}"))?;
 
-    let nonce = Nonce::from_slice(&encrypted[..12]);
-    let ciphertext = &encrypted[12..];
+    let nonce = Nonce::from_slice(&payload[..12]);
+    let ciphertext = &payload[12..];
 
     cipher
         .decrypt(nonce, ciphertext)
@@ -369,7 +412,7 @@ pub async fn resolve_secret(
         );
     }
 
-    let plaintext = decrypt(&row.encrypted_value, master_key)?;
+    let plaintext = decrypt(&row.encrypted_value, master_key, None)?;
     String::from_utf8(plaintext)
         .map_err(|e| anyhow::anyhow!("secret value is not valid UTF-8: {e}"))
 }
@@ -404,7 +447,7 @@ pub async fn resolve_global_secret(
         );
     }
 
-    let plaintext = decrypt(&row.encrypted_value, master_key)?;
+    let plaintext = decrypt(&row.encrypted_value, master_key, None)?;
     String::from_utf8(plaintext)
         .map_err(|e| anyhow::anyhow!("secret value is not valid UTF-8: {e}"))
 }
@@ -471,7 +514,7 @@ pub async fn resolve_secret_hierarchical(
         );
     }
 
-    let plaintext = decrypt(&row.encrypted_value, master_key)?;
+    let plaintext = decrypt(&row.encrypted_value, master_key, None)?;
     String::from_utf8(plaintext)
         .map_err(|e| anyhow::anyhow!("secret value is not valid UTF-8: {e}"))
 }
@@ -537,7 +580,7 @@ pub async fn query_scoped_secrets(
 
     let mut result = Vec::with_capacity(rows.len());
     for row in rows {
-        match decrypt(&row.encrypted_value, master_key) {
+        match decrypt(&row.encrypted_value, master_key, None) {
             Ok(plaintext) => {
                 let value = String::from_utf8(plaintext).map_err(|e| {
                     anyhow::anyhow!("secret '{}' is not valid UTF-8: {e}", row.name)
@@ -615,10 +658,12 @@ mod tests {
         let plaintext = b"super-secret-value-123";
         let encrypted = encrypt(plaintext, &key).unwrap();
 
-        // Encrypted should be larger (12 nonce + 16 tag + plaintext len)
+        // Encrypted should be larger (1 version + 12 nonce + 16 tag + plaintext len)
         assert!(encrypted.len() > plaintext.len());
+        // S44: First byte should be the version byte
+        assert_eq!(encrypted[0], ENCRYPTION_VERSION);
 
-        let decrypted = decrypt(&encrypted, &key).unwrap();
+        let decrypted = decrypt(&encrypted, &key, None).unwrap();
         assert_eq!(decrypted, plaintext);
     }
 
@@ -627,7 +672,7 @@ mod tests {
         let key1 = [42u8; 32];
         let key2 = [99u8; 32];
         let encrypted = encrypt(b"secret", &key1).unwrap();
-        let err = decrypt(&encrypted, &key2).unwrap_err();
+        let err = decrypt(&encrypted, &key2, None).unwrap_err();
         assert!(
             err.to_string().contains("decryption failed"),
             "wrong key should produce decryption failure, got: {err}"
@@ -642,7 +687,7 @@ mod tests {
         if let Some(byte) = encrypted.last_mut() {
             *byte ^= 0xFF;
         }
-        let err = decrypt(&encrypted, &key).unwrap_err();
+        let err = decrypt(&encrypted, &key, None).unwrap_err();
         assert!(
             err.to_string().contains("decryption failed"),
             "corrupted data should produce decryption failure, got: {err}"
@@ -652,7 +697,7 @@ mod tests {
     #[test]
     fn decrypt_too_short_fails() {
         let key = [42u8; 32];
-        let err = decrypt(&[0u8; 5], &key).unwrap_err();
+        let err = decrypt(&[0u8; 5], &key, None).unwrap_err();
         assert!(
             err.to_string().contains("too short"),
             "too-short data should mention 'too short', got: {err}"
@@ -700,7 +745,7 @@ mod tests {
         assert_ne!(key, [0u8; 32], "dev key should not be all zeros");
         // Verify it works as a valid encryption key
         let encrypted = encrypt(b"test", &key).unwrap();
-        let decrypted = decrypt(&encrypted, &key).unwrap();
+        let decrypted = decrypt(&encrypted, &key, None).unwrap();
         assert_eq!(decrypted, b"test");
     }
 
@@ -708,9 +753,9 @@ mod tests {
     fn encrypt_empty_plaintext_roundtrips() {
         let key = [42u8; 32];
         let encrypted = encrypt(b"", &key).unwrap();
-        // Should have nonce (12) + tag (16) even for empty plaintext
-        assert_eq!(encrypted.len(), 12 + 16);
-        let decrypted = decrypt(&encrypted, &key).unwrap();
+        // Should have 1 version + nonce (12) + tag (16) even for empty plaintext
+        assert_eq!(encrypted.len(), 1 + 12 + 16);
+        let decrypted = decrypt(&encrypted, &key, None).unwrap();
         assert!(decrypted.is_empty());
     }
 
@@ -756,9 +801,9 @@ mod tests {
 
     #[test]
     fn decrypt_nonce_only_no_ciphertext_fails() {
-        // Exactly 12 bytes (nonce) but no ciphertext or tag
+        // Exactly 12 bytes (nonce) but no ciphertext or tag — treated as legacy (no version byte)
         let key = [42u8; 32];
-        let err = decrypt(&[0u8; 12], &key).unwrap_err();
+        let err = decrypt(&[0u8; 12], &key, None).unwrap_err();
         assert!(
             err.to_string().contains("decryption failed"),
             "nonce-only data should fail decryption, got: {err}"
@@ -770,8 +815,90 @@ mod tests {
         let key = [42u8; 32];
         let large = "x".repeat(100_000); // 100KB
         let encrypted = encrypt(large.as_bytes(), &key).unwrap();
-        let decrypted = decrypt(&encrypted, &key).unwrap();
+        let decrypted = decrypt(&encrypted, &key, None).unwrap();
         assert_eq!(decrypted, large.as_bytes());
+    }
+
+    // -- S44: Multi-key rotation tests --
+
+    #[test]
+    fn decrypt_with_previous_key() {
+        let old_key = [42u8; 32];
+        let new_key = [99u8; 32];
+        // Data encrypted with old key
+        let encrypted = encrypt(b"rotated-secret", &old_key).unwrap();
+        // Decrypt with new (current) key fails, but previous key succeeds
+        let decrypted = decrypt(&encrypted, &new_key, Some(&old_key)).unwrap();
+        assert_eq!(decrypted, b"rotated-secret");
+    }
+
+    #[test]
+    fn decrypt_prefers_current_key_over_previous() {
+        let current_key = [42u8; 32];
+        let previous_key = [99u8; 32];
+        // Data encrypted with current key
+        let encrypted = encrypt(b"current-secret", &current_key).unwrap();
+        // Should succeed with current key even when previous key is also provided
+        let decrypted = decrypt(&encrypted, &current_key, Some(&previous_key)).unwrap();
+        assert_eq!(decrypted, b"current-secret");
+    }
+
+    #[test]
+    fn decrypt_legacy_data_without_version_prefix() {
+        // Simulate legacy data: nonce(12) || ciphertext+tag (no 0x01 prefix)
+        let key = [42u8; 32];
+        let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+        let mut nonce_bytes = [0u8; 12];
+        rand::fill(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = cipher.encrypt(nonce, b"legacy-data".as_ref()).unwrap();
+        let mut legacy_blob = Vec::new();
+        legacy_blob.extend_from_slice(&nonce_bytes);
+        legacy_blob.extend_from_slice(&ciphertext);
+        // First byte is NOT 0x01 (it's part of the nonce), so treated as legacy
+        assert_ne!(legacy_blob[0], ENCRYPTION_VERSION);
+        let decrypted = decrypt(&legacy_blob, &key, None).unwrap();
+        assert_eq!(decrypted, b"legacy-data");
+    }
+
+    #[test]
+    fn decrypt_legacy_data_with_previous_key_fallback() {
+        // Legacy data encrypted with old key, current key is different
+        let old_key = [42u8; 32];
+        let new_key = [99u8; 32];
+        let cipher = Aes256Gcm::new_from_slice(&old_key).unwrap();
+        let mut nonce_bytes = [0u8; 12];
+        rand::fill(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = cipher.encrypt(nonce, b"old-secret".as_ref()).unwrap();
+        let mut legacy_blob = Vec::new();
+        legacy_blob.extend_from_slice(&nonce_bytes);
+        legacy_blob.extend_from_slice(&ciphertext);
+        // Should fail with new key, succeed with old key as previous
+        let decrypted = decrypt(&legacy_blob, &new_key, Some(&old_key)).unwrap();
+        assert_eq!(decrypted, b"old-secret");
+    }
+
+    #[test]
+    fn decrypt_fails_when_neither_key_works() {
+        let key1 = [42u8; 32];
+        let key2 = [99u8; 32];
+        let key3 = [77u8; 32];
+        let encrypted = encrypt(b"secret", &key1).unwrap();
+        let err = decrypt(&encrypted, &key2, Some(&key3)).unwrap_err();
+        assert!(
+            err.to_string().contains("decryption failed"),
+            "should fail when neither key works, got: {err}"
+        );
+    }
+
+    #[test]
+    fn encrypt_output_has_version_prefix() {
+        let key = [42u8; 32];
+        let encrypted = encrypt(b"test", &key).unwrap();
+        assert_eq!(encrypted[0], 0x01, "first byte should be version 0x01");
+        // Total: 1 (version) + 12 (nonce) + 4 (plaintext "test") + 16 (tag)
+        assert_eq!(encrypted.len(), 1 + 12 + 4 + 16);
     }
 
     // -- extract_secret_patterns --

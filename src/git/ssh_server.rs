@@ -12,7 +12,9 @@ use crate::audit::{AuditEntry, write_audit};
 use crate::store::AppState;
 
 use super::hooks;
-use super::smart_http::{GitUser, check_access_for_user, resolve_project};
+use super::smart_http::{
+    GitUser, ResolvedProject, check_access_for_user, enforce_push_protection, resolve_project,
+};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -104,6 +106,54 @@ fn strip_quotes(s: &str) -> &str {
 }
 
 // ---------------------------------------------------------------------------
+// SSH push interception (A3: branch protection for SSH)
+// ---------------------------------------------------------------------------
+
+/// State machine for intercepting SSH push data to enforce branch protection.
+enum SshPushState {
+    /// Buffering pkt-line ref commands; not yet forwarded to git.
+    Buffering(Vec<u8>),
+    /// Protection check passed; forwarding data directly to git stdin.
+    Forwarding,
+    /// Protection check failed or error; dropping all further data.
+    Rejected,
+}
+
+/// Context for an in-progress SSH push (receive-pack) operation.
+struct SshPushContext {
+    state: SshPushState,
+    project: ResolvedProject,
+    git_user: GitUser,
+    ref_updates: Vec<hooks::RefUpdate>,
+}
+
+/// Scan a buffer for the `0000` flush-pkt that terminates the ref command section.
+///
+/// Walks pkt-lines to find it. Returns the byte position immediately after the
+/// flush-pkt, or `None` if not yet fully received.
+fn find_flush_pkt(buf: &[u8]) -> Option<usize> {
+    let mut pos = 0;
+    while pos + 4 <= buf.len() {
+        let len_hex = &buf[pos..pos + 4];
+        if len_hex == b"0000" {
+            return Some(pos + 4);
+        }
+        let Ok(len_str) = std::str::from_utf8(len_hex) else {
+            return None;
+        };
+        let pkt_len = match usize::from_str_radix(len_str, 16) {
+            Ok(n) if n >= 4 => n,
+            _ => return None,
+        };
+        if pos + pkt_len > buf.len() {
+            return None; // Incomplete pkt-line, need more data
+        }
+        pos += pkt_len;
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // SSH session handler
 // ---------------------------------------------------------------------------
 
@@ -111,6 +161,7 @@ struct SshSessionHandler {
     state: AppState,
     git_user: Option<GitUser>,
     git_stdin: HashMap<ChannelId, tokio::process::ChildStdin>,
+    push_contexts: Arc<tokio::sync::Mutex<HashMap<ChannelId, SshPushContext>>>,
 }
 
 #[async_trait::async_trait]
@@ -240,12 +291,27 @@ impl russh::server::Handler for SshSessionHandler {
             self.git_stdin.insert(channel_id, stdin);
         }
 
+        // A3: For write operations, create push context for branch protection
+        if !parsed.is_read {
+            self.push_contexts.lock().await.insert(
+                channel_id,
+                SshPushContext {
+                    state: SshPushState::Buffering(Vec::new()),
+                    project: project.clone(),
+                    git_user: git_user.clone(),
+                    ref_updates: Vec::new(),
+                },
+            );
+        }
+
         let mut stdout = child.stdout.take().expect("stdout piped");
         let handle = session.handle();
         let state = self.state.clone();
         let user_id = git_user.user_id;
         let user_name = git_user.user_name.clone();
         let is_push = !parsed.is_read;
+        // A3 S2: Clone Arc so spawned task can read ref_updates after git exits
+        let push_contexts = Arc::clone(&self.push_contexts);
 
         // Pipe git stdout → SSH channel, then handle cleanup
         tokio::spawn(Box::pin(async move {
@@ -257,7 +323,14 @@ impl russh::server::Handler for SshSessionHandler {
             };
 
             if is_push && exit_code == 0 {
-                handle_post_push(&state, user_id, &user_name, &project).await;
+                // A3 S2: Extract ref_updates populated by the data() state machine
+                let ref_updates = push_contexts
+                    .lock()
+                    .await
+                    .get(&channel_id)
+                    .map(|ctx| ctx.ref_updates.clone())
+                    .unwrap_or_default();
+                handle_post_push(&state, user_id, &user_name, &project, &ref_updates).await;
             }
 
             let _ = handle.exit_status_request(channel_id, exit_code).await;
@@ -272,8 +345,73 @@ impl russh::server::Handler for SshSessionHandler {
         &mut self,
         channel_id: ChannelId,
         data: &[u8],
-        _session: &mut Session,
+        session: &mut Session,
     ) -> Result<(), Self::Error> {
+        // A3: For push operations, route through branch protection state machine
+        let mut push_ctx = self.push_contexts.lock().await;
+        if let Some(ctx) = push_ctx.get_mut(&channel_id) {
+            match &mut ctx.state {
+                SshPushState::Buffering(buf) => {
+                    buf.extend_from_slice(data);
+
+                    // Cap buffer at 1 MB to prevent memory exhaustion
+                    if buf.len() > 1_048_576 {
+                        tracing::warn!("SSH push buffer exceeded 1MB, rejecting");
+                        ctx.state = SshPushState::Rejected;
+                        self.git_stdin.remove(&channel_id);
+                        send_exit_and_close(session.handle(), channel_id, 1);
+                        return Ok(());
+                    }
+
+                    if find_flush_pkt(buf).is_some() {
+                        let ref_updates = hooks::parse_pack_commands(buf);
+                        ctx.ref_updates = ref_updates;
+
+                        let result = enforce_push_protection(
+                            &self.state,
+                            &ctx.project,
+                            &ctx.git_user,
+                            &ctx.ref_updates,
+                        )
+                        .await;
+
+                        match result {
+                            Ok(()) => {
+                                let buffered = std::mem::take(buf);
+                                ctx.state = SshPushState::Forwarding;
+                                if let Some(stdin) = self.git_stdin.get_mut(&channel_id) {
+                                    let _ = stdin.write_all(&buffered).await;
+                                }
+                            }
+                            Err(_e) => {
+                                tracing::warn!("SSH push rejected by branch protection");
+                                ctx.state = SshPushState::Rejected;
+                                self.git_stdin.remove(&channel_id);
+                                let msg = b"ERROR: push rejected by branch protection rules\n";
+                                let _ = session
+                                    .handle()
+                                    .extended_data(channel_id, 1, russh::CryptoVec::from_slice(msg))
+                                    .await;
+                                send_exit_and_close(session.handle(), channel_id, 1);
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+                SshPushState::Forwarding => {
+                    if let Some(stdin) = self.git_stdin.get_mut(&channel_id)
+                        && stdin.write_all(data).await.is_err()
+                    {
+                        self.git_stdin.remove(&channel_id);
+                    }
+                }
+                SshPushState::Rejected => {} // Drop silently
+            }
+            return Ok(());
+        }
+        drop(push_ctx);
+
+        // Non-push: forward directly
         if let Some(stdin) = self.git_stdin.get_mut(&channel_id)
             && stdin.write_all(data).await.is_err()
         {
@@ -287,8 +425,8 @@ impl russh::server::Handler for SshSessionHandler {
         channel_id: ChannelId,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
-        // Client signaled EOF — close git stdin
         self.git_stdin.remove(&channel_id);
+        self.push_contexts.lock().await.remove(&channel_id);
         Ok(())
     }
 }
@@ -350,15 +488,18 @@ async fn handle_post_push(
     user_id: uuid::Uuid,
     user_name: &str,
     project: &super::smart_http::ResolvedProject,
+    ref_updates: &[hooks::RefUpdate],
 ) {
+    let pushed_branches = hooks::extract_pushed_branches(ref_updates);
+    let pushed_tags = hooks::extract_pushed_tags(ref_updates);
     let params = hooks::PostReceiveParams {
         project_id: project.project_id,
         user_id,
         user_name: user_name.to_string(),
         repo_path: project.repo_disk_path.clone(),
         default_branch: project.default_branch.clone(),
-        pushed_branches: Vec::new(), // SSH path: fall back to default_branch for now
-        pushed_tags: Vec::new(),
+        pushed_branches,
+        pushed_tags,
     };
     if let Err(e) = hooks::post_receive(state, &params).await {
         tracing::error!(error = %e, "SSH post-receive hook failed");
@@ -491,6 +632,7 @@ pub async fn run_with_listener(
                             state: state.clone(),
                             git_user: None,
                             git_stdin: HashMap::new(),
+                            push_contexts: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
                         };
                         let cfg = config.clone();
                         tokio::spawn(async move {
@@ -643,5 +785,51 @@ mod tests {
             matches!(result, Err(SshError::InvalidCommand)),
             "expected InvalidCommand, got: {result:?}"
         );
+    }
+
+    // A3: find_flush_pkt tests
+    #[test]
+    fn find_flush_pkt_simple() {
+        assert_eq!(find_flush_pkt(b"0000"), Some(4));
+    }
+
+    #[test]
+    fn find_flush_pkt_after_one_command() {
+        // pkt-line: "0010" (16 bytes) + 12 bytes of data + "0000"
+        let mut buf = b"0010".to_vec();
+        buf.extend_from_slice(&[b'x'; 12]); // 16 - 4 = 12 data bytes
+        buf.extend_from_slice(b"0000");
+        assert_eq!(find_flush_pkt(&buf), Some(20)); // 16 + 4
+    }
+
+    #[test]
+    fn find_flush_pkt_after_multiple_commands() {
+        // Two pkt-lines of 8 bytes each, then flush
+        let mut buf = b"0008".to_vec(); // 8-byte pkt-line
+        buf.extend_from_slice(&[b'a'; 4]); // 4 data bytes
+        buf.extend_from_slice(b"0008"); // another 8-byte pkt-line
+        buf.extend_from_slice(&[b'b'; 4]);
+        buf.extend_from_slice(b"0000");
+        assert_eq!(find_flush_pkt(&buf), Some(20)); // 8 + 8 + 4
+    }
+
+    #[test]
+    fn find_flush_pkt_incomplete() {
+        // Incomplete pkt-line (says 16 bytes but only 10 available)
+        let mut buf = b"0010".to_vec();
+        buf.extend_from_slice(&[b'x'; 6]); // Only 10 total, need 16
+        assert_eq!(find_flush_pkt(&buf), None);
+    }
+
+    #[test]
+    fn find_flush_pkt_empty() {
+        assert_eq!(find_flush_pkt(b""), None);
+    }
+
+    #[test]
+    fn find_flush_pkt_with_trailing_pack_data() {
+        let mut buf = b"0000".to_vec();
+        buf.extend_from_slice(b"PACK\x00\x00\x00\x02"); // PACK header after flush
+        assert_eq!(find_flush_pkt(&buf), Some(4));
     }
 }

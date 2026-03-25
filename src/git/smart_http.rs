@@ -26,6 +26,7 @@ use crate::store::AppState;
 // ---------------------------------------------------------------------------
 
 /// Authenticated git user (from HTTP Basic Auth).
+#[derive(Clone)]
 pub struct GitUser {
     pub user_id: Uuid,
     pub user_name: String,
@@ -37,6 +38,7 @@ pub struct GitUser {
 }
 
 /// Resolved project from /:owner/:repo path.
+#[derive(Clone)]
 pub struct ResolvedProject {
     pub project_id: Uuid,
     pub owner_id: Uuid,
@@ -373,7 +375,7 @@ async fn upload_pack(
 }
 
 /// Check branch protection rules for all ref updates in a push.
-async fn enforce_push_protection(
+pub async fn enforce_push_protection(
     state: &AppState,
     project: &ResolvedProject,
     git_user: &GitUser,
@@ -457,6 +459,7 @@ async fn receive_pack(
     let mut stdin = child.stdin.take().expect("stdin piped");
     let mut stdout = child.stdout.take().expect("stdout piped");
 
+    // A19: Body size limited to 500MB by RequestBodyLimitLayer in main.rs
     // Read body bytes first so we can parse ref commands before piping to git
     let body_bytes = body
         .collect()
@@ -622,6 +625,9 @@ async fn check_access(
     }
 
     let git_user = authenticate_basic(headers, &state.pool).await?;
+    // S52: rate-limit git basic auth
+    crate::auth::rate_limit::check_rate(&state.valkey, "git_auth", &git_user.user_name, 20, 300)
+        .await?;
     check_access_for_user(state, &git_user, project, is_read).await?;
     Ok(Some(git_user))
 }

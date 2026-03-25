@@ -266,7 +266,7 @@ async fn test_ssh_key_inactive_user_rejected(pool: PgPool) {
     // Deactivate the user
     let (status, _) =
         helpers::delete_json(&app, &admin_token, &format!("/api/users/{other_user_id}")).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Fingerprint lookup should NOT find the deactivated user (is_active = true JOIN)
     let row: Option<(Uuid,)> = sqlx::query_as(

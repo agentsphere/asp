@@ -756,6 +756,12 @@ async fn evaluate_flags(
     // Require at least project read access for evaluation
     require_project_read(&state, &auth, body.project_id).await?;
 
+    if body.keys.len() > 100 {
+        return Err(ApiError::BadRequest(
+            "too many evaluation keys (max 100)".into(),
+        ));
+    }
+
     let mut values = std::collections::HashMap::new();
     for key in &body.keys {
         let value = evaluate_single(

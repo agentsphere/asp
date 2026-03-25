@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -77,17 +79,17 @@ pub async fn get_blob(
     .await?
     .ok_or(RegistryError::BlobUnknown)?;
 
-    let data = state.minio.read(&blob.minio_path).await?.to_vec();
+    // A21: Stream blobs via presigned URL redirect instead of loading into memory
+    let presigned = state
+        .minio
+        .presign_read(&blob.minio_path, Duration::from_secs(300))
+        .await?;
 
     let mut headers = HeaderMap::new();
     headers.insert("docker-content-digest", header_val(&digest.as_str()));
-    headers.insert("content-length", header_val(&blob.size_bytes.to_string()));
-    headers.insert(
-        "content-type",
-        HeaderValue::from_static("application/octet-stream"),
-    );
+    headers.insert("location", header_val(&presigned.uri().to_string()));
 
-    Ok((StatusCode::OK, headers, data).into_response())
+    Ok((StatusCode::TEMPORARY_REDIRECT, headers).into_response())
 }
 
 // ---------------------------------------------------------------------------

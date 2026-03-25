@@ -892,8 +892,8 @@ async fn preview_cleanup_on_mr_merge(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // Give some time for the async cleanup
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // stop_preview_for_branch is awaited inline in the merge handler,
+    // so by the time POST /merge returns 200 the DB update is complete.
 
     // Preview target should now be deactivated (is_active=false, so GET returns 404)
     let (status, _) = helpers::get_json(

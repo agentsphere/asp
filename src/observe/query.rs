@@ -214,23 +214,27 @@ async fn require_observe_read(
     auth: &AuthUser,
     project_id: Option<Uuid>,
 ) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission_scoped(
-        &state.pool,
-        &state.valkey,
-        auth.user_id,
-        None,
-        Permission::ObserveRead,
-        auth.token_scopes.as_deref(),
-    )
-    .await
-    .map_err(ApiError::Internal)?;
-
-    if !allowed {
-        return Err(ApiError::Forbidden);
-    }
-
     if let Some(pid) = project_id {
+        // Project-scoped: check ObserveRead + project read
+        let allowed = resolver::has_permission_scoped(
+            &state.pool,
+            &state.valkey,
+            auth.user_id,
+            Some(pid),
+            Permission::ObserveRead,
+            auth.token_scopes.as_deref(),
+        )
+        .await
+        .map_err(ApiError::Internal)?;
+
+        if !allowed {
+            return Err(ApiError::Forbidden);
+        }
+
         require_project_read(state, auth, pid).await?;
+    } else {
+        // S21: Global observe queries require admin (not just ObserveRead)
+        crate::api::helpers::require_admin(state, auth).await?;
     }
     Ok(())
 }

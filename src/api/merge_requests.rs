@@ -7,6 +7,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use uuid::Uuid;
 
 use ts_rs::TS;
@@ -126,7 +127,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/api/projects/{id}/merge-requests/{number}",
-            get(get_mr).patch(update_mr),
+            get(get_mr).patch(update_mr).delete(delete_mr),
         )
         .route(
             "/api/projects/{id}/merge-requests/{number}/merge",
@@ -141,12 +142,18 @@ pub fn router() -> Router<AppState> {
             get(list_reviews).post(create_review),
         )
         .route(
+            "/api/projects/{id}/merge-requests/{number}/reviews/{review_id}",
+            get(get_review),
+        )
+        .route(
             "/api/projects/{id}/merge-requests/{number}/comments",
             get(list_comments).post(create_comment),
         )
         .route(
             "/api/projects/{id}/merge-requests/{number}/comments/{comment_id}",
-            axum::routing::patch(update_comment),
+            get(get_comment)
+                .patch(update_comment)
+                .delete(delete_comment),
         )
 }
 
@@ -477,6 +484,73 @@ async fn update_mr(
         created_at: mr.created_at,
         updated_at: mr.updated_at,
     }))
+}
+
+#[tracing::instrument(skip(state), fields(%id, %number), err)]
+async fn delete_mr(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, number)): Path<(Uuid, i32)>,
+) -> Result<StatusCode, ApiError> {
+    require_project_write(&state, &auth, id).await?;
+
+    // Check current status
+    let row =
+        sqlx::query("SELECT id, status FROM merge_requests WHERE project_id = $1 AND number = $2")
+            .bind(id)
+            .bind(number)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("merge request".into()))?;
+
+    let status: String = row.get("status");
+    if status == "merged" {
+        return Err(ApiError::Conflict(
+            "cannot delete a merged merge request".into(),
+        ));
+    }
+
+    let mr_id: Uuid = row.get("id");
+
+    // Close the MR (idempotent if already closed)
+    if status != "closed" {
+        sqlx::query(
+            "UPDATE merge_requests SET status = 'closed', updated_at = now() \
+             WHERE project_id = $1 AND number = $2",
+        )
+        .bind(id)
+        .bind(number)
+        .execute(&state.pool)
+        .await?;
+    }
+
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "mr.delete",
+            resource: "merge_request",
+            resource_id: Some(mr_id),
+            project_id: Some(id),
+            detail: Some(serde_json::json!({"number": number})),
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
+
+    crate::api::webhooks::fire_webhooks(
+        &state.pool,
+        id,
+        "mr",
+        &serde_json::json!({
+            "action": "closed",
+            "merge_request": {"id": mr_id, "number": number},
+        }),
+    )
+    .await;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[tracing::instrument(skip(state, body), fields(%id, %number), err)]
@@ -849,6 +923,43 @@ async fn create_review(
     ))
 }
 
+async fn get_review(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, number, review_id)): Path<(Uuid, i32, Uuid)>,
+) -> Result<Json<ReviewResponse>, ApiError> {
+    require_project_read(&state, &auth, id).await?;
+
+    // Verify MR exists
+    let _mr_id: Uuid =
+        sqlx::query("SELECT id FROM merge_requests WHERE project_id = $1 AND number = $2")
+            .bind(id)
+            .bind(number)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("merge request".into()))?
+            .get("id");
+
+    let row = sqlx::query(
+        "SELECT id, mr_id, reviewer_id, verdict, body, created_at \
+         FROM mr_reviews WHERE id = $1 AND project_id = $2",
+    )
+    .bind(review_id)
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("review".into()))?;
+
+    Ok(Json(ReviewResponse {
+        id: row.get("id"),
+        mr_id: row.get("mr_id"),
+        reviewer_id: row.get("reviewer_id"),
+        verdict: row.get("verdict"),
+        body: row.get("body"),
+        created_at: row.get("created_at"),
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // MR Comment handlers
 // ---------------------------------------------------------------------------
@@ -933,6 +1044,21 @@ async fn create_comment(
     )
     .fetch_one(&state.pool)
     .await?;
+
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "comment.create",
+            resource: "merge_request",
+            resource_id: Some(mr_id),
+            project_id: Some(id),
+            detail: None,
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
 
     Ok((
         StatusCode::CREATED,
@@ -1024,6 +1150,112 @@ async fn update_comment(
     }))
 }
 
+async fn get_comment(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, number, comment_id)): Path<(Uuid, i32, Uuid)>,
+) -> Result<Json<CommentResponse>, ApiError> {
+    require_project_read(&state, &auth, id).await?;
+
+    // Verify MR exists
+    let _mr_id: Uuid =
+        sqlx::query("SELECT id FROM merge_requests WHERE project_id = $1 AND number = $2")
+            .bind(id)
+            .bind(number)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("merge request".into()))?
+            .get("id");
+
+    let row = sqlx::query(
+        "SELECT id, author_id, body, created_at, updated_at \
+         FROM comments WHERE id = $1 AND project_id = $2",
+    )
+    .bind(comment_id)
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("comment".into()))?;
+
+    Ok(Json(CommentResponse {
+        id: row.get("id"),
+        author_id: row.get("author_id"),
+        body: row.get("body"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
+#[tracing::instrument(skip(state), fields(%id, %number, %comment_id), err)]
+async fn delete_comment(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, number, comment_id)): Path<(Uuid, i32, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    require_project_write(&state, &auth, id).await?;
+
+    // Verify MR exists
+    let _mr_id: Uuid =
+        sqlx::query("SELECT id FROM merge_requests WHERE project_id = $1 AND number = $2")
+            .bind(id)
+            .bind(number)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("merge request".into()))?
+            .get("id");
+
+    // Check author or admin
+    let comment_row =
+        sqlx::query("SELECT author_id FROM comments WHERE id = $1 AND project_id = $2")
+            .bind(comment_id)
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("comment".into()))?;
+
+    let comment_author: Uuid = comment_row.get("author_id");
+
+    if comment_author != auth.user_id {
+        let is_admin = crate::rbac::resolver::has_permission_scoped(
+            &state.pool,
+            &state.valkey,
+            auth.user_id,
+            None,
+            Permission::AdminUsers,
+            auth.token_scopes.as_deref(),
+        )
+        .await
+        .map_err(ApiError::Internal)?;
+
+        if !is_admin {
+            return Err(ApiError::Forbidden);
+        }
+    }
+
+    sqlx::query("DELETE FROM comments WHERE id = $1 AND project_id = $2")
+        .bind(comment_id)
+        .bind(id)
+        .execute(&state.pool)
+        .await?;
+
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "comment.delete",
+            resource: "comment",
+            resource_id: Some(comment_id),
+            project_id: Some(id),
+            detail: Some(serde_json::json!({"mr_number": number})),
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ---------------------------------------------------------------------------
 // Git helpers
 // ---------------------------------------------------------------------------
@@ -1052,13 +1284,22 @@ async fn execute_git_merge(
     match merge_method {
         "squash" => git_squash_merge(repo_path, source_branch, target_branch, mr_id)
             .await
-            .map_err(|e| ApiError::BadRequest(format!("squash merge failed: {e}")))?,
+            .map_err(|e| {
+                tracing::warn!(error = %e, "squash merge failed");
+                ApiError::BadRequest("merge failed — check branches for conflicts".into())
+            })?,
         "rebase" => git_rebase_merge(repo_path, source_branch, target_branch)
             .await
-            .map_err(|e| ApiError::BadRequest(format!("rebase merge failed: {e}")))?,
+            .map_err(|e| {
+                tracing::warn!(error = %e, "rebase merge failed");
+                ApiError::BadRequest("merge failed — check branches for conflicts".into())
+            })?,
         _ => git_merge_no_ff(repo_path, source_branch, target_branch)
             .await
-            .map_err(|e| ApiError::BadRequest(format!("merge failed: {e}")))?,
+            .map_err(|e| {
+                tracing::warn!(error = %e, "merge failed");
+                ApiError::BadRequest("merge failed — check branches for conflicts".into())
+            })?,
     }
     Ok(())
 }
@@ -1369,6 +1610,21 @@ async fn disable_auto_merge(
         return Err(ApiError::NotFound("merge request".into()));
     }
 
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "mr.auto_merge.disable",
+            resource: "merge_request",
+            resource_id: None,
+            project_id: Some(id),
+            detail: Some(serde_json::json!({"number": number})),
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
+
     Ok(StatusCode::OK)
 }
 
@@ -1414,6 +1670,7 @@ pub async fn try_auto_merge(state: &AppState, project_id: Uuid) {
             boundary_project_id: None,
             boundary_workspace_id: None,
             session_id: None,
+            session_token_hash: None,
         };
 
         match do_merge(state, &auth, project_id, mr.number, method).await {

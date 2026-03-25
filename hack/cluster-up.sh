@@ -15,6 +15,31 @@ if ! kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
   kind create cluster --name "$CLUSTER_NAME" --config "${SCRIPT_DIR}/kind-config.yaml"
 fi
 
+# Inject Docker Hub credentials into Kind node (avoids rate limits).
+inject_dockerhub_auth() {
+  local node="${CLUSTER_NAME}-control-plane"
+  local creds_dir="/root/.config/containerd/creds.d/docker.io"
+  local auth=""
+  if command -v docker-credential-osxkeychain &>/dev/null; then
+    auth=$(echo "https://index.docker.io/v1/" | docker-credential-osxkeychain get 2>/dev/null \
+      | python3 -c "import sys,json,base64; d=json.load(sys.stdin); print(base64.b64encode(f'{d[\"Username\"]}:{d[\"Secret\"]}'.encode()).decode())" 2>/dev/null || true)
+  fi
+  if [[ -z "$auth" ]] && [[ -f "${HOME}/.docker/config.json" ]]; then
+    auth=$(python3 -c "import json; c=json.load(open('${HOME}/.docker/config.json')); print(c.get('auths',{}).get('https://index.docker.io/v1/',{}).get('auth',''))" 2>/dev/null || true)
+  fi
+  if [[ -n "$auth" ]]; then
+    docker exec "$node" mkdir -p "$creds_dir"
+    docker exec "$node" sh -c "echo '[host.\"https://registry-1.docker.io\"]
+  capabilities = [\"pull\", \"resolve\"]
+  [host.\"https://registry-1.docker.io\".header]
+    authorization = \"Basic ${auth}\"' > ${creds_dir}/hosts.toml"
+    echo "Docker Hub auth injected into Kind node."
+  else
+    echo "Warning: no Docker Hub credentials found — pulls may be rate-limited."
+  fi
+}
+inject_dockerhub_auth
+
 # Export kubeconfig to unified path + merge into default ~/.kube/config
 kind get kubeconfig --name "$CLUSTER_NAME" > "$KUBECONFIG_FILE"
 KUBECONFIG="${HOME}/.kube/config" kind export kubeconfig --name "$CLUSTER_NAME"
@@ -53,7 +78,10 @@ spec:
       port: 80
       allowedRoutes:
         namespaces:
-          from: All
+          from: Selector
+          selector:
+            matchLabels:
+              platform.io/managed-by: platform
 EOF
 
 # Create shared temp directory for e2e test repos (mounted via extraMounts)

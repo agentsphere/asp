@@ -98,6 +98,12 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
         seed_commands_path: "/tmp/seed-commands".into(),
         gateway_name: "platform-gateway".into(),
         gateway_namespace: "envoy-gateway-system".into(),
+        pipeline_timeout_secs: 3600,
+        max_lfs_object_bytes: 5_368_709_120,
+        token_max_expiry_days: 365,
+        observe_retention_days: 30,
+        master_key_previous: None,
+        trust_proxy_cidrs: vec![],
     };
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");
@@ -180,7 +186,7 @@ async fn setup_creates_personal_workspace(pool: PgPool) {
     let (state, token) = setup_test_state(pool.clone()).await;
     let app = helpers::test_router(state);
 
-    let (_status, _body) = helpers::post_json(
+    let (status, _body) = helpers::post_json(
         &app,
         "",
         "/api/setup",
@@ -192,6 +198,7 @@ async fn setup_creates_personal_workspace(pool: PgPool) {
         }),
     )
     .await;
+    assert_eq!(status, StatusCode::OK, "setup should succeed");
 
     // Verify workspace exists
     let ws_count: i64 = sqlx::query_scalar::<_, i64>(

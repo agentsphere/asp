@@ -132,8 +132,8 @@ async fn list_issues(pool: PgPool) {
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body["items"].as_array().unwrap().len() >= 3);
-    assert!(body["total"].as_i64().unwrap() >= 3);
+    assert_eq!(body["items"].as_array().unwrap().len(), 3);
+    assert_eq!(body["total"].as_i64().unwrap(), 3);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -386,7 +386,7 @@ async fn list_merge_requests(pool: PgPool) {
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body["items"].as_array().unwrap().len() >= 2);
+    assert_eq!(body["items"].as_array().unwrap().len(), 2);
 }
 
 #[sqlx::test(migrations = "./migrations")]

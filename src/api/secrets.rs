@@ -303,6 +303,22 @@ async fn read_project_secret(
             ApiError::NotFound("secret".into())
         })?;
 
+    // S43: Audit every secret read — most sensitive data in the platform
+    write_audit(
+        &state.pool,
+        &AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: &auth.user_name,
+            action: "secret.read",
+            resource: "secret",
+            resource_id: None,
+            project_id: Some(id),
+            detail: Some(serde_json::json!({ "name": &name, "scope": requested_scope })),
+            ip_addr: auth.ip_addr.as_deref(),
+        },
+    )
+    .await;
+
     Ok(Json(serde_json::json!({
         "name": name,
         "value": value,
@@ -314,7 +330,7 @@ async fn delete_project_secret(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((id, name)): Path<(Uuid, String)>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     require_secret_write(&state, &auth, id).await?;
 
     let deleted = engine::delete_secret(&state.pool, Some(id), &name)
@@ -340,7 +356,7 @@ async fn delete_project_secret(
     )
     .await;
 
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------
@@ -745,7 +761,7 @@ async fn delete_global_secret(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(name): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     require_admin(&state, &auth).await?;
 
     let deleted = engine::delete_secret(&state.pool, None, &name)
@@ -771,7 +787,7 @@ async fn delete_global_secret(
     )
     .await;
 
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------
@@ -877,7 +893,7 @@ async fn delete_workspace_secret(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((id, name)): Path<(Uuid, String)>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     require_workspace_admin(&state, &auth, id).await?;
 
     // Delete workspace-scoped secret specifically
@@ -908,5 +924,5 @@ async fn delete_workspace_secret(
     )
     .await;
 
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(StatusCode::NO_CONTENT)
 }

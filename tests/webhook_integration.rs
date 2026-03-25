@@ -254,7 +254,7 @@ async fn update_and_delete_webhook(pool: PgPool) {
         &format!("/api/projects/{project_id}/webhooks/{wh_id}"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify gone
     let (status, _) = helpers::get_json(
@@ -886,10 +886,20 @@ async fn webhook_fires_on_issue_create(pool: PgPool) {
         "issue create failed: {issue_body}"
     );
 
-    // Wait for async webhook delivery
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
+    // wiremock's verify() polls with backoff until the expected request count is met
     mock_server.verify().await;
+
+    // Verify the webhook payload contains expected fields
+    let requests = mock_server.received_requests().await.unwrap();
+    assert!(!requests.is_empty(), "should have received the webhook");
+    let payload: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("webhook body is not valid JSON");
+    assert_eq!(payload["action"], "created");
+    assert!(payload["issue"]["title"].is_string(), "issue.title missing");
+    assert!(
+        payload["issue"]["number"].is_number(),
+        "issue.number missing"
+    );
 }
 
 /// Webhook with secret sends HMAC-SHA256 signature header.
@@ -934,7 +944,6 @@ async fn webhook_hmac_signature(pool: PgPool) {
     )
     .await;
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
     mock_server.verify().await;
 
     let requests = mock_server.received_requests().await.unwrap();
@@ -998,7 +1007,6 @@ async fn webhook_no_signature_without_secret(pool: PgPool) {
     )
     .await;
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
     mock_server.verify().await;
 
     let requests = mock_server.received_requests().await.unwrap();
@@ -1087,8 +1095,20 @@ async fn webhook_concurrent_limit(pool: PgPool) {
         .await;
     }
 
-    // Wait for deliveries to complete
-    tokio::time::sleep(Duration::from_secs(8)).await;
+    // Poll for deliveries with timeout instead of a fixed sleep
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let reqs = mock_server.received_requests().await.unwrap();
+        if !reqs.is_empty() {
+            // Once we start receiving, wait a bit more for stragglers then break
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!("timeout waiting for webhook deliveries");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 
     let requests = mock_server.received_requests().await.unwrap();
     let received = requests.len();

@@ -11,7 +11,7 @@ data:
   PLATFORM_LOG: {{ .Values.platform.env.logLevel | quote }}
   PLATFORM_DEV: {{ .Values.platform.env.devMode | quote }}
   PLATFORM_SECURE_COOKIES: {{ if .Values.ingress.enabled }}"true"{{ else }}{{ .Values.platform.env.secureCookies | quote }}{{ end }}
-  PLATFORM_TRUST_PROXY: {{ .Values.platform.env.trustProxy | quote }}
+  PLATFORM_TRUST_PROXY: {{ if .Values.ingress.enabled }}"true"{{ else }}{{ .Values.platform.env.trustProxy | quote }}{{ end }}
   PLATFORM_PERMISSION_CACHE_TTL: {{ .Values.platform.env.permissionCacheTtl | quote }}
   PLATFORM_SELF_OBSERVE_LEVEL: {{ .Values.platform.env.selfObserveLevel | quote }}
 

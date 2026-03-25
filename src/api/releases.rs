@@ -1,5 +1,5 @@
 use axum::extract::Multipart;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -68,6 +68,12 @@ pub struct AssetResponse {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ListParams {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -102,8 +108,19 @@ async fn list_releases(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
+    Query(params): Query<ListParams>,
 ) -> Result<Json<ListResponse<ReleaseResponse>>, ApiError> {
     require_project_read(&state, &auth, id).await?;
+
+    let limit = params.limit.unwrap_or(50).min(100);
+    let offset = params.offset.unwrap_or(0);
+
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM releases WHERE project_id = $1")
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(Some(0))
+        .unwrap_or(0);
 
     let rows = sqlx::query(
         r"
@@ -111,13 +128,15 @@ async fn list_releases(
                created_by, created_at, updated_at
         FROM releases WHERE project_id = $1
         ORDER BY created_at DESC
+        LIMIT $2 OFFSET $3
         ",
     )
     .bind(id)
+    .bind(limit)
+    .bind(offset)
     .fetch_all(&state.pool)
     .await?;
 
-    let total = i64::try_from(rows.len()).unwrap_or(i64::MAX);
     let items = rows
         .into_iter()
         .map(|r| ReleaseResponse {
@@ -469,12 +488,15 @@ async fn download_asset(
     let content_type = content_type.unwrap_or_else(|| "application/octet-stream".into());
     let name: String = asset.get("name");
 
+    // A46: Sanitize filename for content-disposition header
+    let safe_name = name.replace(['\\', '"', '/', '\n', '\r', '\0'], "_");
+
     Ok((
         [
             ("content-type", content_type),
             (
                 "content-disposition",
-                format!("attachment; filename=\"{name}\""),
+                format!("attachment; filename=\"{safe_name}\""),
             ),
         ],
         data.to_vec(),

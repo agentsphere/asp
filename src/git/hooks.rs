@@ -65,7 +65,19 @@ pub fn extract_pushed_tags(updates: &[RefUpdate]) -> Vec<String> {
             if u.new_sha == zero_sha {
                 return None;
             }
-            u.refname.strip_prefix("refs/tags/").map(str::to_string)
+            let tag = u.refname.strip_prefix("refs/tags/")?;
+            // S93: Reject tag names with dangerous characters
+            if tag.contains("..")
+                || tag.contains('\0')
+                || tag.contains(';')
+                || tag.contains('|')
+                || tag.contains('$')
+                || tag.contains('`')
+            {
+                tracing::warn!(tag, "rejected tag with dangerous characters");
+                return None;
+            }
+            Some(tag.to_string())
         })
         .collect()
 }

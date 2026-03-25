@@ -15,7 +15,6 @@ use crate::onboarding::claude_auth::CliAuthManager;
 use crate::secrets::request::SecretRequests;
 
 #[derive(Clone)]
-#[allow(dead_code)] // minio, kube, config consumed by modules 03-09
 pub struct AppState {
     pub pool: PgPool,
     pub valkey: fred::clients::Pool,

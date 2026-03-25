@@ -39,9 +39,15 @@ pub async fn send(config: &Config, to: &str, subject: &str, body: &str) -> anyho
         .body(body.to_owned())
         .map_err(|e| anyhow::anyhow!("failed to build email: {e}"))?;
 
-    let mut transport = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host)
-        .map_err(|e| anyhow::anyhow!("SMTP relay setup failed: {e}"))?
-        .port(config.smtp_port);
+    let mut transport = if config.smtp_port == 465 {
+        AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host)
+            .map_err(|e| anyhow::anyhow!("SMTP relay setup failed: {e}"))?
+            .port(465)
+    } else {
+        AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(smtp_host)
+            .map_err(|e| anyhow::anyhow!("SMTP relay setup failed: {e}"))?
+            .port(config.smtp_port)
+    };
 
     if let Some(ref username) = config.smtp_username {
         let password = config.smtp_password.as_deref().unwrap_or("");

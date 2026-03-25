@@ -314,7 +314,17 @@ pub async fn run(
     seed_roles(pool).await?;
 
     if dev_mode {
-        create_admin_user(pool, admin_password.unwrap_or("admin")).await?;
+        let generated;
+        let pw = if let Some(pw) = admin_password {
+            pw
+        } else {
+            let mut bytes = [0u8; 12];
+            rand::fill(&mut bytes);
+            generated = hex::encode(bytes);
+            tracing::warn!("dev admin password (auto-generated): {generated}");
+            &generated
+        };
+        create_admin_user(pool, pw).await?;
         Ok(BootstrapResult::DevAdmin)
     } else {
         let raw_token = create_setup_token(pool).await?;

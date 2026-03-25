@@ -221,7 +221,7 @@ async fn alert_crud(pool: PgPool) {
         &format!("/api/observe/alerts/{alert_id}"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify gone
     let (status, _) = helpers::get_json(

@@ -206,17 +206,27 @@ pub async fn setup_project_infrastructure(
     let prod_ns = state.config.project_namespace(namespace_slug, "prod");
 
     // 1. Create dev namespace
-    if let Err(e) =
-        crate::deployer::namespace::ensure_namespace(&state.kube, &dev_ns, "dev", &project_id_str)
-            .await
+    if let Err(e) = crate::deployer::namespace::ensure_namespace(
+        &state.kube,
+        &dev_ns,
+        "dev",
+        &project_id_str,
+        &state.config.platform_namespace,
+    )
+    .await
     {
         tracing::warn!(error = %e, "failed to create dev namespace (will retry)");
     }
 
     // 2. Create prod namespace
-    if let Err(e) =
-        crate::deployer::namespace::ensure_namespace(&state.kube, &prod_ns, "prod", &project_id_str)
-            .await
+    if let Err(e) = crate::deployer::namespace::ensure_namespace(
+        &state.kube,
+        &prod_ns,
+        "prod",
+        &project_id_str,
+        &state.config.platform_namespace,
+    )
+    .await
     {
         tracing::warn!(error = %e, "failed to create prod namespace (will retry)");
     }
@@ -494,6 +504,7 @@ async fn list_projects(
     let search_pattern = params.search.as_deref().map(|s| format!("%{s}%"));
 
     // Count matching projects visible to the user
+    // A30: include RBAC-granted and workspace-member visibility for private projects
     let total = sqlx::query_scalar!(
         r#"
         SELECT COUNT(*) as "count!: i64"
@@ -506,6 +517,18 @@ async fn list_projects(
               visibility = 'public'
               OR visibility = 'internal'
               OR owner_id = $4
+              OR EXISTS(
+                  SELECT 1 FROM user_roles ur
+                  JOIN role_permissions rp ON rp.role_id = ur.role_id
+                  JOIN permissions p ON p.id = rp.permission_id
+                  WHERE ur.user_id = $4 AND p.name = 'project:read'
+                  AND (ur.project_id = projects.id OR ur.project_id IS NULL)
+              )
+              OR EXISTS(
+                  SELECT 1 FROM workspace_members wm
+                  WHERE wm.workspace_id = projects.workspace_id
+                  AND wm.user_id = $4
+              )
           )
         "#,
         params.owner_id,
@@ -530,6 +553,18 @@ async fn list_projects(
               visibility = 'public'
               OR visibility = 'internal'
               OR owner_id = $4
+              OR EXISTS(
+                  SELECT 1 FROM user_roles ur
+                  JOIN role_permissions rp ON rp.role_id = ur.role_id
+                  JOIN permissions p ON p.id = rp.permission_id
+                  WHERE ur.user_id = $4 AND p.name = 'project:read'
+                  AND (ur.project_id = projects.id OR ur.project_id IS NULL)
+              )
+              OR EXISTS(
+                  SELECT 1 FROM workspace_members wm
+                  WHERE wm.workspace_id = projects.workspace_id
+                  AND wm.user_id = $4
+              )
           )
         ORDER BY created_at DESC
         LIMIT $5 OFFSET $6
@@ -704,7 +739,7 @@ async fn delete_project(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     // Enforce hard project scope from API token
     auth.check_project_scope(id)?;
 
@@ -754,5 +789,5 @@ async fn delete_project(
     )
     .await;
 
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(StatusCode::NO_CONTENT)
 }

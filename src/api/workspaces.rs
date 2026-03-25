@@ -33,8 +33,8 @@ pub struct WorkspaceResponse {
     pub description: Option<String>,
     pub owner_id: Uuid,
     pub is_active: bool,
-    pub created_at: String,
-    pub updated_at: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 impl From<workspace::Workspace> for WorkspaceResponse {
@@ -46,8 +46,8 @@ impl From<workspace::Workspace> for WorkspaceResponse {
             description: w.description,
             owner_id: w.owner_id,
             is_active: w.is_active,
-            created_at: w.created_at.to_rfc3339(),
-            updated_at: w.updated_at.to_rfc3339(),
+            created_at: w.created_at,
+            updated_at: w.updated_at,
         }
     }
 }
@@ -59,7 +59,7 @@ pub struct MemberResponse {
     pub user_id: Uuid,
     pub user_name: String,
     pub role: String,
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
 }
 
 impl From<workspace::WorkspaceMember> for MemberResponse {
@@ -69,7 +69,7 @@ impl From<workspace::WorkspaceMember> for MemberResponse {
             user_id: m.user_id,
             user_name: m.user_name,
             role: m.role,
-            created_at: m.created_at.to_rfc3339(),
+            created_at: m.created_at,
         }
     }
 }
@@ -205,6 +205,7 @@ async fn get_workspace(
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<WorkspaceResponse>, ApiError> {
+    auth.check_workspace_scope(id)?;
     require_workspace_member(&state, &auth, id).await?;
 
     let ws = service::get_workspace(&state.pool, id)
@@ -221,6 +222,7 @@ async fn update_workspace(
     Path(id): Path<Uuid>,
     Json(body): Json<workspace::UpdateWorkspaceRequest>,
 ) -> Result<Json<WorkspaceResponse>, ApiError> {
+    auth.check_workspace_scope(id)?;
     require_workspace_admin(&state, &auth, id).await?;
 
     if let Some(ref dn) = body.display_name {
@@ -262,6 +264,7 @@ async fn delete_workspace(
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
+    auth.check_workspace_scope(id)?;
     // Only workspace owner can delete
     if !service::is_owner(&state.pool, id, auth.user_id).await? {
         return Err(ApiError::Forbidden);
@@ -304,11 +307,14 @@ async fn list_members(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<MemberResponse>>, ApiError> {
+) -> Result<Json<ListResponse<MemberResponse>>, ApiError> {
+    auth.check_workspace_scope(id)?;
     require_workspace_member(&state, &auth, id).await?;
 
     let members = service::list_members(&state.pool, id).await?;
-    Ok(Json(members.into_iter().map(Into::into).collect()))
+    let items: Vec<MemberResponse> = members.into_iter().map(Into::into).collect();
+    let total = i64::try_from(items.len()).unwrap_or(0);
+    Ok(Json(ListResponse { items, total }))
 }
 
 /// Add a member to a workspace.
@@ -318,6 +324,7 @@ async fn add_member(
     Path(id): Path<Uuid>,
     Json(body): Json<workspace::AddMemberRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    auth.check_workspace_scope(id)?;
     require_workspace_admin(&state, &auth, id).await?;
 
     let role = body.role.as_deref().unwrap_or("member");
@@ -372,6 +379,7 @@ async fn remove_member(
     auth: AuthUser,
     Path((id, user_id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse, ApiError> {
+    auth.check_workspace_scope(id)?;
     require_workspace_admin(&state, &auth, id).await?;
 
     // Can't remove the workspace owner
@@ -428,6 +436,7 @@ async fn list_workspace_projects(
     Path(id): Path<Uuid>,
     Query(params): Query<ListParams>,
 ) -> Result<Json<ListResponse<WorkspaceProjectResponse>>, ApiError> {
+    auth.check_workspace_scope(id)?;
     require_workspace_member(&state, &auth, id).await?;
 
     let limit = params.limit.unwrap_or(50).min(100);

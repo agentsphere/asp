@@ -127,6 +127,12 @@ async fn upload_and_delete_logs(
     let path = format!("otel/logs/{date}/logs_{batch_id}.parquet");
     state.minio.write(&path, parquet_bytes).await?;
 
+    // A36: Verify upload succeeded before deleting source data
+    state.minio.stat(&path).await.map_err(|e| {
+        tracing::error!(error = %e, path = %path, "parquet upload verification failed, skipping delete");
+        e
+    })?;
+
     sqlx::query("DELETE FROM log_entries WHERE id = ANY($1)")
         .bind(ids)
         .execute(&state.pool)
@@ -264,6 +270,12 @@ pub async fn rotate_spans(state: &AppState) -> Result<u64, ObserveError> {
     let path = format!("otel/traces/{date}/spans_{batch_id}.parquet");
     state.minio.write(&path, parquet_bytes).await?;
 
+    // A36: Verify upload succeeded before deleting source data
+    state.minio.stat(&path).await.map_err(|e| {
+        tracing::error!(error = %e, path = %path, "parquet upload verification failed, skipping delete");
+        e
+    })?;
+
     sqlx::query("DELETE FROM spans WHERE id = ANY($1)")
         .bind(&ids)
         .execute(&state.pool)
@@ -396,6 +408,12 @@ pub async fn rotate_metrics(state: &AppState) -> Result<u64, ObserveError> {
     let batch_id = Uuid::new_v4();
     let path = format!("otel/metrics/{date}/metrics_{batch_id}.parquet");
     state.minio.write(&path, parquet_bytes).await?;
+
+    // A36: Verify upload succeeded before deleting source data
+    state.minio.stat(&path).await.map_err(|e| {
+        tracing::error!(error = %e, path = %path, "parquet upload verification failed, skipping delete");
+        e
+    })?;
 
     // Delete rotated samples
     let series_ids: Vec<Uuid> = typed.iter().map(|r| r.series_id).collect();

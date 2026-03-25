@@ -6,6 +6,8 @@
 
 use serde_json::json;
 
+use super::error::DeployerError;
+
 /// Shared Gateway reference used by all `HTTPRoute` builders.
 pub struct GatewayRef<'a> {
     pub name: &'a str,
@@ -16,6 +18,8 @@ pub struct GatewayRef<'a> {
 ///
 /// The route sends `stable_weight`% to `stable_service` and `canary_weight`% to `canary_service`.
 /// References a shared Gateway via cross-namespace `parentRefs`.
+///
+/// Returns an error if `stable_weight + canary_weight != 100`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_weighted_httproute(
     name: &str,
@@ -26,7 +30,14 @@ pub fn build_weighted_httproute(
     stable_weight: u32,
     canary_weight: u32,
     gw: &GatewayRef<'_>,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, DeployerError> {
+    if stable_weight + canary_weight != 100 {
+        return Err(DeployerError::GatewayError(format!(
+            "traffic weights must sum to 100, got {}",
+            stable_weight + canary_weight
+        )));
+    }
+
     let mut spec = serde_json::json!({
         "parentRefs": [{
             "name": gw.name,
@@ -52,7 +63,7 @@ pub fn build_weighted_httproute(
         spec["hostnames"] = json!([hostname]);
     }
 
-    json!({
+    Ok(json!({
         "apiVersion": "gateway.networking.k8s.io/v1",
         "kind": "HTTPRoute",
         "metadata": {
@@ -63,7 +74,7 @@ pub fn build_weighted_httproute(
             }
         },
         "spec": spec
-    })
+    }))
 }
 
 /// Build an `HTTPRoute` JSON for header-based routing (A/B testing).
@@ -154,7 +165,8 @@ mod tests {
                 name: "platform-gateway",
                 namespace: "envoy-gateway-system",
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(route["apiVersion"], "gateway.networking.k8s.io/v1");
         assert_eq!(route["kind"], "HTTPRoute");
@@ -193,7 +205,8 @@ mod tests {
                 name: "platform-gateway",
                 namespace: "envoy-gateway-system",
             },
-        );
+        )
+        .unwrap();
 
         let backends = route["spec"]["rules"][0]["backendRefs"].as_array().unwrap();
         assert_eq!(backends[0]["weight"], 100);
@@ -242,5 +255,29 @@ mod tests {
         assert!(rules[1]["matches"].is_null());
         assert_eq!(rules[1]["backendRefs"][0]["name"], "checkout-control");
         assert_eq!(rules[1]["backendRefs"][0]["port"], 8080);
+    }
+
+    #[test]
+    fn weighted_httproute_rejects_bad_weights() {
+        let err = build_weighted_httproute(
+            "api-route",
+            "ns",
+            "api.example.com",
+            "stable",
+            "canary",
+            80,
+            30,
+            &GatewayRef {
+                name: "platform-gateway",
+                namespace: "envoy-gateway-system",
+            },
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must sum to 100"),
+            "expected weight-sum error, got: {msg}"
+        );
     }
 }

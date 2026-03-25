@@ -16,7 +16,7 @@ async fn admin_has_all_permissions(pool: PgPool) {
     let (status, _) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;
     assert_eq!(status, StatusCode::OK);
 
-    let (status, _) = helpers::get_json(&app, &admin_token, "/api/users/list").await;
+    let (status, _) = helpers::get_json(&app, &admin_token, "/api/users").await;
     assert_eq!(status, StatusCode::OK);
 }
 
@@ -156,7 +156,10 @@ async fn role_assignment_creates_audit(pool: PgPool) {
         .await
         .unwrap();
 
-    assert!(row.0 >= 1, "expected audit_log entry for role.assign");
+    assert_eq!(
+        row.0, 1,
+        "expected exactly one audit_log entry for role.assign"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -267,7 +270,7 @@ async fn revoked_delegation_denied(pool: PgPool) {
         &format!("/api/admin/delegations/{deleg_id}"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Access should be denied
     let (status, _) =
@@ -436,7 +439,7 @@ async fn permission_cache_invalidation(pool: PgPool) {
         &format!("/api/admin/users/{user_id}/roles/{role_id}"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify access denied (cache must be invalidated) → 404 not 403
     let (status, _) =
@@ -453,10 +456,11 @@ async fn list_permissions_and_roles(pool: PgPool) {
     let (status, roles) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;
     assert_eq!(status, StatusCode::OK);
     let roles_array = roles.as_array().unwrap();
-    // Should have at least the 5 system roles
-    assert!(
-        roles_array.len() >= 5,
-        "expected at least 5 system roles, got {}",
+    // Bootstrap seeds 10 system roles
+    assert_eq!(
+        roles_array.len(),
+        10,
+        "expected 10 system roles, got {}",
         roles_array.len()
     );
 
@@ -520,7 +524,10 @@ async fn delegation_audit_logged(pool: PgPool) {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert!(create_audit.0 >= 1, "delegation.create audit entry missing");
+    assert_eq!(
+        create_audit.0, 1,
+        "expected exactly one delegation.create audit entry"
+    );
 
     // Revoke delegation
     let deleg_id = deleg_body["id"].as_str().unwrap();
@@ -530,7 +537,7 @@ async fn delegation_audit_logged(pool: PgPool) {
         &format!("/api/admin/delegations/{deleg_id}"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify audit log for revoke
     let revoke_audit: (i64,) =
@@ -538,7 +545,10 @@ async fn delegation_audit_logged(pool: PgPool) {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert!(revoke_audit.0 >= 1, "delegation.revoke audit entry missing");
+    assert_eq!(
+        revoke_audit.0, 1,
+        "expected exactly one delegation.revoke audit entry"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]

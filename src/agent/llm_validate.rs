@@ -320,9 +320,11 @@ async fn test_session_memory(
 
 /// Run all 3 validation tests sequentially, sending events via `tx`.
 /// Updates the config's `validation_status` in DB after completion.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_validation(
     pool: &sqlx::PgPool,
     config_id: Uuid,
+    user_id: Uuid,
     api_key: Option<String>,
     extra_env: Vec<(String, String)>,
     model: Option<String>,
@@ -380,7 +382,8 @@ pub async fn run_validation(
     // Update DB validation status
     let status = if all_passed { "valid" } else { "invalid" };
     if let Err(e) =
-        crate::secrets::llm_providers::update_validation_status(pool, config_id, status).await
+        crate::secrets::llm_providers::update_validation_status(pool, config_id, user_id, status)
+            .await
     {
         tracing::warn!(error = %e, %config_id, "failed to update validation status");
     }

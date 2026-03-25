@@ -14,6 +14,7 @@ use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::store::AppState;
+use crate::validation;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -130,6 +131,7 @@ async fn trigger_pipeline(
     Json(body): Json<TriggerRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_project_write(&state, &auth, id).await?;
+    validation::check_branch_name(&body.git_ref)?;
 
     let project = sqlx::query!(
         "SELECT repo_path FROM projects WHERE id = $1 AND is_active = true",
@@ -375,12 +377,12 @@ async fn get_step_logs(
         Ok(Response::builder()
             .header("content-type", "text/plain; charset=utf-8")
             .body(body)
-            .unwrap())
+            .expect("infallible: valid status and header"))
     } else {
         Ok(Response::builder()
             .header("content-type", "text/plain; charset=utf-8")
             .body(Body::from("No logs available"))
-            .unwrap())
+            .expect("infallible: valid status and header"))
     }
 }
 
@@ -405,17 +407,17 @@ async fn stream_live_logs(
         Ok(logs) => Ok(Response::builder()
             .header("content-type", "text/plain; charset=utf-8")
             .body(Body::from(logs))
-            .unwrap()),
+            .expect("infallible: valid status and header")),
         Err(kube::Error::Api(err_resp)) if err_resp.code == 404 => Ok(Response::builder()
             .header("content-type", "text/plain; charset=utf-8")
             .body(Body::from("Logs not yet available — pod not started"))
-            .unwrap()),
+            .expect("infallible: valid status and header")),
         Err(e) => {
             tracing::warn!(error = %e, %pipeline_id, step = step_name, "failed to stream pod logs");
             Ok(Response::builder()
                 .header("content-type", "text/plain; charset=utf-8")
                 .body(Body::from("Logs temporarily unavailable"))
-                .unwrap())
+                .expect("infallible: valid status and header"))
         }
     }
 }
@@ -505,7 +507,7 @@ async fn download_artifact(
             ),
         )
         .body(Body::from(data.to_vec()))
-        .unwrap())
+        .expect("infallible: valid status and header"))
 }
 
 // ---------------------------------------------------------------------------

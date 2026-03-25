@@ -820,9 +820,10 @@ async fn private_project_returns_404_for_non_member(pool: PgPool) {
         &format!("/api/projects/{project_id}/pipelines"),
     )
     .await;
-    assert!(
-        status == StatusCode::NOT_FOUND || status == StatusCode::FORBIDDEN,
-        "expected 404 or 403 for private project, got {status}"
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "private project should return 404 (not 403) to avoid leaking existence"
     );
 }
 

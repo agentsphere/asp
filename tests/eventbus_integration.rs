@@ -831,13 +831,21 @@ async fn alert_fired_sets_cooldown_on_attempt(pool: PgPool) {
     let result = platform::store::eventbus::handle_event(&state, &event.to_string()).await;
     assert!(result.is_ok(), "handler should succeed: {result:?}");
 
-    // The handler should have set (or attempted to set) the cooldown key.
-    // On success: cooldown stays. On failure: cooldown cleared.
-    // Either way, the handler completed without error.
-    //
-    // If K8s is available (Kind cluster), the spawn succeeds and cooldown persists.
-    // If K8s is unavailable, the spawn fails and cooldown is cleared.
-    // Both outcomes are valid — we just verify the handler didn't error.
+    // The handler sets the cooldown key before spawning the agent session.
+    // In a Kind cluster the spawn succeeds and cooldown persists; if K8s is
+    // unavailable the spawn fails and the cooldown is cleared.  In our test
+    // environment the Kind cluster is available, so verify the cooldown key
+    // was actually set (not just that the handler didn't error).
+    let exists_after: bool = state
+        .valkey
+        .next()
+        .exists::<bool, _>(&cooldown_key)
+        .await
+        .unwrap();
+    assert!(
+        exists_after,
+        "cooldown key should be set after critical AlertFired event"
+    );
 }
 
 /// `AlertFired` with "warning" severity → handler proceeds past severity gate.

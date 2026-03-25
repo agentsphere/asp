@@ -80,11 +80,13 @@ async fn main() -> anyhow::Result<()> {
         secrets::engine::parse_master_key(mk).expect("PLATFORM_MASTER_KEY is invalid");
         tracing::info!("secrets engine master key loaded");
     } else if cfg.dev_mode {
-        // Deterministic dev key — NOT for production
-        let dev_key = "0".repeat(64);
+        // Random dev key — secrets won't survive restart
+        let mut key_bytes = [0u8; 32];
+        rand::fill(&mut key_bytes);
+        let dev_key = hex::encode(key_bytes);
         cfg.master_key = Some(dev_key);
         tracing::warn!(
-            "PLATFORM_MASTER_KEY not set — using deterministic dev key (NOT for production)"
+            "PLATFORM_MASTER_KEY not set — using random dev key (secrets won't survive restart)"
         );
     } else {
         tracing::warn!("PLATFORM_MASTER_KEY not set — secrets engine disabled");
@@ -261,6 +263,16 @@ async fn main() -> anyhow::Result<()> {
             HeaderValue::from_static(
                 "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:",
             ),
+        ))
+        // S51: HSTS — browsers only process this over HTTPS (no-op over HTTP per RFC 6797)
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("strict-transport-security"),
+            HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+        ))
+        // S82: Permissions-Policy — disable unused browser features
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("permissions-policy"),
+            HeaderValue::from_static("camera=(), microphone=(), geolocation=(), payment=()"),
         ))
         .layer(build_cors_layer(&cfg));
 

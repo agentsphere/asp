@@ -1,10 +1,11 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use uuid::Uuid;
 
 use ts_rs::TS;
@@ -115,8 +116,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
         // User management (admin checks done inline per handler)
-        .route("/api/users", post(create_user))
-        .route("/api/users/list", get(list_users))
+        .route("/api/users", get(list_users).post(create_user))
         // User self-service + admin
         .route(
             "/api/users/{id}",
@@ -124,7 +124,10 @@ pub fn router() -> Router<AppState> {
         )
         // API token management (authenticated)
         .route("/api/tokens", post(create_api_token).get(list_api_tokens))
-        .route("/api/tokens/{id}", delete(revoke_api_token))
+        .route(
+            "/api/tokens/{id}",
+            get(get_api_token).delete(revoke_api_token),
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -273,9 +276,19 @@ async fn logout(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<impl IntoResponse, ApiError> {
-    sqlx::query!("DELETE FROM auth_sessions WHERE user_id = $1", auth.user_id,)
-        .execute(&state.pool)
-        .await?;
+    // If we have a session token hash (session-based auth), delete only this session.
+    // If authenticated via API token, fall back to deleting all sessions for the user.
+    if let Some(ref hash) = auth.session_token_hash {
+        sqlx::query("DELETE FROM auth_sessions WHERE user_id = $1 AND token_hash = $2")
+            .bind(auth.user_id)
+            .bind(hash)
+            .execute(&state.pool)
+            .await?;
+    } else {
+        sqlx::query!("DELETE FROM auth_sessions WHERE user_id = $1", auth.user_id)
+            .execute(&state.pool)
+            .await?;
+    }
 
     write_audit(
         &state.pool,
@@ -584,7 +597,7 @@ async fn deactivate_user(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     require_admin(&state, &auth).await?;
 
     sqlx::query!("UPDATE users SET is_active = false WHERE id = $1", id,)
@@ -618,7 +631,7 @@ async fn deactivate_user(
     )
     .await;
 
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------
@@ -643,12 +656,13 @@ async fn create_api_token(
     }
 
     const DEFAULT_TOKEN_EXPIRY_DAYS: i64 = 90;
-    const MAX_TOKEN_EXPIRY_DAYS: i64 = 365;
 
+    // S71: Max expiry configurable via PLATFORM_TOKEN_MAX_EXPIRY_DAYS (default 365)
+    let max_days = i64::from(state.config.token_max_expiry_days);
     let days = body.expires_in_days.unwrap_or(DEFAULT_TOKEN_EXPIRY_DAYS);
-    if !(1..=MAX_TOKEN_EXPIRY_DAYS).contains(&days) {
+    if !(1..=max_days).contains(&days) {
         return Err(ApiError::BadRequest(format!(
-            "expires_in_days must be between 1 and {MAX_TOKEN_EXPIRY_DAYS}"
+            "expires_in_days must be between 1 and {max_days}"
         )));
     }
     let expires_at = Some(Utc::now() + Duration::days(days));
@@ -742,7 +756,7 @@ async fn validate_token_scopes(
 async fn list_api_tokens(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<Vec<TokenResponse>>, ApiError> {
+) -> Result<Json<ListResponse<TokenResponse>>, ApiError> {
     let tokens = sqlx::query!(
         r#"
         SELECT id, name, scopes, project_id, last_used_at, expires_at, created_at
@@ -754,7 +768,7 @@ async fn list_api_tokens(
     .fetch_all(&state.pool)
     .await?;
 
-    let items = tokens
+    let items: Vec<TokenResponse> = tokens
         .into_iter()
         .map(|t| TokenResponse {
             id: t.id,
@@ -767,7 +781,34 @@ async fn list_api_tokens(
         })
         .collect();
 
-    Ok(Json(items))
+    let total = i64::try_from(items.len()).unwrap_or(0);
+    Ok(Json(ListResponse { items, total }))
+}
+
+async fn get_api_token(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<TokenResponse>, ApiError> {
+    let row = sqlx::query(
+        "SELECT id, name, scopes, project_id, last_used_at, expires_at, created_at \
+         FROM api_tokens WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(auth.user_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("token".into()))?;
+
+    Ok(Json(TokenResponse {
+        id: row.get("id"),
+        name: row.get("name"),
+        scopes: row.get("scopes"),
+        project_id: row.get("project_id"),
+        last_used_at: row.get("last_used_at"),
+        expires_at: row.get("expires_at"),
+        created_at: row.get("created_at"),
+    }))
 }
 
 #[tracing::instrument(skip(state), fields(%id), err)]
@@ -775,7 +816,7 @@ async fn revoke_api_token(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     let result = sqlx::query!(
         "DELETE FROM api_tokens WHERE id = $1 AND user_id = $2",
         id,
@@ -803,5 +844,5 @@ async fn revoke_api_token(
     )
     .await;
 
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(StatusCode::NO_CONTENT)
 }

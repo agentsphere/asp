@@ -19,6 +19,36 @@ use platform::config::Config;
 use platform::store::AppState;
 
 // ---------------------------------------------------------------------------
+// Test-name-aware JSON tracing (same as helpers/mod.rs)
+// ---------------------------------------------------------------------------
+
+use std::sync::Once;
+
+static INIT_TRACING: Once = Once::new();
+
+fn init_test_tracing() {
+    INIT_TRACING.call_once(|| {
+        if let Ok(path) = std::env::var("TEST_LOG_FILE") {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("open test log file");
+            tracing_subscriber::fmt()
+                .json()
+                .with_thread_names(true)
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "warn".into()),
+                )
+                .with_writer(std::sync::Mutex::new(file))
+                .try_init()
+                .ok();
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Kube config helpers
 // ---------------------------------------------------------------------------
 
@@ -72,6 +102,7 @@ pub async fn e2e_state_with_api_url(
     pool: PgPool,
     platform_api_url: Option<String>,
 ) -> (AppState, String) {
+    init_test_tracing();
     // Ensure a rustls CryptoProvider is installed (needed by reqwest/fred)
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -208,6 +239,12 @@ pub async fn e2e_state_with_api_url(
             .unwrap_or_else(|_| "platform-gateway".into()),
         gateway_namespace: std::env::var("PLATFORM_GATEWAY_NAMESPACE")
             .unwrap_or_else(|_| "envoy-gateway-system".into()),
+        pipeline_timeout_secs: 3600,
+        max_lfs_object_bytes: 5_368_709_120,
+        token_max_expiry_days: 365,
+        observe_retention_days: 30,
+        master_key_previous: None,
+        trust_proxy_cidrs: vec![],
     };
 
     // Seed registry images from OCI tarballs (idempotent, uses file-based cache)
@@ -238,6 +275,9 @@ pub async fn e2e_state_with_api_url(
         task_registry: Arc::new(platform::health::TaskRegistry::new()),
         cli_auth_manager: Arc::new(platform::onboarding::claude_auth::CliAuthManager::new()),
     };
+
+    // Match production behavior: initialize permission cache TTL
+    platform::rbac::resolver::set_cache_ttl(config.permission_cache_ttl_secs);
 
     // Create an API token for the bootstrap admin directly in the DB,
     // bypassing the login endpoint and its rate limiter.
@@ -899,7 +939,7 @@ async fn body_json(resp: axum::http::Response<Body>) -> Value {
     if bytes.is_empty() {
         return Value::Null;
     }
-    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    serde_json::from_slice(&bytes).expect("response body is not valid JSON")
 }
 
 /// Send a raw GET request and return the body as bytes (for non-JSON endpoints).

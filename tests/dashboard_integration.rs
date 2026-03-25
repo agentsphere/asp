@@ -23,8 +23,7 @@ async fn dashboard_stats_empty(pool: PgPool) {
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/dashboard/stats").await;
 
     assert_eq!(status, StatusCode::OK, "dashboard stats failed: {body}");
-    // There may be a project created by bootstrap, but counts should be non-negative
-    assert!(body["projects"].as_i64().is_some());
+    assert!(body["projects"].as_i64().unwrap() >= 0);
     assert_eq!(body["active_sessions"].as_i64().unwrap(), 0);
     assert_eq!(body["running_builds"].as_i64().unwrap(), 0);
     assert_eq!(body["failed_builds"].as_i64().unwrap(), 0);
@@ -57,8 +56,18 @@ async fn dashboard_stats_with_data(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
     assert!(body["projects"].as_i64().unwrap() >= 1);
     assert_eq!(body["healthy_deployments"].as_i64().unwrap(), 1);
-    // Note: running_builds/failed_builds will be 0 because dashboard queries
-    // 'pipeline_runs' table which doesn't exist (known bug — silently returns 0)
+    // Known bug: dashboard queries 'pipeline_runs' which silently returns 0.
+    // When fixed, update these assertions to match actual pipeline counts.
+    assert_eq!(
+        body["running_builds"].as_i64().unwrap(),
+        0,
+        "known bug: pipeline_runs query returns 0"
+    );
+    assert_eq!(
+        body["failed_builds"].as_i64().unwrap(),
+        0,
+        "known bug: pipeline_runs query returns 0"
+    );
 }
 
 // ---------------------------------------------------------------------------

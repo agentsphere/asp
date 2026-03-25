@@ -8,6 +8,8 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+#[allow(unused_imports)]
+use sqlx::Row;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
@@ -18,6 +20,8 @@ use crate::error::ApiError;
 use crate::secrets::{engine, llm_providers};
 use crate::store::AppState;
 use crate::validation;
+
+use super::helpers::ListResponse;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,7 +90,9 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/api/users/me/llm-providers/{id}",
-            axum::routing::put(update_provider).delete(delete_provider),
+            get(get_provider)
+                .put(update_provider)
+                .delete(delete_provider),
         )
         .route(
             "/api/users/me/llm-providers/{id}/validate",
@@ -110,8 +116,16 @@ async fn create_provider(
 ) -> Result<(StatusCode, Json<CreateProviderResponse>), ApiError> {
     let label = body.label.as_deref().unwrap_or("");
     validation::check_length("label", label, 0, 255)?;
+    validation::check_length("provider_type", &body.provider_type, 1, 255)?;
     if let Some(ref model) = body.model {
         validation::check_length("model", model, 1, 255)?;
+    }
+    if body.env_vars.len() > 50 {
+        return Err(ApiError::BadRequest("too many env vars (max 50)".into()));
+    }
+    for (k, v) in &body.env_vars {
+        validation::check_length("env_var key", k, 1, 255)?;
+        validation::check_length("env_var value", v, 0, 10_000)?;
     }
 
     let master_key = get_master_key(&state)?;
@@ -149,15 +163,46 @@ async fn create_provider(
     Ok((StatusCode::CREATED, Json(CreateProviderResponse { id })))
 }
 
+/// GET /api/users/me/llm-providers/{id}
+async fn get_provider(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<llm_providers::ProviderConfigMeta>, ApiError> {
+    let row = sqlx::query(
+        "SELECT id, provider_type, label, model, validation_status, \
+                last_validated_at, created_at, updated_at \
+         FROM llm_provider_configs WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(auth.user_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| ApiError::Internal(e.into()))?
+    .ok_or_else(|| ApiError::NotFound("llm provider config".into()))?;
+
+    Ok(Json(llm_providers::ProviderConfigMeta {
+        id: row.get("id"),
+        provider_type: row.get("provider_type"),
+        label: row.get("label"),
+        model: row.get("model"),
+        validation_status: row.get("validation_status"),
+        last_validated_at: row.get("last_validated_at"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
 /// GET /api/users/me/llm-providers
 async fn list_providers(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<Vec<llm_providers::ProviderConfigMeta>>, ApiError> {
-    let configs = llm_providers::list_configs(&state.pool, auth.user_id)
+) -> Result<Json<ListResponse<llm_providers::ProviderConfigMeta>>, ApiError> {
+    let items = llm_providers::list_configs(&state.pool, auth.user_id)
         .await
         .map_err(ApiError::Internal)?;
-    Ok(Json(configs))
+    let total = i64::try_from(items.len()).unwrap_or(0);
+    Ok(Json(ListResponse { items, total }))
 }
 
 /// PUT /api/users/me/llm-providers/{id}
@@ -274,11 +319,13 @@ async fn validate_provider(
     let cancel_clone = cancel.clone();
     let pool = state.pool.clone();
     let model = config.model.clone();
+    let user_id = auth.user_id;
 
     tokio::spawn(async move {
         crate::agent::llm_validate::run_validation(
             &pool,
             id,
+            user_id,
             api_key,
             extra_env,
             model,

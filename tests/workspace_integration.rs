@@ -507,3 +507,113 @@ async fn non_admin_cannot_modify_workspace(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+// ---------------------------------------------------------------------------
+// T16: Workspace-derived permission tests
+// ---------------------------------------------------------------------------
+
+/// Workspace member gets implicit ProjectRead on workspace projects (private project).
+#[sqlx::test(migrations = "./migrations")]
+async fn workspace_member_gets_implicit_project_read(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+
+    // Create a workspace
+    let (status, ws_body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/workspaces",
+        serde_json::json!({ "name": "derived-perm-ws", "display_name": "Derived Perms WS" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ws_id = ws_body["id"].as_str().unwrap();
+
+    // Create a private project in the workspace
+    let (status, proj_body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/projects",
+        serde_json::json!({
+            "name": "ws-derived-proj",
+            "visibility": "private",
+            "workspace_id": ws_id,
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "project create failed: {proj_body}"
+    );
+    let project_id = proj_body["id"].as_str().unwrap();
+
+    // Create a user and add them as workspace member
+    let (user_id, user_token) =
+        helpers::create_user(&app, &admin_token, "ws-member", "wsmember@test.com").await;
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/workspaces/{ws_id}/members"),
+        serde_json::json!({ "user_id": user_id.to_string(), "role": "member" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Member should be able to read the private project (implicit ProjectRead)
+    let (status, _) =
+        helpers::get_json(&app, &user_token, &format!("/api/projects/{project_id}")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "workspace member should have implicit ProjectRead on workspace projects"
+    );
+}
+
+/// Non-workspace-member cannot read private workspace projects.
+#[sqlx::test(migrations = "./migrations")]
+async fn non_workspace_member_denied_project_access(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+
+    // Create workspace + private project
+    let (_, ws_body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/workspaces",
+        serde_json::json!({ "name": "deny-ws", "display_name": "Deny WS" }),
+    )
+    .await;
+    let ws_id = ws_body["id"].as_str().unwrap();
+
+    let (_, proj_body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/projects",
+        serde_json::json!({
+            "name": "ws-deny-proj",
+            "visibility": "private",
+            "workspace_id": ws_id,
+        }),
+    )
+    .await;
+    let project_id = proj_body["id"].as_str().unwrap();
+
+    // Create a user who is NOT a workspace member
+    let (_uid, outsider_token) =
+        helpers::create_user(&app, &admin_token, "ws-outsider", "wsoutsider@test.com").await;
+
+    // Outsider should get 404 (not 403) on private project
+    let (status, _) = helpers::get_json(
+        &app,
+        &outsider_token,
+        &format!("/api/projects/{project_id}"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "non-member should not access private workspace project"
+    );
+}

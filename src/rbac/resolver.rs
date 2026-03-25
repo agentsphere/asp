@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::rbac::types::Permission;
 use crate::store::valkey;
 
+// For emergency revocations, call invalidate_permissions() directly — do not rely on TTL expiry alone.
 static CACHE_TTL: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
 
 /// Set the permission cache TTL (seconds). Call once at startup.

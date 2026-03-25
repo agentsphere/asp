@@ -105,11 +105,11 @@ async fn admin_list_users(pool: PgPool) {
     helpers::create_user(&app, &admin_token, "listuser1", "list1@test.com").await;
     helpers::create_user(&app, &admin_token, "listuser2", "list2@test.com").await;
 
-    let (status, body) = helpers::get_json(&app, &admin_token, "/api/users/list").await;
+    let (status, body) = helpers::get_json(&app, &admin_token, "/api/users").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body["total"].as_i64().unwrap() >= 3); // admin + 2 users
-    assert!(body["items"].as_array().unwrap().len() >= 3);
+    assert_eq!(body["total"].as_i64().unwrap(), 3); // admin + 2 users
+    assert_eq!(body["items"].as_array().unwrap().len(), 3);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -156,7 +156,7 @@ async fn admin_deactivate_user(pool: PgPool) {
 
     let (status, _) =
         helpers::delete_json(&app, &admin_token, &format!("/api/users/{user_id}")).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Verify user is inactive
     let (status, body) =
@@ -174,7 +174,9 @@ async fn deactivated_user_cannot_login(pool: PgPool) {
         helpers::create_user(&app, &admin_token, "nologin", "nologin@test.com").await;
 
     // Deactivate
-    helpers::delete_json(&app, &admin_token, &format!("/api/users/{user_id}")).await;
+    let (del_status, _) =
+        helpers::delete_json(&app, &admin_token, &format!("/api/users/{user_id}")).await;
+    assert_eq!(del_status, StatusCode::NO_CONTENT);
 
     // Try login
     let (status, _) = helpers::post_json(
@@ -200,7 +202,9 @@ async fn deactivated_user_token_revoked(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     // Deactivate user (this should revoke sessions)
-    helpers::delete_json(&app, &admin_token, &format!("/api/users/{user_id}")).await;
+    let (del_status, _) =
+        helpers::delete_json(&app, &admin_token, &format!("/api/users/{user_id}")).await;
+    assert_eq!(del_status, StatusCode::NO_CONTENT);
 
     // Token should no longer work
     let (status, _) = helpers::get_json(&app, &user_token, "/api/auth/me").await;
@@ -238,7 +242,7 @@ async fn non_admin_cannot_list_users(pool: PgPool) {
     let (_, user_token) =
         helpers::create_user(&app, &admin_token, "nolist", "nolist@test.com").await;
 
-    let (status, _) = helpers::get_json(&app, &user_token, "/api/users/list").await;
+    let (status, _) = helpers::get_json(&app, &user_token, "/api/users").await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
@@ -286,7 +290,10 @@ async fn admin_actions_create_audit_log(pool: PgPool) {
         .await
         .unwrap();
 
-    assert!(row.0 >= 1, "expected audit_log entry for user.create");
+    assert_eq!(
+        row.0, 1,
+        "expected exactly one audit_log entry for user.create"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -345,9 +352,9 @@ async fn admin_list_roles(pool: PgPool) {
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;
 
     assert_eq!(status, StatusCode::OK);
-    let roles = body.as_array().unwrap();
-    // Should have at least the system roles (admin, developer, viewer)
-    assert!(roles.len() >= 3);
+    let roles = body["items"].as_array().unwrap();
+    // Bootstrap seeds 10 system roles (admin, developer, ops, agent, viewer, agent-dev, agent-ops, agent-test, agent-review, agent-manager)
+    assert_eq!(roles.len(), 10);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -357,7 +364,7 @@ async fn admin_list_role_permissions(pool: PgPool) {
 
     // Get the admin role ID
     let (_, roles) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;
-    let admin_role = roles
+    let admin_role = roles["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -373,7 +380,7 @@ async fn admin_list_role_permissions(pool: PgPool) {
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    let perms = body.as_array().unwrap();
+    let perms = body["items"].as_array().unwrap();
     assert!(!perms.is_empty(), "admin role should have permissions");
 }
 
@@ -411,7 +418,7 @@ async fn admin_set_role_permissions(pool: PgPool) {
         &format!("/api/admin/roles/{role_id}/permissions"),
     )
     .await;
-    let perm_names: Vec<&str> = perms
+    let perm_names: Vec<&str> = perms["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -428,7 +435,7 @@ async fn admin_set_system_role_permissions_fails(pool: PgPool) {
 
     // Get the admin role ID (which is a system role)
     let (_, roles) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;
-    let admin_role = roles
+    let admin_role = roles["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -499,15 +506,14 @@ async fn admin_revoke_delegation(pool: PgPool) {
     let deleg_id = deleg["id"].as_str().unwrap();
 
     // Revoke
-    let (status, body) = helpers::delete_json(
+    let (status, _) = helpers::delete_json(
         &app,
         &admin_token,
         &format!("/api/admin/delegations/{deleg_id}"),
     )
     .await;
 
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["ok"], true);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // Revoking again should 404
     let (status, _) = helpers::delete_json(
@@ -542,7 +548,7 @@ async fn admin_list_delegations(pool: PgPool) {
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/admin/delegations").await;
 
     assert_eq!(status, StatusCode::OK);
-    let delegations = body.as_array().unwrap();
+    let delegations = body["items"].as_array().unwrap();
     assert!(!delegations.is_empty());
 }
 
@@ -618,9 +624,10 @@ async fn admin_list_service_accounts(pool: PgPool) {
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/admin/service-accounts").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body["total"].as_i64().unwrap() >= 1);
+    assert_eq!(body["total"].as_i64().unwrap(), 1);
     let items = body["items"].as_array().unwrap();
-    assert!(items.iter().any(|u| u["name"] == "list-bot"));
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["name"], "list-bot");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -637,15 +644,14 @@ async fn admin_deactivate_service_account(pool: PgPool) {
     .await;
     let sa_id = sa["user"]["id"].as_str().unwrap();
 
-    let (status, body) = helpers::delete_json(
+    let (status, _) = helpers::delete_json(
         &app,
         &admin_token,
         &format!("/api/admin/service-accounts/{sa_id}"),
     )
     .await;
 
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["ok"], true);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -678,7 +684,7 @@ async fn admin_remove_role(pool: PgPool) {
 
     // Get developer role ID
     let (_, roles) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;
-    let dev_role = roles
+    let dev_role = roles["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -697,14 +703,13 @@ async fn admin_remove_role(pool: PgPool) {
     assert_eq!(status, StatusCode::CREATED);
 
     // Remove role
-    let (status, body) = helpers::delete_json(
+    let (status, _) = helpers::delete_json(
         &app,
         &admin_token,
         &format!("/api/admin/users/{user_id}/roles/{role_id}"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["ok"], true);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 }
 
 #[sqlx::test(migrations = "./migrations")]

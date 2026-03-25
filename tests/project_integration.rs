@@ -175,7 +175,7 @@ async fn delete_project_soft_delete(pool: PgPool) {
     // Delete (soft)
     let (status, _) =
         helpers::delete_json(&app, &admin_token, &format!("/api/projects/{project_id}")).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // GET should return 404
     let (status, _) =
@@ -197,7 +197,7 @@ async fn list_projects_pagination(pool: PgPool) {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["items"].as_array().unwrap().len(), 2);
-    assert!(body["total"].as_i64().unwrap() >= 5);
+    assert_eq!(body["total"].as_i64().unwrap(), 5);
 }
 
 #[sqlx::test(migrations = "./migrations")]

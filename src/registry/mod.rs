@@ -69,6 +69,7 @@ async fn lookup_repo_and_project(
 /// project-name lookup with lazy repo creation for push operations.
 ///
 /// Returns 404 (not 403) if user lacks access to avoid leaking existence.
+#[allow(clippy::too_many_lines)]
 pub async fn resolve_repo_with_access(
     state: &AppState,
     user: &RegistryUser,
@@ -95,10 +96,17 @@ pub async fn resolve_repo_with_access(
         // project_id is Some here (system repos handled above)
         (
             Some(rp.repository_id),
-            rp.project_id.expect("project_id checked above"),
-            rp.owner_id.expect("owner_id present when project_id set"),
+            rp.project_id
+                .ok_or(RegistryError::Internal(anyhow::anyhow!(
+                    "project_id unexpectedly NULL for project-scoped repo"
+                )))?,
+            rp.owner_id.ok_or(RegistryError::Internal(anyhow::anyhow!(
+                "owner_id unexpectedly NULL for project-scoped repo"
+            )))?,
             rp.workspace_id
-                .expect("workspace_id present when project_id set"),
+                .ok_or(RegistryError::Internal(anyhow::anyhow!(
+                    "workspace_id unexpectedly NULL for project-scoped repo"
+                )))?,
         )
     } else if need_push {
         // No repo found — for push, fall back to project-name lookup + lazy-create.

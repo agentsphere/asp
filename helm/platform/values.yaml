@@ -26,7 +26,7 @@ platform:
   env:
     devMode: false
     secureCookies: false
-    trustProxy: true
+    trustProxy: false
     permissionCacheTtl: 300
     logLevel: "info"
     selfObserveLevel: "warn"
@@ -92,6 +92,10 @@ platform:
 
   # -- Affinity
   affinity: {}
+
+# -- NodePort service (S64: opt-in, not auto-created when ingress is disabled)
+nodePort:
+  enabled: false
 
 # -- Ingress configuration
 ingress:

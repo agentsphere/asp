@@ -100,7 +100,14 @@ pub async fn ensure_session_namespace(
     dev_mode: bool,
 ) -> Result<(), super::error::DeployerError> {
     // 1. Namespace
-    ensure_namespace(kube_client, ns_name, "session", project_id).await?;
+    ensure_namespace(
+        kube_client,
+        ns_name,
+        "session",
+        project_id,
+        platform_namespace,
+    )
+    .await?;
 
     // 2. NetworkPolicy (unless dev mode) — session namespaces use a variant that
     //    allows ingress from the platform namespace on port 8000 for preview proxying.
@@ -258,8 +265,31 @@ async fn apply_namespaced_object(
 }
 
 /// Delete a K8s namespace. Ignores 404 (already deleted).
+///
+/// S30: Refuses to delete namespaces not labelled `platform.io/managed-by: platform`.
 pub async fn delete_namespace(kube: &kube::Client, ns_name: &str) -> Result<(), anyhow::Error> {
     let namespaces: kube::Api<k8s_openapi::api::core::v1::Namespace> = kube::Api::all(kube.clone());
+
+    // S30: Verify the namespace is managed by us before deleting
+    match namespaces.get(ns_name).await {
+        Ok(ns) => {
+            let labels = ns.metadata.labels.as_ref();
+            let managed = labels
+                .and_then(|l| l.get("platform.io/managed-by"))
+                .is_some_and(|v| v == "platform");
+            if !managed {
+                anyhow::bail!(
+                    "refusing to delete namespace '{ns_name}': missing platform.io/managed-by=platform label"
+                );
+            }
+        }
+        Err(kube::Error::Api(err)) if err.code == 404 => {
+            tracing::debug!(namespace = %ns_name, "namespace already deleted");
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    }
+
     match namespaces
         .delete(ns_name, &kube::api::DeleteParams::default())
         .await
@@ -509,12 +539,15 @@ pub fn build_network_policy(ns_name: &str, platform_namespace: &str) -> serde_js
 /// Ensure a K8s namespace exists using server-side apply (idempotent).
 ///
 /// `ns_name` is the full namespace name (e.g. `my-app-dev` or `prefix-my-app-dev`).
+/// `platform_namespace` is the namespace where the platform itself runs (for RBAC subjects).
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 #[tracing::instrument(skip(kube_client), fields(%ns_name, %env), err)]
 pub async fn ensure_namespace(
     kube_client: &kube::Client,
     ns_name: &str,
     env: &str,
     project_id: &str,
+    platform_namespace: &str,
 ) -> Result<(), super::error::DeployerError> {
     let ns_json = build_namespace_object(ns_name, env, project_id);
 
@@ -533,6 +566,109 @@ pub async fn ensure_namespace(
     let patch_params = kube::api::PatchParams::apply("platform-deployer").force();
     api.patch(ns_name, &patch_params, &kube::api::Patch::Apply(&obj))
         .await?;
+
+    // S6: Create per-namespace RoleBinding for secrets access
+    let secrets_rb = json!({
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "RoleBinding",
+        "metadata": {
+            "name": "platform-secrets-access",
+            "namespace": ns_name
+        },
+        "roleRef": {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": format!("{platform_namespace}-secrets-manager")
+        },
+        "subjects": [{
+            "kind": "ServiceAccount",
+            "name": platform_namespace,
+            "namespace": platform_namespace
+        }]
+    });
+
+    apply_namespaced_object(
+        kube_client,
+        ns_name,
+        "rbac.authorization.k8s.io",
+        "v1",
+        "RoleBinding",
+        "rolebindings",
+        "platform-secrets-access",
+        secrets_rb,
+    )
+    .await?;
+
+    // S23/S24: NetworkPolicy — allow DNS + platform API + internet, block cross-namespace access.
+    // Applied in all modes (unlike PSA which is dev-mode-gated for hostPath compatibility).
+    let netpol = json!({
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "name": "platform-managed",
+            "namespace": ns_name
+        },
+        "spec": {
+            "podSelector": {},
+            "policyTypes": ["Egress"],
+            "egress": [
+                {
+                    "to": [{
+                        "namespaceSelector": {
+                            "matchLabels": {
+                                "kubernetes.io/metadata.name": platform_namespace
+                            }
+                        }
+                    }],
+                    "ports": [{"port": 8080, "protocol": "TCP"}]
+                },
+                {
+                    "to": [{
+                        "namespaceSelector": {
+                            "matchLabels": {
+                                "kubernetes.io/metadata.name": "kube-system"
+                            }
+                        },
+                        "podSelector": {
+                            "matchLabels": {
+                                "k8s-app": "kube-dns"
+                            }
+                        }
+                    }],
+                    "ports": [
+                        {"port": 53, "protocol": "UDP"},
+                        {"port": 53, "protocol": "TCP"}
+                    ]
+                },
+                {
+                    "to": [{
+                        "ipBlock": {
+                            "cidr": "0.0.0.0/0",
+                            "except": [
+                                "10.0.0.0/8",
+                                "172.16.0.0/12",
+                                "192.168.0.0/16",
+                                "100.64.0.0/10",
+                                "169.254.0.0/16"
+                            ]
+                        }
+                    }]
+                }
+            ]
+        }
+    });
+
+    apply_namespaced_object(
+        kube_client,
+        ns_name,
+        "networking.k8s.io",
+        "v1",
+        "NetworkPolicy",
+        "networkpolicies",
+        "platform-managed",
+        netpol,
+    )
+    .await?;
 
     tracing::info!(%ns_name, "namespace ensured");
     Ok(())

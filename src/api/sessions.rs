@@ -811,7 +811,7 @@ async fn list_children(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((id, session_id)): Path<(Uuid, Uuid)>,
-) -> Result<Json<Vec<SessionResponse>>, ApiError> {
+) -> Result<Json<ListResponse<SessionResponse>>, ApiError> {
     require_project_read(&state, &auth, id).await?;
 
     let children = sqlx::query!(
@@ -828,7 +828,7 @@ async fn list_children(
     .fetch_all(&state.pool)
     .await?;
 
-    let items = children
+    let items: Vec<SessionResponse> = children
         .into_iter()
         .map(|r| SessionResponse {
             id: r.id,
@@ -848,7 +848,8 @@ async fn list_children(
         })
         .collect();
 
-    Ok(Json(items))
+    let total = i64::try_from(items.len()).unwrap_or(0);
+    Ok(Json(ListResponse { items, total }))
 }
 
 fn truncate_prompt(prompt: &str, max_chars: usize) -> String {
@@ -912,7 +913,7 @@ async fn list_iframes(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((id, session_id)): Path<(Uuid, Uuid)>,
-) -> Result<Json<Vec<IframePanel>>, ApiError> {
+) -> Result<Json<ListResponse<IframePanel>>, ApiError> {
     require_project_read(&state, &auth, id).await?;
 
     let session = service::fetch_session(&state.pool, session_id)
@@ -965,7 +966,11 @@ async fn list_iframes(
         })
         .collect();
 
-    Ok(Json(panels))
+    let total = i64::try_from(panels.len()).unwrap_or(0);
+    Ok(Json(ListResponse {
+        items: panels,
+        total,
+    }))
 }
 
 // ---------------------------------------------------------------------------

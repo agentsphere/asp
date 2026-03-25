@@ -32,12 +32,12 @@ export function AuthProvider({ children }: { children: any }) {
   };
 
   const loginWithPasskey = async () => {
-    const beginResp = await api.post<BeginLoginResponse>('/api/auth/passkey/login/begin', {});
+    const beginResp = await api.post<BeginLoginResponse>('/api/auth/passkeys/login/begin', {});
     const opts = prepareRequestOptions(beginResp.challenge);
     const credential = await navigator.credentials.get({ publicKey: opts }) as PublicKeyCredential;
     if (!credential) throw new Error('Passkey authentication was cancelled');
     const serialized = serializeAuthResponse(credential);
-    const completeResp = await api.post<PasskeyLoginResponse>('/api/auth/passkey/login/complete', {
+    const completeResp = await api.post<PasskeyLoginResponse>('/api/auth/passkeys/login/complete', {
       challenge_id: beginResp.challenge_id,
       credential: serialized,
     });

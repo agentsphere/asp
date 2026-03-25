@@ -198,7 +198,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       // --- Users ---
       case "list_users": {
-        const data = await apiGet("/api/users/list", {
+        const data = await apiGet("/api/users", {
           query: { limit: args.limit, offset: args.offset },
         });
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
@@ -227,8 +227,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       case "deactivate_user": {
-        const data = await apiDelete(`/api/users/${args.user_id}`);
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        await apiDelete(`/api/users/${args.user_id}`);
+        return { content: [{ type: "text", text: "User deactivated" }] };
       }
       // --- Roles ---
       case "list_roles": {
@@ -255,10 +255,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       case "remove_role": {
-        const data = await apiDelete(
+        await apiDelete(
           `/api/admin/users/${args.user_id}/roles/${args.role_id}`,
         );
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        return { content: [{ type: "text", text: "Role removed" }] };
       }
       // --- Delegations ---
       case "list_delegations": {
@@ -280,8 +280,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       case "revoke_delegation": {
-        const data = await apiDelete(`/api/admin/delegations/${args.delegation_id}`);
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        await apiDelete(`/api/admin/delegations/${args.delegation_id}`);
+        return { content: [{ type: "text", text: "Delegation revoked" }] };
       }
       default:
         throw new Error(`Unknown tool: ${name}`);

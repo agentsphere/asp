@@ -88,6 +88,18 @@ pub struct Config {
     pub gateway_name: String,
     /// Namespace where the shared Gateway lives (default: same as `platform_namespace`).
     pub gateway_namespace: String,
+    /// Maximum pipeline run duration in seconds (default 3600 = 1 hour).
+    pub pipeline_timeout_secs: u64,
+    /// Maximum allowed LFS object size in bytes (default 5 GB).
+    pub max_lfs_object_bytes: u64,
+    /// Maximum API token expiry in days (default 365). S71.
+    pub token_max_expiry_days: u32,
+    /// Observability data retention in days (default 30). S94.
+    pub observe_retention_days: u32,
+    /// Previous master key for key rotation (S44). Optional — only during rotation.
+    pub master_key_previous: Option<String>,
+    /// Trusted proxy CIDRs (S59). When non-empty, X-Forwarded-For only trusted from these IPs.
+    pub trust_proxy_cidrs: Vec<String>,
 }
 
 fn parse_cors_origins(s: &str) -> Vec<String> {
@@ -131,6 +143,7 @@ impl std::fmt::Debug for Config {
 }
 
 impl Config {
+    #[allow(clippy::too_many_lines)]
     pub fn load() -> Self {
         let valkey_url = env::var("VALKEY_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
         let valkey_agent_host = env::var("PLATFORM_VALKEY_AGENT_HOST")
@@ -228,6 +241,27 @@ impl Config {
             gateway_namespace: env::var("PLATFORM_GATEWAY_NAMESPACE").unwrap_or_else(|_| {
                 env::var("PLATFORM_NAMESPACE").unwrap_or_else(|_| "platform".into())
             }),
+            pipeline_timeout_secs: env::var("PLATFORM_PIPELINE_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3600),
+            max_lfs_object_bytes: env::var("PLATFORM_MAX_LFS_OBJECT_BYTES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5_368_709_120),
+            token_max_expiry_days: env::var("PLATFORM_TOKEN_MAX_EXPIRY_DAYS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(365),
+            observe_retention_days: env::var("PLATFORM_OBSERVE_RETENTION_DAYS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
+            master_key_previous: env::var("PLATFORM_MASTER_KEY_PREVIOUS").ok(),
+            trust_proxy_cidrs: env::var("PLATFORM_TRUST_PROXY_CIDR")
+                .ok()
+                .map(|v| v.split(',').map(|s| s.trim().to_owned()).collect())
+                .unwrap_or_default(),
         }
     }
 
@@ -305,6 +339,12 @@ impl Config {
             pipeline_max_parallel: 4,
             gateway_name: "platform-gateway".into(),
             gateway_namespace: "test-platform".into(),
+            pipeline_timeout_secs: 3600,
+            max_lfs_object_bytes: 5_368_709_120,
+            token_max_expiry_days: 365,
+            observe_retention_days: 30,
+            master_key_previous: None,
+            trust_proxy_cidrs: vec![],
         }
     }
 }

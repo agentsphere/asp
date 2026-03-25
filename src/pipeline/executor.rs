@@ -166,6 +166,11 @@ async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), Pip
     // Create a short-lived OTLP token for pipeline pods to emit telemetry
     let otlp_token = create_pipeline_otlp_token(state, project_id, pipeline_id).await;
 
+    let pipeline_namespace = state
+        .config
+        .project_namespace(&pipeline.namespace_slug, "dev");
+    let git_secret_name = format!("pl-git-{}", &pipeline_id.to_string()[..8]);
+
     let meta = PipelineMeta {
         git_ref: pipeline.git_ref,
         commit_sha: pipeline.commit_sha,
@@ -173,16 +178,42 @@ async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), Pip
         project_name: pipeline.project_name,
         repo_clone_url,
         git_auth_token: git_token.0,
-        namespace: state
-            .config
-            .project_namespace(&pipeline.namespace_slug, "dev"),
+        namespace: pipeline_namespace,
         trigger_type: pipeline.trigger,
         namespace_slug: pipeline.namespace_slug,
         otlp_token,
+        git_secret_name,
     };
 
     // Ensure project namespace exists (lazy creation for DB-only projects)
     ensure_project_namespace(state, &meta.namespace, project_id).await?;
+
+    // S31: Create git auth Secret for init container (avoids exposing token as env var)
+    {
+        let git_secret = Secret {
+            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                name: Some(meta.git_secret_name.clone()),
+                labels: Some(BTreeMap::from([(
+                    "platform.io/pipeline".into(),
+                    pipeline_id.to_string(),
+                )])),
+                ..Default::default()
+            },
+            string_data: Some(BTreeMap::from([(
+                "token".into(),
+                meta.git_auth_token.clone(),
+            )])),
+            type_: Some("Opaque".into()),
+            ..Default::default()
+        };
+        let secrets_api: Api<Secret> = Api::namespaced(state.kube.clone(), &meta.namespace);
+        if let Err(e) = secrets_api
+            .create(&PostParams::default(), &git_secret)
+            .await
+        {
+            tracing::warn!(error = %e, "failed to create git auth secret");
+        }
+    }
 
     // Create registry auth Secret if registry is configured
     let registry_creds = if state.config.registry_url.is_some() {
@@ -218,10 +249,36 @@ async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), Pip
     .await;
 
     let registry_secret_name = registry_creds.as_ref().map(|(name, _)| name.as_str());
-    let all_succeeded =
-        run_all_steps(state, pipeline_id, project_id, &meta, registry_secret_name).await?;
 
-    // Clean up registry auth Secret + token
+    // A17: Wrap step execution with a pipeline-level timeout
+    let pipeline_timeout = std::time::Duration::from_secs(state.config.pipeline_timeout_secs);
+    let step_result = tokio::time::timeout(
+        pipeline_timeout,
+        run_all_steps(state, pipeline_id, project_id, &meta, registry_secret_name),
+    )
+    .await;
+
+    let all_succeeded = match step_result {
+        Ok(result) => result?, // normal completion — propagate errors
+        Err(_elapsed) => {
+            tracing::error!(
+                pipeline_run_id = %pipeline_id,
+                timeout_secs = state.config.pipeline_timeout_secs,
+                "pipeline timed out"
+            );
+            // Mark pipeline as failure due to timeout
+            sqlx::query(
+                "UPDATE pipelines SET status = 'failure', finished_at = now() WHERE id = $1",
+            )
+            .bind(pipeline_id)
+            .execute(&state.pool)
+            .await
+            .ok();
+            false
+        }
+    };
+
+    // Cleanup always runs, even after timeout
     if let Some((_, ref token_hash)) = registry_creds {
         cleanup_registry_secret(state, pipeline_id, token_hash, &meta.namespace).await;
     }
@@ -292,6 +349,8 @@ struct PipelineMeta {
     namespace_slug: String,
     /// Short-lived OTLP token for pipeline pods to send telemetry.
     otlp_token: Option<String>,
+    /// K8s Secret name for git auth token (S31).
+    git_secret_name: String,
 }
 
 /// A pipeline step row loaded from the database.
@@ -325,6 +384,7 @@ async fn ensure_project_namespace(
         namespace,
         "dev",
         &project_id.to_string(),
+        &state.config.platform_namespace,
     )
     .await
     .map_err(|e| PipelineError::Other(e.into()))?;
@@ -558,6 +618,7 @@ async fn run_steps_dag(
                 trigger_type: pipeline.trigger_type.clone(),
                 namespace_slug: pipeline.namespace_slug.clone(),
                 otlp_token: pipeline.otlp_token.clone(),
+                git_secret_name: pipeline.git_secret_name.clone(),
             };
             let secrets = secrets.to_vec();
             let registry_secret = registry_secret.map(String::from);
@@ -807,7 +868,7 @@ async fn execute_single_step(
         repo_clone_url: &pipeline.repo_clone_url,
         git_ref: &pipeline.git_ref,
         registry_secret,
-        git_auth_token: &pipeline.git_auth_token,
+        git_secret_name: Some(&pipeline.git_secret_name),
         step_type: &step.step_type,
     });
 
@@ -1263,6 +1324,12 @@ async fn cleanup_registry_secret(
         tracing::warn!(error = %e, %secret_name, "failed to delete registry auth secret");
     }
 
+    // S31: Clean up git auth Secret
+    let git_secret_name = format!("pl-git-{}", &pipeline_id.to_string()[..8]);
+    let _ = secrets
+        .delete(&git_secret_name, &DeleteParams::default())
+        .await;
+
     // Delete the short-lived API token from the DB
     if let Err(e) = sqlx::query!("DELETE FROM api_tokens WHERE token_hash = $1", token_hash)
         .execute(&state.pool)
@@ -1289,14 +1356,17 @@ struct PodSpecParams<'a> {
     git_ref: &'a str,
     /// K8s Secret name containing Docker config JSON for registry auth.
     registry_secret: Option<&'a str>,
-    /// Short-lived API token for authenticating git clone via `GIT_ASKPASS`.
-    git_auth_token: &'a str,
+    /// K8s Secret name containing git auth token (mounted as volume instead of env var).
+    git_secret_name: Option<&'a str>,
     /// Step type — `imagebuild` steps need root (kaniko), others get hardened context.
     step_type: &'a str,
 }
 
 /// Build the volumes and step container mounts for a pipeline pod.
-fn build_volumes_and_mounts(registry_secret: Option<&str>) -> (Vec<Volume>, Vec<VolumeMount>) {
+fn build_volumes_and_mounts(
+    registry_secret: Option<&str>,
+    git_secret_name: Option<&str>,
+) -> (Vec<Volume>, Vec<VolumeMount>) {
     let mut step_mounts = vec![VolumeMount {
         name: "workspace".into(),
         mount_path: "/workspace".into(),
@@ -1327,6 +1397,18 @@ fn build_volumes_and_mounts(registry_secret: Option<&str>) -> (Vec<Volume>, Vec<
         });
     }
 
+    // S31: Mount git auth token from K8s Secret (avoids exposing as env var)
+    if let Some(secret_name) = git_secret_name {
+        volumes.push(Volume {
+            name: "git-auth".into(),
+            secret: Some(SecretVolumeSource {
+                secret_name: Some(secret_name.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+    }
+
     (volumes, step_mounts)
 }
 
@@ -1346,7 +1428,22 @@ fn build_pod_spec(p: &PodSpecParams<'_>) -> Pod {
         .or_else(|| p.git_ref.strip_prefix("refs/tags/"))
         .unwrap_or(p.git_ref);
 
-    let (volumes, step_mounts) = build_volumes_and_mounts(p.registry_secret);
+    let (volumes, step_mounts) = build_volumes_and_mounts(p.registry_secret, p.git_secret_name);
+
+    // S31: Init container volume mounts — workspace + git-auth secret (if present)
+    let mut init_mounts = vec![VolumeMount {
+        name: "workspace".into(),
+        mount_path: "/workspace".into(),
+        ..Default::default()
+    }];
+    if p.git_secret_name.is_some() {
+        init_mounts.push(VolumeMount {
+            name: "git-auth".into(),
+            mount_path: "/git-auth".into(),
+            read_only: Some(true),
+            ..Default::default()
+        });
+    }
 
     Pod {
         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
@@ -1371,22 +1468,16 @@ fn build_pod_spec(p: &PodSpecParams<'_>) -> Pod {
                 name: "clone".into(),
                 image: Some("alpine/git:latest".into()),
                 command: Some(vec!["sh".into(), "-c".into()]),
+                // S31: Read git token from mounted secret file instead of env var
                 args: Some(vec![format!(
-                    "printf '#!/bin/sh\\necho \"$GIT_AUTH_TOKEN\"\\n' > /tmp/git-askpass.sh && \
+                    "printf '#!/bin/sh\\ncat /git-auth/token\\n' > /tmp/git-askpass.sh && \
                      chmod +x /tmp/git-askpass.sh && \
                      GIT_ASKPASS=/tmp/git-askpass.sh \
                      git clone --depth 1 --branch \"$GIT_BRANCH\" {} /workspace 2>&1",
                     p.repo_clone_url,
                 )]),
-                env: Some(vec![
-                    env_var("GIT_AUTH_TOKEN", p.git_auth_token),
-                    env_var("GIT_BRANCH", branch),
-                ]),
-                volume_mounts: Some(vec![VolumeMount {
-                    name: "workspace".into(),
-                    mount_path: "/workspace".into(),
-                    ..Default::default()
-                }]),
+                env: Some(vec![env_var("GIT_BRANCH", branch)]),
+                volume_mounts: Some(init_mounts),
                 security_context: Some(container_security()),
                 ..Default::default()
             }]),
@@ -1450,7 +1541,6 @@ const RESERVED_PIPELINE_ENV_VARS: &[&str] = &[
     "REGISTRY",
     "DOCKER_CONFIG",
     "PIPELINE_TRIGGER",
-    "GIT_AUTH_TOKEN",
     "GIT_ASKPASS",
     "PLATFORM_SECRET_NAMES",
     "PATH",
@@ -1783,6 +1873,7 @@ async fn execute_deploy_test_step(
         &ns_name,
         "test",
         &project_id.to_string(),
+        &state.config.platform_namespace,
     )
     .await
     .map_err(|e| PipelineError::Other(e.into()))?;
@@ -2581,7 +2672,7 @@ async fn inject_test_namespace_secrets(
         for row in &rows {
             let name: String = row.get("name");
             let encrypted: Vec<u8> = row.get("encrypted_value");
-            match crate::secrets::engine::decrypt(&encrypted, &mk) {
+            match crate::secrets::engine::decrypt(&encrypted, &mk, None) {
                 Ok(val) => {
                     if let Ok(s) = String::from_utf8(val) {
                         env_data.insert(name, s);
@@ -3312,7 +3403,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/repo.git",
             git_ref: "refs/heads/main",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -3362,7 +3453,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "refs/heads/feature-branch",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -3397,7 +3488,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "refs/tags/v1.0",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -3425,7 +3516,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -3453,7 +3544,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -3478,7 +3569,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -3507,7 +3598,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -3530,7 +3621,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -3846,7 +3937,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: Some("pl-registry-00000000"),
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -3869,7 +3960,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -3893,7 +3984,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -3917,7 +4008,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: Some("pl-registry-00000000"),
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -3978,7 +4069,7 @@ mod tests {
 
     #[test]
     fn volumes_without_secret_has_one() {
-        let (volumes, mounts) = build_volumes_and_mounts(None);
+        let (volumes, mounts) = build_volumes_and_mounts(None, None);
         assert_eq!(volumes.len(), 1);
         assert_eq!(volumes[0].name, "workspace");
         assert_eq!(mounts.len(), 1);
@@ -3988,7 +4079,7 @@ mod tests {
 
     #[test]
     fn volumes_with_secret_has_two() {
-        let (volumes, mounts) = build_volumes_and_mounts(Some("my-secret"));
+        let (volumes, mounts) = build_volumes_and_mounts(Some("my-secret"), None);
         assert_eq!(volumes.len(), 2);
         assert_eq!(volumes[1].name, "docker-config");
         let secret_vol = volumes[1].secret.as_ref().unwrap();
@@ -4140,7 +4231,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -4162,7 +4253,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -4184,7 +4275,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/repo.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -4209,14 +4300,12 @@ mod tests {
             "should not use file:// protocol, got: {clone_cmd}"
         );
 
-        // GIT_AUTH_TOKEN env var should be set
+        // S31: GIT_AUTH_TOKEN env var should NOT be set (token is in mounted secret)
         let env = init.env.as_ref().unwrap();
         let token_env = env.iter().find(|e| e.name == "GIT_AUTH_TOKEN");
-        assert!(token_env.is_some(), "should have GIT_AUTH_TOKEN env var");
-        assert_eq!(
-            token_env.unwrap().value.as_deref(),
-            Some("test-token"),
-            "GIT_AUTH_TOKEN should match the provided token"
+        assert!(
+            token_env.is_none(),
+            "should NOT have GIT_AUTH_TOKEN env var (S31: use secret volume)"
         );
 
         // GIT_BRANCH env var should be set
@@ -4242,7 +4331,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -4330,7 +4419,8 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "secret-token-value",
+            git_secret_name: None,
+            step_type: "command",
         });
 
         let init = &pod.spec.unwrap().init_containers.unwrap()[0];
@@ -4354,7 +4444,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "feat/$(malicious-cmd)",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -4391,7 +4481,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 
@@ -4404,29 +4494,29 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_step_container_has_no_security_context() {
-        // Step containers (e.g. kaniko) need root + capabilities to build
+    fn pipeline_imagebuild_step_container_has_no_security_context() {
+        // Imagebuild (kaniko) steps need root + capabilities to build
         // images, so no restrictive security context is applied.
         let pod = build_pod_spec(&PodSpecParams {
             pod_name: "pl-test",
             pipeline_id: Uuid::nil(),
             project_id: Uuid::nil(),
             step_name: "test",
-            image: "alpine:3.19",
+            image: "gcr.io/kaniko-project/executor:latest",
             commands: &["true".into()],
             env_vars: &[],
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "test-token",
-            step_type: "command",
+            git_secret_name: None,
+            step_type: "imagebuild",
         });
 
         let spec = pod.spec.unwrap();
         let container = &spec.containers[0];
         assert!(
             container.security_context.is_none(),
-            "step container should not have a restrictive security context"
+            "imagebuild step container should not have a restrictive security context"
         );
     }
 
@@ -4443,7 +4533,7 @@ mod tests {
             repo_clone_url: "http://platform:8080/owner/test.git",
             git_ref: "main",
             registry_secret: None,
-            git_auth_token: "test-token",
+            git_secret_name: None,
             step_type: "command",
         });
 

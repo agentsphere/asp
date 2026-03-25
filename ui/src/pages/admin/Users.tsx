@@ -19,7 +19,7 @@ export function Users() {
   const [error, setError] = useState('');
 
   const load = () => {
-    api.get<ListResponse<User>>(`/api/users/list${qs({ limit: LIMIT, offset })}`)
+    api.get<ListResponse<User>>(`/api/users${qs({ limit: LIMIT, offset })}`)
       .then(r => { setUsers(r.items); setTotal(r.total); }).catch(e => console.warn(e));
   };
   useEffect(load, [offset]);

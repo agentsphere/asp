@@ -62,7 +62,7 @@ async fn login_passkey_ceremony(
     let (status, body) = e2e_helpers::post_json(
         app,
         "",
-        "/api/auth/passkey/login/begin",
+        "/api/auth/passkeys/login/begin",
         serde_json::json!({}),
     )
     .await;
@@ -94,7 +94,7 @@ async fn login_passkey_ceremony(
     let (status, body) = e2e_helpers::post_json(
         app,
         "",
-        "/api/auth/passkey/login/complete",
+        "/api/auth/passkeys/login/complete",
         serde_json::json!({
             "challenge_id": challenge_id,
             "credential": auth_response,
@@ -232,7 +232,7 @@ async fn passkey_register_list_rename_delete_journey(pool: PgPool) {
     let (status, _) =
         e2e_helpers::delete_json(&app, &user_token, &format!("/api/auth/passkeys/{cred1_id}"))
             .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::NO_CONTENT);
 
     // 7. List — verify 1 remaining
     let (_, body) = e2e_helpers::get_json(&app, &user_token, "/api/auth/passkeys").await;

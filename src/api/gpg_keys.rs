@@ -16,7 +16,7 @@ use crate::git::gpg_keys;
 use crate::store::AppState;
 use crate::validation;
 
-use super::helpers::require_admin;
+use super::helpers::{ListResponse, require_admin};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -187,7 +187,7 @@ async fn add_gpg_key(
 async fn list_gpg_keys(
     State(state): State<AppState>,
     auth: AuthUser,
-) -> Result<Json<Vec<GpgKeyResponse>>, ApiError> {
+) -> Result<Json<ListResponse<GpgKeyResponse>>, ApiError> {
     let rows = sqlx::query!(
         r#"SELECT id, user_id, key_id, fingerprint, emails, expires_at, can_sign, created_at
            FROM user_gpg_keys
@@ -212,7 +212,8 @@ async fn list_gpg_keys(
         })
         .collect();
 
-    Ok(Json(keys))
+    let total = i64::try_from(keys.len()).unwrap_or(0);
+    Ok(Json(ListResponse { items: keys, total }))
 }
 
 /// GET /api/users/me/gpg-keys/{id}
@@ -278,7 +279,7 @@ async fn delete_gpg_key(
     )
     .await;
 
-    Ok(StatusCode::OK)
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// GET /api/admin/users/{user_id}/gpg-keys
@@ -286,7 +287,7 @@ async fn admin_list_gpg_keys(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(user_id): Path<Uuid>,
-) -> Result<Json<Vec<GpgKeyResponse>>, ApiError> {
+) -> Result<Json<ListResponse<GpgKeyResponse>>, ApiError> {
     require_admin(&state, &auth).await?;
 
     let rows = sqlx::query!(
@@ -313,5 +314,6 @@ async fn admin_list_gpg_keys(
         })
         .collect();
 
-    Ok(Json(keys))
+    let total = i64::try_from(keys.len()).unwrap_or(0);
+    Ok(Json(ListResponse { items: keys, total }))
 }
