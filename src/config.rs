@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 
 #[derive(Clone)]
-#[allow(dead_code, clippy::struct_excessive_bools)] // fields consumed by modules 03-09
+#[allow(clippy::struct_excessive_bools)]
 pub struct Config {
     pub listen: String,
     pub database_url: String,
@@ -10,6 +10,8 @@ pub struct Config {
     pub minio_endpoint: String,
     pub minio_access_key: String,
     pub minio_secret_key: String,
+    /// Accept self-signed TLS certificates for `MinIO` (dev/test only). S55.
+    pub minio_insecure: bool,
     pub master_key: Option<String>,
     pub git_repos_path: PathBuf,
     pub ops_repos_path: PathBuf,
@@ -157,6 +159,7 @@ impl Config {
                 .unwrap_or_else(|_| "http://localhost:9000".into()),
             minio_access_key: env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "platform".into()),
             minio_secret_key: env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "devdevdev".into()),
+            minio_insecure: env::var("MINIO_INSECURE").ok().is_some_and(|v| v == "true"),
             master_key: env::var("PLATFORM_MASTER_KEY").ok(),
             git_repos_path: env::var("PLATFORM_GIT_REPOS_PATH")
                 .map_or_else(|_| PathBuf::from("/data/repos"), PathBuf::from),
@@ -298,6 +301,7 @@ impl Config {
             minio_endpoint: "http://localhost:9000".into(),
             minio_access_key: "test".into(),
             minio_secret_key: "test".into(),
+            minio_insecure: false,
             master_key: None,
             git_repos_path: "/tmp/repos".into(),
             ops_repos_path: "/tmp/ops-repos".into(),

@@ -97,20 +97,27 @@ fn is_ipv6_unique_local(v6: &std::net::Ipv6Addr) -> bool {
 /// Check whether an IP address is private/reserved (loopback, link-local, etc.).
 pub fn is_private_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()          // 127.0.0.0/8
-                || v4.is_private()    // 10/8, 172.16/12, 192.168/16
-                || v4.is_link_local() // 169.254/16
-                || v4.is_broadcast()  // 255.255.255.255
-                || v4.is_unspecified() // 0.0.0.0
-        }
+        IpAddr::V4(v4) => is_private_ipv4(&v4),
         IpAddr::V6(v6) => {
+            // Check IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) — SSRF bypass vector
+            if let Some(mapped_v4) = v6.to_ipv4_mapped() {
+                return is_private_ipv4(&mapped_v4);
+            }
             v6.is_loopback()          // ::1
                 || v6.is_unspecified() // ::
                 || is_ipv6_unique_local(&v6)  // fc00::/7 (includes fd00::/8)
                 || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
         }
     }
+}
+
+/// Check whether an IPv4 address is private/reserved.
+fn is_private_ipv4(v4: &std::net::Ipv4Addr) -> bool {
+    v4.is_loopback()          // 127.0.0.0/8
+        || v4.is_private()    // 10/8, 172.16/12, 192.168/16
+        || v4.is_link_local() // 169.254/16
+        || v4.is_broadcast()  // 255.255.255.255
+        || v4.is_unspecified() // 0.0.0.0
 }
 
 /// Validate a URL against SSRF attacks, accepting only the specified schemes.
@@ -155,6 +162,25 @@ pub fn check_ssrf_url(url_str: &str, allowed_schemes: &[&str]) -> Result<(), Api
             "URL must not target private/reserved IP addresses".into(),
         ));
     }
+
+    // S77: DNS rebinding mitigation — resolve hostname to IPs and verify
+    // none are private. This catches hostnames that resolve to internal IPs
+    // (e.g., custom DNS entries pointing to 10.x or 192.168.x).
+    // Note: this is best-effort. True time-of-check/time-of-use rebinding
+    // (where DNS changes between validation and request) requires pinning
+    // the resolved IP for the HTTP request, which is a separate concern.
+    use std::net::ToSocketAddrs;
+    if let Ok(addrs) = (host, 0u16).to_socket_addrs() {
+        for addr in addrs {
+            if is_private_ip(addr.ip()) {
+                return Err(ApiError::BadRequest(
+                    "URL hostname resolves to a private/reserved IP address".into(),
+                ));
+            }
+        }
+    }
+    // DNS resolution failure is not an error — hostname may not resolve yet
+    // (webhook delivery will fail naturally if it can't resolve at send time)
 
     Ok(())
 }
@@ -801,6 +827,16 @@ mod tests {
         assert!(check_ssrf_url("http://0.0.0.0/hook", &["http", "https"]).is_err());
     }
 
+    // S77: DNS rebinding mitigation — verify that hostname resolution to
+    // private IPs is caught. "localhost" is already blocked by the hostname
+    // check above, but the DNS resolution provides defense-in-depth.
+    #[test]
+    fn ssrf_dns_rebinding_blocks_localhost_resolution() {
+        // localhost resolves to 127.0.0.1 / ::1 — caught by hostname check
+        // AND by DNS resolution check (defense-in-depth).
+        assert!(check_ssrf_url("http://localhost:8080/hook", &["http", "https"]).is_err());
+    }
+
     // -----------------------------------------------------------------------
     // is_private_ip — rstest parameterized
     // -----------------------------------------------------------------------
@@ -818,6 +854,12 @@ mod tests {
     #[case("fdff:ffff:ffff::1", true)]
     #[case("fe80::1", true)]
     #[case("febf::1", true)]
+    // IPv4-mapped IPv6 addresses (SSRF bypass vectors)
+    #[case("::ffff:127.0.0.1", true)]
+    #[case("::ffff:10.0.0.1", true)]
+    #[case("::ffff:192.168.1.1", true)]
+    #[case("::ffff:172.16.0.1", true)]
+    #[case("::ffff:8.8.8.8", false)]
     #[case("8.8.8.8", false)]
     #[case("1.1.1.1", false)]
     #[case("2001:db8::1", false)]

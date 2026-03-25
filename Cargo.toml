@@ -54,6 +54,8 @@ parquet = { version = "57", features = ["async"] }
 
 # Object storage
 opendal = { version = "0.55", features = ["services-s3"] }
+# Matching reqwest 0.12 for opendal's HttpClient (self-signed cert support, S55)
+reqwest-opendal = { package = "reqwest", version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
 
 # Cache / pubsub
 fred = { version = "10", features = ["subscriber-client"] }

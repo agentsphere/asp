@@ -88,7 +88,7 @@ just test-doc           # cargo test --doc (doc examples)
 
 ## Integration Tests
 
-**Location**: `tests/*_integration.rs` (26 files, 590+ tests).
+**Location**: `tests/*_integration.rs` (52 files).
 
 **What they cover**: Single API endpoint + all its side effects against real infrastructure. Each test targets one endpoint and verifies its complete behavior, including async side effects like background workers, K8s pod creation, mock CLI subprocess execution, webhook delivery, and reconciler runs.
 
@@ -199,11 +199,11 @@ All shared helpers are in `tests/helpers/mod.rs`:
 - `create_working_copy(&bare_path) -> (TempDir, PathBuf)` — clone + initial commit + push to main.
 - `git_cmd(&dir, &[args]) -> String` — run git command, panic on failure.
 
-**Important**: The admin token from `test_state()` bypasses the login rate limiter entirely. This avoids the `rate:login:admin` Valkey key collision that caused flaky tests when 574 parallel tests all called `admin_login()`. The rate limit key was the only cross-test Valkey key — all other keys (permission cache, upload sessions, WebAuthn challenges) contain per-test UUIDs.
+**Important**: The admin token from `test_state()` bypasses the login rate limiter entirely. This avoids the `rate:login:admin` Valkey key collision that caused flaky tests when hundreds of parallel tests all called `admin_login()`. The rate limit key was the only cross-test Valkey key — all other keys (permission cache, upload sessions, WebAuthn challenges) contain per-test UUIDs.
 
 ## E2E Tests
 
-**Location**: `tests/e2e_*.rs` (5 files, 34 tests total) + `tests/e2e_helpers/mod.rs`.
+**Location**: `tests/e2e_*.rs` (9 files) + `tests/e2e_helpers/mod.rs`.
 
 **What they cover**: multi-step user journeys spanning multiple API calls. E2E tests simulate real business workflows (pipeline execution, git protocol, deployment reconciliation, agent pod lifecycle) rather than individual endpoint behavior.
 
@@ -220,7 +220,7 @@ This creates the dev cluster with shared mount, Postgres, Valkey, MinIO, namespa
 ### Running E2E Tests
 
 ```bash
-# All 34 E2E tests (ephemeral namespace, auto port-forward)
+# All E2E tests (ephemeral namespace, auto port-forward)
 just test-e2e
 
 # Specific test file
@@ -285,7 +285,8 @@ Tests pipeline triggering, execution via real K8s pods, multi-step pipelines, ca
 
 1. **Spawn executor per test** — the test router does NOT include the background pipeline executor. Each test must spawn one:
    ```rust
-   let _executor = ExecutorGuard::spawn(&state);
+   // Spawn the pipeline executor background task
+   tokio::spawn(executor::run(state.clone()));
    // ... trigger pipeline ...
    state.pipeline_notify.notify_one();  // wake executor
    ```
@@ -430,7 +431,7 @@ Single-endpoint tests have been migrated from E2E to integration per the new bou
 | `agent_spawn_integration.rs` | `session_integration.rs` | 2 unique tests merged; 7 duplicates removed |
 | `e2e_deployer.rs` | (deleted) | 8 duplicate CRUD tests removed |
 
-**Remaining E2E tests** (34 total) are all multi-step: pipeline execution (10), agent pod lifecycle (8), deployer reconciler (7), git protocol (3), SSH (5), pipeline webhook (1).
+**Remaining E2E tests** are all multi-step user journeys across 9 files.
 
 **Future E2E tests** to be written as the suite matures:
 - Onboarding journey: signup → create project → configure → first push → first pipeline
@@ -448,7 +449,7 @@ Single-endpoint tests have been migrated from E2E to integration per the new bou
 
 4. **KUBECONFIG path** — in sandboxed environments `$HOME` may resolve to `/`. The script uses `$HOME/.kube/platform`. If running manually, use the full path: `KUBECONFIG=/Users/<you>/.kube/platform`.
 
-5. **Pipeline executor not running** — the test router does NOT spawn background tasks. Pipeline E2E tests must create an `ExecutorGuard` and call `state.pipeline_notify.notify_one()` after triggering.
+5. **Pipeline executor not running** — the test router does NOT spawn background tasks. Pipeline E2E tests must spawn the executor via `tokio::spawn(executor::run(state.clone()))` and call `state.pipeline_notify.notify_one()` after triggering.
 
 6. **SSRF blocking localhost** — webhook tests can't register `http://127.0.0.1:*` URLs via the API. Insert directly into DB.
 
@@ -468,7 +469,7 @@ Single-endpoint tests have been migrated from E2E to integration per the new bou
 
 11. **Never add FLUSHDB to test helpers** — all Valkey keys are UUID-scoped and never collide between parallel tests. The admin token is created directly in the DB, bypassing the only cross-test key (`rate:login:admin`). FLUSHDB caused flaky failures when one test wiped another's in-flight upload sessions.
 
-12. **Use `admin_token` from `test_state()`, not `admin_login()`** — `test_state()` returns `(AppState, String)` where the second value is a pre-created admin API token. Only call `admin_login()` if you are specifically testing login/session behavior. Using `admin_login()` in all 574 parallel tests would exceed the login rate limit (10/300s).
+12. **Use `admin_token` from `test_state()`, not `admin_login()`** — `test_state()` returns `(AppState, String)` where the second value is a pre-created admin API token. Only call `admin_login()` if you are specifically testing login/session behavior. Using `admin_login()` in all hundreds of parallel tests would exceed the login rate limit (10/300s).
 
 ## Cluster Management
 

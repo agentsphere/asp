@@ -4,7 +4,7 @@ Condensed from 25 implementation plans (available in git history). For coding co
 
 ## Overview
 
-Single Rust binary (~23K LOC) + Preact SPA replacing Gitea, Woodpecker, Authelia, OpenObserve, Maddy, and OpenBao. Primary users: AI agents (Claude Code). Humans are auditors/monitors.
+Single Rust binary (~72K LOC) + Preact SPA replacing Gitea, Woodpecker, Authelia, OpenObserve, Maddy, and OpenBao. Primary users: AI agents (Claude Code). Humans are auditors/monitors.
 
 **Kept as infrastructure**: PostgreSQL (CNPG), Valkey, MinIO, Traefik, OTel Collector.
 
@@ -14,7 +14,7 @@ Single Rust binary (~23K LOC) + Preact SPA replacing Gitea, Woodpecker, Authelia
 src/
 ├── auth/          Password hashing (argon2), sessions, API tokens, passkeys (WebAuthn), rate limiting
 ├── rbac/          Roles, permissions, time-bounded delegation, Valkey-cached resolution
-├── api/           14 HTTP handler modules (axum), all wired via .merge() in mod.rs
+├── api/           30 HTTP handler modules (axum), all wired via .merge() in mod.rs
 ├── git/           Smart HTTP (push/pull), LFS → MinIO, file browser, post-receive hooks
 ├── pipeline/      .platform.yaml parsing, K8s pod execution per step, log streaming
 ├── deployer/      Reconciler loop, ops repo management, Kustomize rendering, K8s applier, preview envs
@@ -27,7 +27,7 @@ src/
 
 Additional:
 - `ui/src/` — Preact SPA (esbuild, rust-embed): Dashboard, Projects, Issues, MRs, Pipelines, Sessions, Observe, Admin
-- `mcp/servers/` — 6 MCP servers (Node.js) for agent integration: core, admin, issues, pipeline, deploy, observe
+- `mcp/servers/` — 7 MCP servers (Node.js) for agent integration: core, admin, browser, issues, pipeline, deploy, observe
 
 ## Data Flow
 
@@ -50,13 +50,13 @@ OTLP ingest → Postgres (hot, 48h) + MinIO Parquet (cold, 90d+)
 1. **Single binary** — one K8s Deployment, one IngressRoute. Eliminates cross-service integration.
 2. **Users and agents share identity model** — agents are users with the `agent` type. RBAC applies uniformly. Delegation lets humans grant scoped, time-bounded permissions.
 3. **Build != Deploy** — pipelines produce artifacts and write desired state to `deployments` table. The deployer reconciler applies manifests from ops repos. Rollback = update image_ref, deployer handles the rest.
-4. **Postgres as the brain** — unified schema (24 migrations). sqlx compile-time query validation.
+4. **Postgres as the brain** — unified schema (64 migrations). sqlx compile-time query validation.
 5. **Type-safe state machines** — all status fields are Rust enums with `can_transition_to()`. Invalid transitions caught at compile time.
 6. **Structured telemetry** — every log/span/metric carries correlation envelope (trace_id, session_id, project_id, user_id).
 
 ## Database Schema Overview
 
-24 migration pairs. Core tables:
+64 migration pairs. Core tables:
 
 | Domain | Tables |
 |--------|--------|
@@ -111,9 +111,9 @@ The binary spawns several background tokio tasks:
 
 | Layer | Count | Location | Run with |
 |-------|-------|----------|----------|
-| Unit | 716 | `src/**/*.rs` inline `#[cfg(test)]` | `just test-unit` |
-| Integration | 574 | `tests/*_integration.rs` (25 files) | `just test-integration` |
-| E2E | 49 | `tests/e2e_*.rs` (5 files, ignored) | `just test-e2e` |
+| Unit | ~1600 | `src/**/*.rs` inline `#[cfg(test)]` | `just test-unit` |
+| Integration | 52 files | `tests/*_integration.rs` (52 files) | `just test-integration` |
+| E2E | 9 files | `tests/e2e_*.rs` (9 files, ignored) | `just test-e2e` |
 
 Both integration and E2E tests use `hack/test-in-cluster.sh` to deploy ephemeral Postgres, Valkey, and MinIO pods in isolated cluster namespaces per run. `#[sqlx::test]` provides per-test DB isolation. Requires dev cluster (`just cluster-up`).
 

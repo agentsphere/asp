@@ -44,7 +44,7 @@ Ranked by priority:
 | Q2 | **Operability** | Single binary, minimal infra dependencies, self-healing reconciliation loops |
 | Q3 | **Reliability** | State machine enforcement, crash-recovery via reconciliation, compile-time SQL |
 | Q4 | **Efficiency** | Single process with shared state, no IPC overhead, connection pooling |
-| Q5 | **Testability** | 4-tier testing pyramid (1,339 tests), compile-time query checking, 100% diff coverage |
+| Q5 | **Testability** | 4-tier testing pyramid (~1,600+ tests), compile-time query checking, 100% diff coverage |
 
 ## Stakeholders
 

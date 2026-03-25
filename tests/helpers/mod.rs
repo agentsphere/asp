@@ -110,6 +110,7 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         std::env::var("MINIO_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".into());
     let minio_access_key = std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "platform".into());
     let minio_secret_key = std::env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "devdevdev".into());
+    let minio_insecure = std::env::var("MINIO_INSECURE").ok().as_deref() == Some("true");
     let minio = {
         let mut builder = opendal::services::S3::default();
         builder = builder
@@ -118,9 +119,21 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
             .secret_access_key(&minio_secret_key)
             .bucket("platform-e2e")
             .region("us-east-1");
-        opendal::Operator::new(builder)
+        let op = opendal::Operator::new(builder)
             .expect("minio S3 operator")
-            .finish()
+            .finish();
+        // S55: accept self-signed TLS certs for MinIO in dev/test
+        if minio_insecure {
+            let client = reqwest_opendal::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .build()
+                .expect("insecure reqwest client");
+            op.layer(opendal::layers::HttpClientLayer::new(
+                opendal::raw::HttpClient::with(client),
+            ))
+        } else {
+            op
+        }
     };
 
     // Real Kube client — integration tests require a Kind cluster
@@ -148,6 +161,7 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         minio_endpoint: minio_endpoint.clone(),
         minio_access_key: minio_access_key.clone(),
         minio_secret_key: minio_secret_key.clone(),
+        minio_insecure,
         master_key: Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into()),
         git_repos_path: std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4())),
         ops_repos_path: std::env::temp_dir().join(format!("platform-ops-{}", Uuid::new_v4())),
@@ -261,8 +275,9 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
 
 /// Build the full API router with the given state.
 ///
-/// Includes the main API router plus observe (query + alerts) and registry routers.
-/// The observe ingest routes (OTLP) are omitted since they require background channels.
+/// Includes the main API router plus observe (query + alerts), git protocol,
+/// and registry routers. The observe ingest routes (OTLP) are omitted since
+/// they require background channels.
 pub fn test_router(state: AppState) -> Router {
     use axum::extract::DefaultBodyLimit;
     use tower_http::limit::RequestBodyLimitLayer;
@@ -286,10 +301,15 @@ pub fn test_router(state: AppState) -> Router {
         .merge(platform::api::preview::router())
         .merge(platform::observe::query::router())
         .merge(platform::observe::alert::router())
-        // Registry routes need a higher body limit (500 MB).
+        // Git protocol + registry routes need a higher body limit (500 MB).
         // Both RequestBodyLimitLayer AND DefaultBodyLimit must be set because
         // axum's Bytes extractor wraps the body in an *additional* Limited
         // based on DefaultBodyLimit (see axum-core with_limited_body()).
+        .merge(
+            platform::git::git_protocol_router()
+                .layer(DefaultBodyLimit::disable())
+                .layer(RequestBodyLimitLayer::new(500 * 1024 * 1024)),
+        )
         .merge(
             platform::registry::router()
                 .layer(DefaultBodyLimit::disable())

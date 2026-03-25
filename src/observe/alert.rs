@@ -782,7 +782,9 @@ fn next_alert_state(
         if state.first_triggered.is_none() {
             state.first_triggered = Some(now);
         }
-        let held_for = (now - state.first_triggered.unwrap()).num_seconds();
+        // Safety: first_triggered is guaranteed Some — set on line 783 above
+        let triggered_at = state.first_triggered.expect("set to Some above");
+        let held_for = (now - triggered_at).num_seconds();
         if held_for >= i64::from(for_seconds) && !state.firing {
             state.firing = true;
             return AlertTransition {

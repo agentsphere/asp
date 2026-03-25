@@ -1,3 +1,5 @@
+//! AI agent session orchestration and ephemeral identity.
+
 pub mod claude_cli;
 pub mod claude_code;
 pub mod cli_invoke;

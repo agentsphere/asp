@@ -6,7 +6,7 @@
 
 **Context**: The platform replaces 8+ separate tools. A microservices approach would require service discovery, inter-service auth, distributed transactions, and independent deployment pipelines for each service.
 
-**Decision**: Build a single Rust binary containing all 11 modules. Modules communicate through shared `AppState` in-process.
+**Decision**: Build a single Rust binary containing all 15 modules. Modules communicate through shared `AppState` in-process.
 
 **Consequences**:
 - (+) Zero IPC overhead — function calls between modules

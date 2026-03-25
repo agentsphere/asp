@@ -11,7 +11,6 @@ use super::valkey_acl;
 
 /// Publish a `ProgressEvent` to the session's events channel.
 /// Used by server-side code (create-app tool loop) to emit events.
-#[allow(dead_code)] // Used by Step 5 (create-app rewrite)
 #[tracing::instrument(skip(valkey, event), fields(%session_id), err)]
 pub async fn publish_event(
     valkey: &fred::clients::Pool,

@@ -48,22 +48,21 @@ const TOOLS = [
   {
     name: "create_target",
     description:
-      "Create a new deploy target. Defines an environment with a deployment strategy (rolling, canary, blue-green).",
+      "Create a new deploy target. Defines an environment with a deployment strategy (rolling, canary, ab_test).",
     inputSchema: {
       type: "object",
       properties: {
         name: { type: "string", description: "Target name (e.g. 'production')" },
-        environment: { type: "string", description: "Environment label (e.g. 'production', 'staging')" },
-        branch: { type: "string", description: "Branch to auto-deploy from (optional)" },
+        environment: { type: "string", description: "Environment label: preview, staging, or production (optional, defaults to production)" },
         default_strategy: {
           type: "string",
-          description: "Default rollout strategy: rolling, canary, blue_green (default: rolling)",
+          description: "Default rollout strategy: rolling, canary, or ab_test (default: rolling)",
         },
         ops_repo_id: { type: "string", description: "Ops repo UUID for manifest rendering (optional)" },
         manifest_path: { type: "string", description: "Path within ops repo to Kustomize overlay (optional)" },
         project_id: { type: "string", description: "Project UUID (defaults to current project)" },
       },
-      required: ["name", "environment"],
+      required: ["name"],
     },
   },
   // --- Releases ---
@@ -74,7 +73,6 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        target_id: { type: "string", description: "Filter by target UUID (optional)" },
         project_id: { type: "string", description: "Project UUID (defaults to current project)" },
         limit: { type: "integer", description: "Max results (default 50, max 100)" },
         offset: { type: "integer", description: "Pagination offset" },
@@ -97,21 +95,21 @@ const TOOLS = [
   {
     name: "create_release",
     description:
-      "Create a new release for a deploy target. Starts the rollout of a new image with the specified strategy.",
+      "Create a new release for the project's production deploy target. Starts the rollout of a new image with the specified strategy.",
     inputSchema: {
       type: "object",
       properties: {
-        target_id: { type: "string", description: "Deploy target UUID" },
         image_ref: { type: "string", description: "Container image reference (e.g. 'registry/app:v1.2.3')" },
         strategy: {
           type: "string",
-          description: "Rollout strategy: rolling, canary, blue_green (defaults to target's default)",
+          description: "Rollout strategy: rolling, canary, or ab_test (defaults to target's default)",
         },
         commit_sha: { type: "string", description: "Git commit SHA for traceability (optional)" },
         values_override: { type: "object", description: "Key-value overrides for rendered manifests (optional)" },
+        pipeline_id: { type: "string", description: "Pipeline run UUID that triggered this release (optional)" },
         project_id: { type: "string", description: "Project UUID (defaults to current project)" },
       },
-      required: ["target_id", "image_ref"],
+      required: ["image_ref"],
     },
   },
   // --- Release Actions ---
@@ -204,8 +202,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       case "create_target": {
-        const body = { name: args.name, environment: args.environment };
-        if (args.branch !== undefined) body.branch = args.branch;
+        const body = { name: args.name };
+        if (args.environment !== undefined) body.environment = args.environment;
         if (args.default_strategy !== undefined) body.default_strategy = args.default_strategy;
         if (args.ops_repo_id !== undefined) body.ops_repo_id = args.ops_repo_id;
         if (args.manifest_path !== undefined) body.manifest_path = args.manifest_path;
@@ -215,7 +213,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // --- Releases ---
       case "list_releases": {
         const data = await apiGet(`/api/projects/${p}/deploy-releases`, {
-          query: { target_id: args.target_id, limit: args.limit, offset: args.offset },
+          query: { limit: args.limit, offset: args.offset },
         });
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
@@ -224,17 +222,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       case "create_release": {
-        const body = { target_id: args.target_id, image_ref: args.image_ref };
+        const body = { image_ref: args.image_ref };
         if (args.strategy !== undefined) body.strategy = args.strategy;
         if (args.commit_sha !== undefined) body.commit_sha = args.commit_sha;
         if (args.values_override !== undefined) body.values_override = args.values_override;
+        if (args.pipeline_id !== undefined) body.pipeline_id = args.pipeline_id;
         const data = await apiPost(`/api/projects/${p}/deploy-releases`, { body });
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       // --- Release Actions ---
       case "adjust_traffic": {
         const data = await apiPatch(`/api/projects/${p}/deploy-releases/${args.release_id}/traffic`, {
-          body: { weight: args.weight },
+          body: { traffic_weight: args.weight },
         });
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }

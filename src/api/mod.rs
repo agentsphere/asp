@@ -1,3 +1,5 @@
+//! HTTP API handlers and route definitions.
+
 pub mod admin;
 pub mod branch_protection;
 pub mod cli_auth;

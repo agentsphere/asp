@@ -56,10 +56,22 @@ fi
 # Emit NDJSON: system init
 echo "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$SESSION_ID\",\"tools\":[\"StructuredOutput\"],\"model\":\"claude-sonnet-4-20250514\",\"claude_code_version\":\"1.0.0-mock\"}"
 
-# Emit NDJSON: assistant message
+# Emit NDJSON: assistant thinking
+echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"thinking\",\"thinking\":\"Let me analyze the request...\"}]},\"session_id\":\"$SESSION_ID\"}"
+
+# Emit NDJSON: assistant tool_use
+echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"read_file\",\"input\":{\"path\":\"src/main.rs\"}}]},\"session_id\":\"$SESSION_ID\"}"
+
+# Emit NDJSON: assistant tool_result
+echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"file contents here\"}]},\"session_id\":\"$SESSION_ID\"}"
+
+# Emit NDJSON: assistant text message
 echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":$(python3 -c "import json; print(json.dumps('$TEXT'))" 2>/dev/null || echo "\"$TEXT\"")}]},\"session_id\":\"$SESSION_ID\"}"
 
-# Emit NDJSON: result with structured_output
+# Emit NDJSON: error event
+echo "{\"type\":\"error\",\"error\":{\"message\":\"test error\"}}"
+
+# Emit NDJSON: result with structured_output, cost, and duration
 STRUCTURED=$(python3 -c "
 import json
 text = $(python3 -c "import json; print(json.dumps('$TEXT'))" 2>/dev/null || echo "'$TEXT'")
@@ -67,4 +79,4 @@ tools = json.loads('$TOOLS')
 print(json.dumps({'text': text, 'tools': tools}))
 " 2>/dev/null || echo "{\"text\":\"$TEXT\",\"tools\":$TOOLS}")
 
-echo "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"$SESSION_ID\",\"is_error\":false,\"result\":$(python3 -c "import json; print(json.dumps('$TEXT'))" 2>/dev/null || echo "\"$TEXT\""),\"usage\":{\"input_tokens\":100,\"output_tokens\":50},\"structured_output\":$STRUCTURED}"
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"$SESSION_ID\",\"is_error\":false,\"result\":$(python3 -c "import json; print(json.dumps('$TEXT'))" 2>/dev/null || echo "\"$TEXT\""),\"usage\":{\"input_tokens\":100,\"output_tokens\":50},\"total_cost_usd\":0.0045,\"duration_ms\":1234,\"num_turns\":3,\"structured_output\":$STRUCTURED}"

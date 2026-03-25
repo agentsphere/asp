@@ -1,5 +1,6 @@
 # Lightweight MinIO for per-run test namespaces.
 # Bucket creation handled by deploy-services.sh (mc mb).
+# S55: TLS enabled via self-signed certs (same pattern as postgres.yaml).
 apiVersion: v1
 kind: Pod
 metadata:
@@ -7,10 +8,29 @@ metadata:
   labels:
     app: minio
 spec:
+  securityContext:
+    fsGroup: 1000
+  initContainers:
+    - name: gen-certs
+      image: postgres:16-alpine
+      command: ["sh", "-c"]
+      args:
+        - |
+          apk add --no-cache openssl &&
+          mkdir -p /certs/CAs &&
+          openssl req -new -x509 -days 3650 -nodes \
+            -subj "/CN=minio" \
+            -keyout /certs/private.key -out /certs/public.crt &&
+          cp /certs/public.crt /certs/CAs/public.crt &&
+          chmod 644 /certs/public.crt /certs/CAs/public.crt &&
+          chmod 600 /certs/private.key
+      volumeMounts:
+        - name: certs
+          mountPath: /certs
   containers:
     - name: minio
       image: quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
-      args: ["server", "/data"]
+      args: ["server", "/data", "--certs-dir", "/certs"]
       env:
         - name: MINIO_ROOT_USER
           value: platform
@@ -22,14 +42,22 @@ spec:
         httpGet:
           path: /minio/health/live
           port: 9000
+          scheme: HTTPS
         initialDelaySeconds: 2
         periodSeconds: 1
+      volumeMounts:
+        - name: certs
+          mountPath: /certs
+          readOnly: true
       resources:
         requests:
           cpu: 50m
           memory: 128Mi
         limits:
           memory: 512Mi
+  volumes:
+    - name: certs
+      emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

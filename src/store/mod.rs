@@ -1,3 +1,5 @@
+//! Application state, bootstrap, and connection pools.
+
 pub mod bootstrap;
 pub mod commands_seed;
 pub mod eventbus;

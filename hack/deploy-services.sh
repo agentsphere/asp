@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy-services.sh — Deploy PostgreSQL, Valkey, and MinIO into a given namespace.
+# deploy-services.sh — Deploy PostgreSQL, Valkey, MinIO, and preview-proxy into a given namespace.
 #
 # Usage: hack/deploy-services.sh <namespace>
 #
@@ -40,11 +40,11 @@ kubectl exec -n "${NS}" postgres -- \
 kubectl exec -n "${NS}" postgres -c postgres -- \
   psql -U postgres -c "ALTER USER platform CREATEDB;" -q 2>/dev/null || true
 
-# Create MinIO buckets
+# Create MinIO buckets (S55: MinIO serves HTTPS with self-signed cert)
 kubectl exec -n "${NS}" minio -- sh -c '
-  mc alias set local http://localhost:9000 platform devdevdev &&
-  mc mb local/platform --ignore-existing &&
-  mc mb local/platform-e2e --ignore-existing
+  mc alias set local https://localhost:9000 platform devdevdev --insecure &&
+  mc mb local/platform --ignore-existing --insecure &&
+  mc mb local/platform-e2e --ignore-existing --insecure
 '
 
 # Deploy registry proxy DaemonSet if backend host/port are set

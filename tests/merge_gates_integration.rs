@@ -587,3 +587,77 @@ async fn auto_merge_requires_write(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+// ---------------------------------------------------------------------------
+// T36: Squash merge execution
+// ---------------------------------------------------------------------------
+
+/// Merge with squash strategy creates a single commit on target.
+#[sqlx::test(migrations = "./migrations")]
+async fn merge_squash_strategy(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+
+    let project_id = helpers::create_project(&app, &admin_token, "squash-merge", "public").await;
+    let admin_id = helpers::admin_user_id(&pool).await;
+
+    // Set up git repo with 2 commits on feature branch
+    let (_bare_dir, bare_path) = helpers::create_bare_repo();
+    let (_work_dir, work_path) = helpers::create_working_copy(&bare_path);
+
+    helpers::git_cmd(&work_path, &["checkout", "-b", "feat-squash"]);
+    std::fs::write(work_path.join("file1.txt"), "first").unwrap();
+    helpers::git_cmd(&work_path, &["add", "."]);
+    helpers::git_cmd(&work_path, &["commit", "-m", "first commit"]);
+    std::fs::write(work_path.join("file2.txt"), "second").unwrap();
+    helpers::git_cmd(&work_path, &["add", "."]);
+    helpers::git_cmd(&work_path, &["commit", "-m", "second commit"]);
+    helpers::git_cmd(&work_path, &["push", "origin", "feat-squash"]);
+
+    sqlx::query("UPDATE projects SET repo_path = $1 WHERE id = $2")
+        .bind(bare_path.to_str().unwrap())
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let head_sha = helpers::git_cmd(&work_path, &["rev-parse", "HEAD"])
+        .trim()
+        .to_string();
+
+    let mr_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO merge_requests (id, project_id, number, author_id, source_branch, target_branch, title, status, head_sha)
+         VALUES ($1, $2, 1, $3, 'feat-squash', 'main', 'Squash MR', 'open', $4)",
+    )
+    .bind(mr_id)
+    .bind(project_id)
+    .bind(admin_id)
+    .bind(&head_sha)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE projects SET next_mr_number = 2 WHERE id = $1")
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Merge with squash method
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/merge-requests/1/merge"),
+        serde_json::json!({ "merge_method": "squash" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "squash merge failed: {body}");
+
+    // Verify the MR status is now merged
+    let row: (String,) = sqlx::query_as("SELECT status FROM merge_requests WHERE id = $1")
+        .bind(mr_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(row.0, "merged");
+}

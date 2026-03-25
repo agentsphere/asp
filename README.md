@@ -19,24 +19,28 @@ Platform consolidates fragmented DevOps tooling into a single binary designed fo
 
 ## Architecture
 
-11 modules in a single crate:
+15 modules in a single crate (~72K LOC):
 
 ```
 src/
-├── auth/       — password hashing, sessions, API tokens
-├── rbac/       — roles, permissions, time-bounded delegation
-├── api/        — HTTP handlers (Axum)
-├── git/        — git smart HTTP, LFS, file browser
-├── pipeline/   — .platform.yaml parsing, K8s pod execution, log streaming
-├── deployer/   — continuous reconciliation (desired vs current state)
-├── agent/      — session lifecycle, ephemeral agent users
-├── observe/    — OTLP ingest, Parquet storage, queries, alerts
-├── secrets/    — AES-256-GCM encryption, CRUD
-├── notify/     — email (lettre), webhooks, in-app notifications
-└── store/      — Postgres pool, Valkey client, MinIO operator, K8s client
+├── auth/        — password hashing, sessions, API tokens, passkeys
+├── rbac/        — roles, permissions, time-bounded delegation
+├── api/         — HTTP handlers (Axum)
+├── git/         — git smart HTTP, SSH, LFS, file browser
+├── pipeline/    — .platform.yaml parsing, K8s pod execution, log streaming
+├── deployer/    — continuous reconciliation (desired vs current state)
+├── agent/       — session lifecycle, ephemeral agent users, Claude CLI
+├── observe/     — OTLP ingest, Parquet storage, queries, alerts
+├── secrets/     — AES-256-GCM encryption, scoped access, request flow
+├── notify/      — email (lettre), webhooks, in-app notifications
+├── store/       — Postgres pool, Valkey client, MinIO operator, K8s client
+├── registry/    — OCI container registry (push, pull, manifests)
+├── workspace/   — workspace management and membership
+├── onboarding/  — first-run setup, demo projects, Claude CLI auth
+└── ui           — embedded Preact SPA (rust-embed)
 ```
 
-See `plans/unified-platform.md` for the full architecture and `plans/01-foundation.md` through `plans/10-web-ui.md` for phased delivery.
+See `docs/architecture.md` for the full architecture.
 
 ## Tech Stack
 
@@ -98,9 +102,9 @@ just lint               # cargo clippy --all-features -- -D warnings
 just deny               # cargo deny check
 just check              # fmt + lint + deny
 just test               # cargo nextest run (all tests)
-just test-unit          # unit tests only (no DB) — 716 tests, ~1s
-just test-integration   # integration tests (ephemeral cluster services) — 574 tests, ~2.5 min
-just test-e2e           # E2E tests (ephemeral cluster services) — 49 tests, ~2.5 min
+just test-unit          # unit tests only (no DB)
+just test-integration   # integration tests (ephemeral cluster services)
+just test-e2e           # E2E tests (ephemeral cluster services)
 just ui test            # Playwright browser tests (requires running server)
 just test-doc           # doc tests
 just test-cleanup       # delete stale test namespaces
@@ -123,13 +127,13 @@ just cluster-down       # destroy kind cluster
 
 ## Testing
 
-Three-tier testing pyramid with 1,339 total tests:
+Three-tier testing pyramid:
 
-| Tier | Tests | Runtime | Requires | Command |
-|------|-------|---------|----------|---------|
-| Unit | 716 | ~1s | Nothing | `just test-unit` |
-| Integration | 574 | ~2.5 min | dev cluster | `just test-integration` |
-| E2E | 49 | ~2.5 min | dev cluster | `just test-e2e` |
+| Tier | Runtime | Requires | Command |
+|------|---------|----------|---------|
+| Unit | ~1s | Nothing | `just test-unit` |
+| Integration | ~2.5 min | dev cluster | `just test-integration` |
+| E2E | ~2.5 min | dev cluster | `just test-e2e` |
 
 All integration and E2E tests run against ephemeral services (Postgres, Valkey, MinIO) deployed in isolated cluster namespaces. No manual setup beyond `just cluster-up` (one-time).
 

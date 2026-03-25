@@ -1,6 +1,6 @@
 # Platform — Coding Guidelines
 
-Single Rust binary (~23K LOC) replacing 8+ off-the-shelf services (Gitea, Woodpecker, Authelia, OpenObserve, Maddy, OpenBao) with a unified platform. Architecture: `docs/architecture.md`. Testing: `docs/testing.md`. Schema & design rationale: `plans/unified-platform.md`. Toolchain: `plans/rust-dev-process.md`.
+Single Rust binary (~72K LOC) replacing 8+ off-the-shelf services (Gitea, Woodpecker, Authelia, OpenObserve, Maddy, OpenBao) with a unified platform. Architecture: `docs/architecture.md`. Testing: `docs/testing.md`. Schema & design rationale: `plans/unified-platform.md`. Toolchain: `plans/rust-dev-process.md`.
 
 **Current status**: All modules implemented. Security hardening applied across all phases. `plans/` is for new work-in-progress only (completed plans archived in git history).
 
@@ -8,12 +8,11 @@ Single Rust binary (~23K LOC) replacing 8+ off-the-shelf services (Gitea, Woodpe
 
 ```
 just watch          # bacon file watcher (cargo check on save)
-just run            # cargo run
+just run            # cargo run with env file (default .env)
 just fmt            # cargo fmt
 just lint           # cargo clippy --all-features -- -D warnings
 just deny           # cargo deny check
 just check          # fmt + lint + deny
-just test           # cargo nextest run (all tests)
 just test-unit      # cargo nextest run --lib (unit only, no DB)
 just test-integration  # integration tests (ephemeral cluster services)
 just test-e2e       # E2E tests (ephemeral cluster services, run-ignored)
@@ -32,20 +31,20 @@ just cov-unit       # unit test coverage → coverage-unit.lcov
 just cov-integration # integration coverage → coverage-integration.lcov
 just cov-e2e        # E2E coverage → coverage-e2e.lcov
 just cov-all        # all tiers combined → coverage-all.lcov
-just cov-total      # ★ combined report: unit + integration + E2E (needs cluster + DB)
+just cov-total      # ★ combined report: unit + integration (needs cluster + DB)
 just cov-diff       # diff coverage on changed lines vs main (unit+int+E2E, needs cluster)
 just cov-diff-check # diff coverage strict: fail if changed lines < 100% covered
 just cov-html       # unit coverage as HTML report
-just cov-summary    # quick terminal summary (unit + integration)
-just ci             # full local CI: fmt lint deny test-unit test-integration build
-just ci-full        # ci + test-e2e
+just cov-summary    # quick terminal summary (unit only)
+just ci             # full local CI: fmt lint deny test-unit cli-lint cli-test mcp-test test-integration build
+just ci-full        # ci + test-e2e (includes cli + mcp checks)
 just cluster-up     # create kind cluster + Postgres + Valkey + MinIO
 just cluster-down   # destroy kind cluster
 ```
 
 ## Architecture Rules
 
-- **Single crate** — 11 modules under `src/`. No workspace. Only split if `cargo check` exceeds 30s.
+- **Single crate** — 15 modules under `src/`. No workspace. Only split if `cargo check` exceeds 30s.
 - **AppState** — shared state passed to all handlers via `axum::extract::State`:
   ```rust
   pub struct AppState {
@@ -56,6 +55,12 @@ just cluster-down   # destroy kind cluster
       pub config: Arc<Config>,
       pub webauthn: Arc<webauthn_rs::prelude::Webauthn>,
       pub pipeline_notify: Arc<tokio::sync::Notify>,
+      pub deploy_notify: Arc<tokio::sync::Notify>,
+      pub secret_requests: Arc<tokio::sync::RwLock<HashMap<Uuid, SecretRequest>>>,
+      pub cli_sessions: Arc<tokio::sync::RwLock<HashMap<Uuid, CliSession>>>,
+      pub health: Arc<tokio::sync::RwLock<HealthStatus>>,
+      pub task_registry: Arc<TaskRegistry>,
+      pub cli_auth_manager: Arc<CliAuthManager>,
   }
   ```
 - **Module boundaries** — each `src/<module>/mod.rs` re-exports its public API. Modules communicate through `AppState`, never import each other's internals. Cross-module types live in `src/error.rs` or `src/config.rs`.
@@ -87,7 +92,8 @@ async fn my_handler(
 use crate::rbac::{Permission, resolver};
 
 async fn admin_handler(State(state): State<AppState>, auth: AuthUser) -> Result<..., ApiError> {
-    let allowed = resolver::has_permission(&state.pool, &state.valkey, auth.user_id, None, Permission::AdminUsers)
+    // For standard checks, prefer require_admin()/require_project_read()/require_project_write()
+    let allowed = resolver::has_permission_scoped(&state.pool, &state.valkey, auth.user_id, None, Permission::AdminUsers)
         .await.map_err(ApiError::Internal)?;
     if !allowed { return Err(ApiError::Forbidden); }
     // ...
@@ -100,7 +106,7 @@ Sub-routers (`Router<AppState>`) don't have a concrete state at construction tim
 
 ```rust
 async fn require_project_write(state: &AppState, auth: &AuthUser, project_id: Uuid) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission(&state.pool, &state.valkey, auth.user_id, Some(project_id), Permission::ProjectWrite)
+    let allowed = resolver::has_permission_scoped(&state.pool, &state.valkey, auth.user_id, Some(project_id), Permission::ProjectWrite)
         .await.map_err(ApiError::Internal)?;
     if !allowed { return Err(ApiError::Forbidden); }
     Ok(())
@@ -234,7 +240,7 @@ state.pipeline_notify.notify_one();
 
 ### Container image validation
 
-`check_container_image()` and `check_setup_commands()` in `src/pipeline/definition.rs` validate user-supplied container images and setup commands against injection.
+`check_container_image()` and `check_setup_commands()` in `src/validation.rs` validate user-supplied container images and setup commands against injection.
 
 ### K8s namespaces
 
@@ -324,7 +330,7 @@ Preact SPA in `ui/src/`, built with esbuild, embedded via `rust-embed` in `src/u
 
 - `ui/src/pages/` — Dashboard, Projects, ProjectDetail, IssueDetail, MRDetail, PipelineDetail, Sessions, Login, admin/, observe/
 - `ui/src/components/` — Layout, Pagination, Table, Modal, Toast, Badge, Markdown, CodeBlock, FilterBar, NotificationBell, ErrorBoundary
-- `ui/src/lib/` — api.ts (client), auth.tsx (context), ws.ts (WebSocket), types.ts, format.ts
+- `ui/src/lib/` — api.ts (client), auth.tsx (context), sse.ts (SSE), types.ts, format.ts, onboarding.tsx, webauthn.ts
 
 ### Build
 
@@ -332,10 +338,11 @@ Preact SPA in `ui/src/`, built with esbuild, embedded via `rust-embed` in `src/u
 
 ## MCP Servers
 
-6 MCP servers under `mcp/servers/` for external Claude agent integration:
+7 MCP servers under `mcp/servers/` for external Claude agent integration:
 
 - `platform-core.js` — Core platform operations
 - `platform-admin.js` — Admin operations
+- `platform-browser.js` — Browser automation
 - `platform-issues.js` — Issues/comments
 - `platform-pipeline.js` — Pipeline management
 - `platform-deploy.js` — Deployment operations
@@ -354,7 +361,7 @@ use crate::validation;
 
 // In handler, before any DB or business logic:
 validation::check_name(&body.name)?;              // 1-255, alphanumeric + -_.
-validation::check_email(&body.email)?;             // 1-254, contains @
+validation::check_email(&body.email)?;             // 3-254, contains @
 validation::check_length("password", &body.password, 8, 1024)?;
 validation::check_length("description", &desc, 0, 10_000)?;
 validation::check_branch_name(&body.branch)?;      // 1-255, no "..", no null bytes
@@ -420,7 +427,7 @@ async fn require_project_read(state: &AppState, auth: &AuthUser, project_id: Uui
     if project.visibility == "public" || project.visibility == "internal" || project.owner_id == auth.user_id {
         return Ok(());
     }
-    let allowed = resolver::has_permission(&state.pool, &state.valkey, auth.user_id, Some(project_id), Permission::ProjectRead)
+    let allowed = resolver::has_permission_scoped(&state.pool, &state.valkey, auth.user_id, Some(project_id), Permission::ProjectRead)
         .await.map_err(ApiError::Internal)?;
     if !allowed { return Err(ApiError::NotFound("project".into())); }  // 404 to avoid leaking existence
     Ok(())
@@ -694,7 +701,8 @@ async fn my_test(pool: PgPool) {
 
 **Pipeline tests must spawn an executor** — the test router doesn't include background tasks:
 ```rust
-let _executor = ExecutorGuard::spawn(&state);
+// Spawn the pipeline executor background task (see src/pipeline/executor.rs)
+tokio::spawn(executor::run(state.clone()));
 state.pipeline_notify.notify_one();  // wake executor after trigger
 ```
 

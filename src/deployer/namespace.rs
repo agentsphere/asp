@@ -357,7 +357,9 @@ pub fn build_namespace_object(ns_name: &str, env: &str, project_id: &str) -> ser
     // prevents agents from creating privileged pods, hostPath mounts, hostNetwork, etc.
     // Warn on restricted to surface what would break under stricter policy.
     if env == "session" {
-        let labels_obj = labels.as_object_mut().unwrap();
+        let labels_obj = labels
+            .as_object_mut()
+            .expect("json!({}) always produces an Object");
         labels_obj.insert(
             "pod-security.kubernetes.io/enforce".into(),
             "baseline".into(),

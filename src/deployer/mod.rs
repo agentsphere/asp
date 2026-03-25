@@ -1,3 +1,5 @@
+//! Deployer: reconciliation, rendering, and preview environments.
+
 pub mod analysis;
 pub mod applier;
 pub mod error;

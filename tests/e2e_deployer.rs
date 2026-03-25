@@ -42,9 +42,9 @@ async fn setup_deploy_project(
 }
 
 /// RAII guard that spawns the deployer reconciler and shuts it down on drop.
-#[allow(dead_code)]
 struct ReconcilerGuard {
     shutdown_tx: tokio::sync::watch::Sender<()>,
+    #[allow(dead_code)]
     handle: tokio::task::JoinHandle<()>,
 }
 
@@ -332,21 +332,26 @@ async fn preview_expired_cleanup(pool: PgPool) {
         platform::deployer::reconciler::run(recon_state, shutdown_rx).await;
     });
 
-    // Wait for one cleanup cycle (reconciler runs every 10s)
-    tokio::time::sleep(Duration::from_secs(15)).await;
+    // Poll until the reconciler deactivates the expired preview (runs every 10s)
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut is_active: Option<bool> = Some(true);
+    while is_active == Some(true) {
+        if tokio::time::Instant::now() > deadline {
+            panic!("timeout waiting for reconciler to deactivate expired preview");
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        is_active = sqlx::query_scalar(
+            "SELECT is_active FROM deploy_targets WHERE project_id = $1 AND branch_slug = 'feature-old'",
+        )
+        .bind(project_id)
+        .fetch_optional(&state.pool)
+        .await
+        .unwrap();
+    }
 
     // Shut down reconciler
     let _ = shutdown_tx.send(());
     let _ = handle.await;
-
-    // Expired preview should now be deactivated
-    let is_active: Option<bool> = sqlx::query_scalar(
-        "SELECT is_active FROM deploy_targets WHERE project_id = $1 AND branch_slug = 'feature-old'",
-    )
-    .bind(project_id)
-    .fetch_optional(&state.pool)
-    .await
-    .unwrap();
 
     if let Some(active) = is_active {
         assert!(

@@ -26,13 +26,20 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
         .await
         .expect("valkey connection failed");
 
-    // Clear the shared setup rate limit key to avoid cross-test interference
+    // Clear the shared setup rate limit key to avoid cross-test interference.
+    // This is a non-UUID-scoped key, which normally violates our "no shared keys"
+    // rule. It is acceptable here because: (1) each setup test gets its own
+    // isolated database from #[sqlx::test], (2) setup tests exercise a one-time
+    // bootstrap path that has a single global rate limit by design, and (3) the
+    // Valkey instance is shared but collisions are harmless — the worst case is
+    // a spurious rate-limit hit, which the DEL prevents.
     let _: () = valkey.del("rate:setup:global").await.unwrap_or_default();
 
     let minio_endpoint =
         std::env::var("MINIO_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".into());
     let minio_access_key = std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "platform".into());
     let minio_secret_key = std::env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "devdevdev".into());
+    let minio_insecure = std::env::var("MINIO_INSECURE").ok().as_deref() == Some("true");
     let minio = {
         let mut builder = opendal::services::S3::default();
         builder = builder
@@ -41,9 +48,20 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
             .secret_access_key(&minio_secret_key)
             .bucket("platform-e2e")
             .region("us-east-1");
-        opendal::Operator::new(builder)
+        let op = opendal::Operator::new(builder)
             .expect("minio S3 operator")
-            .finish()
+            .finish();
+        if minio_insecure {
+            let client = reqwest_opendal::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .build()
+                .expect("insecure reqwest client");
+            op.layer(opendal::layers::HttpClientLayer::new(
+                opendal::raw::HttpClient::with(client),
+            ))
+        } else {
+            op
+        }
     };
 
     let kube = kube::Client::try_default()
@@ -57,6 +75,7 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
         minio_endpoint,
         minio_access_key,
         minio_secret_key,
+        minio_insecure,
         master_key: Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into()),
         git_repos_path: std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4())),
         ops_repos_path: std::env::temp_dir().join(format!("platform-ops-{}", Uuid::new_v4())),

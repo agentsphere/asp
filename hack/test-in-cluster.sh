@@ -202,9 +202,10 @@ echo "────────────────────────�
 # Build env vars
 export DATABASE_URL="postgres://platform:dev@${NODE_IP}:${PG_PORT}/platform_dev?sslmode=require"
 export VALKEY_URL="redis://:dev@${NODE_IP}:${VALKEY_PORT}"
-export MINIO_ENDPOINT="http://${NODE_IP}:${MINIO_PORT}"
+export MINIO_ENDPOINT="https://${NODE_IP}:${MINIO_PORT}"
 export MINIO_ACCESS_KEY="platform"
 export MINIO_SECRET_KEY="devdevdev"
+export MINIO_INSECURE=true  # S55: accept self-signed TLS cert in dev/test
 export PLATFORM_MASTER_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 export PLATFORM_DEV=true
 export RUST_LOG="${RUST_LOG:-platform=debug}"

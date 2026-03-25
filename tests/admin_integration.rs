@@ -58,6 +58,29 @@ async fn admin_create_user_duplicate_name(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn admin_create_user_duplicate_email(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    helpers::create_user(&app, &admin_token, "emailuser1", "same@test.com").await;
+
+    // Try again with a different name but the same email
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/users",
+        serde_json::json!({
+            "name": "emailuser2",
+            "email": "same@test.com",
+            "password": "securepassword",
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn admin_create_user_invalid_email(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
@@ -549,7 +572,7 @@ async fn admin_list_delegations(pool: PgPool) {
 
     assert_eq!(status, StatusCode::OK);
     let delegations = body["items"].as_array().unwrap();
-    assert!(!delegations.is_empty());
+    assert_eq!(delegations.len(), 1);
 }
 
 // ---------------------------------------------------------------------------

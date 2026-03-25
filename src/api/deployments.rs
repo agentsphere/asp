@@ -266,7 +266,7 @@ async fn require_deploy_promote(
     .map_err(ApiError::Internal)?;
 
     if !allowed {
-        return Err(ApiError::Forbidden);
+        return Err(ApiError::NotFound("project".into()));
     }
     Ok(())
 }

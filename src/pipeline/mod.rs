@@ -1,3 +1,5 @@
+//! CI/CD pipeline definition, execution, and status management.
+
 pub mod definition;
 pub mod error;
 pub mod executor;
@@ -70,7 +72,6 @@ pub fn slugify_branch(branch: &str) -> String {
 
 /// Pipeline run status with enforced transition rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum PipelineStatus {
     Pending,
     Running,
@@ -79,7 +80,6 @@ pub enum PipelineStatus {
     Cancelled,
 }
 
-#[allow(dead_code)]
 impl PipelineStatus {
     pub fn as_str(self) -> &'static str {
         match self {

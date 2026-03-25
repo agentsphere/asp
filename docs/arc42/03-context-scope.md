@@ -17,7 +17,7 @@ C4Context
 
     System_Ext(claude, "Anthropic Claude API", "LLM provider for agent sessions")
     System_Ext(smtp, "SMTP Server", "Email notifications")
-    SystemDb(pg, "PostgreSQL", "Primary database (28 migrations)")
+    SystemDb(pg, "PostgreSQL", "Primary database (64 migrations)")
     SystemDb(valkey, "Valkey", "Cache, pub/sub, rate limiting")
     SystemDb(minio, "MinIO", "Object storage (S3 API)")
     System_Ext(k8s, "Kubernetes API", "Pod orchestration for pipelines, agents, deploys")
@@ -50,7 +50,7 @@ C4Context
 | **Git clients** | Smart HTTP / SSH | Inbound | `git push`, `git pull`, `git clone` |
 | **OTLP producers** | HTTP/protobuf | Inbound | Traces, logs, metrics from instrumented services |
 | **Web browsers** | HTTPS | Inbound | Preact SPA (embedded via rust-embed) |
-| **MCP clients** | HTTPS (JSON) | Inbound | 6 MCP servers for agent tool integration |
+| **MCP clients** | HTTPS (JSON) | Inbound | 7 MCP servers for agent tool integration |
 
 ## Configuration (Key Env Vars)
 

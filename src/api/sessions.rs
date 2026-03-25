@@ -1037,7 +1037,8 @@ async fn sse_session_events(
         tokio_stream::iter(stored.into_iter().map(Ok::<_, std::convert::Infallible>));
     let live_stream = ReceiverStream::new(rx).map(Ok::<_, std::convert::Infallible>);
     let stream = replay_stream.chain(live_stream).map(|event| {
-        let json = serde_json::to_string(&event.unwrap()).unwrap_or_default();
+        let json =
+            serde_json::to_string(&event.expect("Infallible error type")).unwrap_or_default();
         Ok::<_, std::convert::Infallible>(Event::default().event("progress").data(json))
     });
 

@@ -2,9 +2,9 @@
 
 ## Context
 
-Comprehensive inventory of every module in the platform — a single Rust binary (~23K LOC) replacing 8+ off-the-shelf services with a unified platform for code hosting, CI/CD, deployment, agent orchestration, and observability.
+Comprehensive inventory of every module in the platform — a single Rust binary (~72K LOC) replacing 8+ off-the-shelf services with a unified platform for code hosting, CI/CD, deployment, agent orchestration, and observability.
 
-**11 modules** | **~23K LOC** | **24 migration pairs** | **1220+ unit tests** | **574 integration tests** | **49 E2E tests**
+**15 modules** | **~72K LOC** | **64 migration pairs** | **~1600 unit tests** | **52 integration test files** | **9 E2E test files**
 
 ---
 
@@ -43,7 +43,7 @@ Role-based access control with project-scoped permissions.
 
 ---
 
-## Module 3: `api` (23 files)
+## Module 3: `api` (30 files)
 
 HTTP API layer — 100+ endpoints across 22 sub-routers.
 
@@ -77,7 +77,7 @@ HTTP API layer — 100+ endpoints across 22 sub-routers.
 
 ---
 
-## Module 4: `store` (5 files)
+## Module 4: `store` (6 files)
 
 Shared state and infrastructure connections.
 
@@ -115,7 +115,7 @@ Shared state and infrastructure connections.
 
 ---
 
-## Module 6: `git` (8+ files)
+## Module 6: `git` (12 files)
 
 Git server — smart HTTP protocol, SSH, LFS, repository browser.
 
@@ -159,7 +159,7 @@ CI/CD build engine — YAML-defined pipelines executed as K8s pods.
 
 ---
 
-## Module 8: `deployer` (8 files)
+## Module 8: `deployer` (11 files)
 
 Continuous deployment — GitOps reconciliation with preview environments.
 
@@ -180,7 +180,7 @@ Continuous deployment — GitOps reconciliation with preview environments.
 
 ---
 
-## Module 9: `agent` (21 files)
+## Module 9: `agent` (23 files)
 
 AI agent orchestration — ephemeral Claude sessions in K8s pods.
 
@@ -266,10 +266,10 @@ OCI Distribution Spec v2 compliant image registry.
 ### `workspace` (3 files)
 Workspace hierarchy: workspace → projects. Roles: owner/admin/member. Implicit registry pull for members.
 
-### `secrets` (3 files)
+### `secrets` (5 files)
 AES-256-GCM encryption at rest with `PLATFORM_MASTER_KEY`. Hierarchy: workspace → project → environment. Ephemeral in-memory secret requests for agent sessions (5-min TTL).
 
-### `notify` (3 files)
+### `notify` (4 files)
 Notification dispatch to 3 channels: InApp (DB), Email (SMTP via lettre), Webhook. Rate-limited (100/user/hour). Header injection protection. Graceful degradation when SMTP unconfigured.
 
 ### `validation` (1 file)
@@ -310,7 +310,7 @@ Preact SPA served via `rust-embed`. SPA-aware fallback to `index.html`. Cache he
 
 | Service | Library | Purpose |
 |---|---|---|
-| PostgreSQL | `sqlx` (compile-time checked) | Primary data store, 24 migration pairs |
+| PostgreSQL | `sqlx` (compile-time checked) | Primary data store, 64 migration pairs |
 | Valkey (Redis) | `fred` | Cache, rate limiting, pub/sub, upload sessions, ACL |
 | MinIO (S3) | `opendal` | Blob storage (registry, LFS, Parquet, artifacts) |
 | Kubernetes | `kube-rs` | Pod orchestration (pipelines, agents, deployments) |
@@ -322,7 +322,7 @@ Preact SPA served via `rust-embed`. SPA-aware fallback to `index.html`. Cache he
 
 | Tier | Count | Runtime | Infrastructure |
 |---|---|---|---|
-| Unit | 1220+ | ~1s | None |
-| Integration | 574 | ~2.5 min | dev cluster (Postgres, Valkey, MinIO, K8s) |
-| E2E | 49 | ~2.5 min | dev cluster |
+| Unit | ~1600 | ~1s | None |
+| Integration | 52 files | ~2.5 min | dev cluster (Postgres, Valkey, MinIO, K8s) |
+| E2E | 9 files | ~2.5 min | dev cluster |
 | FE-BE | 33+ | ~30s | dev cluster |

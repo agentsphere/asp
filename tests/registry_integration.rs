@@ -1404,3 +1404,135 @@ async fn null_tag_pattern_allows_any_push(pool: PgPool) {
         "NULL tag pattern should allow any push"
     );
 }
+
+// ---------------------------------------------------------------------------
+// T45: Registry edge cases
+// ---------------------------------------------------------------------------
+
+/// Uploading a zero-byte blob should be accepted (valid OCI content).
+/// Some OCI artifacts have empty config blobs (e.g., `{}`-less configs).
+#[sqlx::test(migrations = "./migrations")]
+async fn upload_zero_byte_blob(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    create_project(&app, &admin_token, "zero-blob", "private").await;
+
+    let admin_api_token = {
+        let (status, body) = helpers::post_json(
+            &app,
+            &admin_token,
+            "/api/tokens",
+            serde_json::json!({ "name": "admin-zero-blob", "expires_in_days": 30 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "create api token: {body}");
+        body["token"].as_str().unwrap().to_owned()
+    };
+
+    // Upload a zero-byte blob
+    let data: &[u8] = b"";
+    let digest = {
+        use sha2::Digest as _;
+        let hash = sha2::Sha256::digest(data);
+        format!("sha256:{}", hex::encode(hash))
+    };
+
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri(format!("/v2/zero-blob/blobs/uploads/?digest={digest}"))
+        .header("Authorization", format!("Bearer {admin_api_token}"))
+        .header("Content-Type", "application/octet-stream")
+        .body(axum::body::Body::from(data.to_vec()))
+        .unwrap();
+
+    let resp = tower::ServiceExt::oneshot(app.clone(), req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "zero-byte blob upload should be accepted"
+    );
+
+    // Verify we can HEAD the blob
+    let (status, headers, _) = registry_request(
+        &app,
+        &admin_api_token,
+        "HEAD",
+        &format!("/v2/zero-blob/blobs/{digest}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers.get("content-length").and_then(|v| v.to_str().ok()),
+        Some("0"),
+        "zero-byte blob should have content-length 0"
+    );
+}
+
+/// Push a manifest with an empty layers array (config-only image).
+/// This is valid per the OCI spec (e.g., scratch-based images).
+#[sqlx::test(migrations = "./migrations")]
+async fn manifest_with_empty_layers(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    create_project(&app, &admin_token, "empty-layers", "private").await;
+
+    let admin_api_token = {
+        let (_, body) = helpers::post_json(
+            &app,
+            &admin_token,
+            "/api/tokens",
+            serde_json::json!({ "name": "admin-empty-layers", "expires_in_days": 30 }),
+        )
+        .await;
+        body["token"].as_str().unwrap().to_owned()
+    };
+
+    // Upload a config blob
+    let config_digest =
+        registry_upload_blob(&app, &admin_api_token, "empty-layers", b"config-only").await;
+
+    // Build a manifest with an empty layers array
+    let manifest = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": config_digest,
+            "size": 11,
+        },
+        "layers": [],
+    });
+
+    let body = serde_json::to_vec(&manifest).unwrap();
+
+    let req = axum::http::Request::builder()
+        .method("PUT")
+        .uri("/v2/empty-layers/manifests/no-layers")
+        .header("Authorization", format!("Bearer {admin_api_token}"))
+        .header("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+        .body(axum::body::Body::from(body.clone()))
+        .unwrap();
+
+    let resp = tower::ServiceExt::oneshot(app.clone(), req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "manifest with empty layers should be accepted"
+    );
+
+    // Verify we can pull it back by tag
+    let (status, _, pull_body) = registry_request(
+        &app,
+        &admin_api_token,
+        "GET",
+        "/v2/empty-layers/manifests/no-layers",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let pulled: serde_json::Value = serde_json::from_slice(&pull_body).unwrap();
+    assert_eq!(pulled["schemaVersion"], 2);
+    let layers = pulled["layers"].as_array().unwrap();
+    assert!(layers.is_empty(), "layers should be empty");
+}

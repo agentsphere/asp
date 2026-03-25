@@ -295,6 +295,32 @@ async fn add_issue_comment(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn issue_comment_empty_body_rejected(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    let project_id = helpers::create_project(&app, &admin_token, "issue-empty-cmt", "public").await;
+
+    helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/issues"),
+        serde_json::json!({ "title": "Issue for empty comment" }),
+    )
+    .await;
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/issues/1/comments"),
+        json!({ "body": "" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn create_merge_request(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool.clone()).await;
     let app = helpers::test_router(state);

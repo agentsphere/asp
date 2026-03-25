@@ -81,7 +81,10 @@ async fn acl_scoped_publish_subscribe(pool: PgPool) {
     subscriber.subscribe(&events_ch).await.expect("subscribe");
     let mut rx = subscriber.message_rx();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for Valkey subscription to be fully established before publishing.
+    // 100ms is a pragmatic margin for slow CI; proper channel-based sync would
+    // require protocol changes since Valkey pub/sub subscriptions are inherently async.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Scoped client publishes (agent-runner → platform)
     let scoped = create_scoped_client(&creds, &state.config.valkey_url).await;
@@ -132,7 +135,10 @@ async fn acl_scoped_subscribe_input(pool: PgPool) {
     scoped_sub.subscribe(&input_ch).await.expect("subscribe");
     let mut rx = scoped_sub.message_rx();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for Valkey subscription to be fully established before publishing.
+    // 100ms is a pragmatic margin for slow CI; proper channel-based sync would
+    // require protocol changes since Valkey pub/sub subscriptions are inherently async.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Platform publishes prompt via admin connection
     pubsub_bridge::publish_prompt(&state.valkey, session_id, "fix the bug")
@@ -275,7 +281,10 @@ async fn subscribe_session_events_receives_events(pool: PgPool) {
         .await
         .expect("subscribe");
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for Valkey subscription to be fully established before publishing.
+    // 100ms is a pragmatic margin for slow CI; proper channel-based sync would
+    // require protocol changes since Valkey pub/sub subscriptions are inherently async.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let events = vec![
         ProgressEvent {
@@ -334,7 +343,10 @@ async fn subscribe_session_events_exits_on_error(pool: PgPool) {
         .await
         .expect("subscribe");
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for Valkey subscription to be fully established before publishing.
+    // 100ms is a pragmatic margin for slow CI; proper channel-based sync would
+    // require protocol changes since Valkey pub/sub subscriptions are inherently async.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let event = ProgressEvent {
         kind: ProgressKind::Error,
@@ -377,7 +389,10 @@ async fn persistence_subscriber_persists_and_exits(pool: PgPool) {
         pubsub_bridge::spawn_persistence_subscriber(pool.clone(), state.valkey.clone(), session_id)
             .await;
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for Valkey subscription to be fully established before publishing.
+    // 100ms is a pragmatic margin for slow CI; proper channel-based sync would
+    // require protocol changes since Valkey pub/sub subscriptions are inherently async.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Publish a Text event then a Completed event
     let text_event = ProgressEvent {
@@ -439,7 +454,10 @@ async fn persistence_subscriber_exits_on_error(pool: PgPool) {
         pubsub_bridge::spawn_persistence_subscriber(pool.clone(), state.valkey.clone(), session_id)
             .await;
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for Valkey subscription to be fully established before publishing.
+    // 100ms is a pragmatic margin for slow CI; proper channel-based sync would
+    // require protocol changes since Valkey pub/sub subscriptions are inherently async.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let event = ProgressEvent {
         kind: ProgressKind::Error,
@@ -485,7 +503,10 @@ async fn publish_control_reaches_input_channel(pool: PgPool) {
     scoped_sub.subscribe(&input_ch).await.expect("subscribe");
     let mut rx = scoped_sub.message_rx();
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for Valkey subscription to be fully established before publishing.
+    // 100ms is a pragmatic margin for slow CI; proper channel-based sync would
+    // require protocol changes since Valkey pub/sub subscriptions are inherently async.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     pubsub_bridge::publish_control(&state.valkey, session_id, "interrupt")
         .await

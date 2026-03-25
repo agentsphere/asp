@@ -14,6 +14,7 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::auth::token;
+use crate::pipeline::PipelineStatus;
 use crate::store::AppState;
 
 use super::error::PipelineError;
@@ -109,20 +110,26 @@ async fn poll_pending(state: &AppState) -> Result<(), PipelineError> {
 #[allow(clippy::too_many_lines)]
 #[tracing::instrument(skip(state), fields(%pipeline_id), err)]
 async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), PipelineError> {
-    // Claim the pipeline by setting status to running
+    // Claim the pipeline by setting status to running (validated via PipelineStatus state machine)
+    let from = PipelineStatus::Pending;
+    let to = PipelineStatus::Running;
+    debug_assert!(from.can_transition_to(to));
+
     let claimed = sqlx::query_scalar!(
         r#"
-        UPDATE pipelines SET status = 'running', started_at = now()
-        WHERE id = $1 AND status = 'pending'
+        UPDATE pipelines SET status = $2, started_at = now()
+        WHERE id = $1 AND status = $3
         RETURNING project_id
         "#,
         pipeline_id,
+        to.as_str(),
+        from.as_str(),
     )
     .fetch_optional(&state.pool)
     .await?;
 
     let Some(project_id) = claimed else {
-        tracing::debug!(%pipeline_id, "pipeline already claimed");
+        tracing::debug!(%pipeline_id, "pipeline already claimed or not in pending state");
         return Ok(());
     };
 
@@ -266,11 +273,15 @@ async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), Pip
                 timeout_secs = state.config.pipeline_timeout_secs,
                 "pipeline timed out"
             );
-            // Mark pipeline as failure due to timeout
+            // Mark pipeline as failure due to timeout (Running -> Failure validated by state machine)
+            let timeout_to = PipelineStatus::Failure;
+            // Pipeline was claimed as Running earlier in this function, so transition is valid.
+            // Use a WHERE guard on status to be safe against concurrent cancellation.
             sqlx::query(
-                "UPDATE pipelines SET status = 'failure', finished_at = now() WHERE id = $1",
+                "UPDATE pipelines SET status = $2, finished_at = now() WHERE id = $1 AND status = 'running'",
             )
             .bind(pipeline_id)
+            .bind(timeout_to.as_str())
             .execute(&state.pool)
             .await
             .ok();
@@ -297,11 +308,43 @@ async fn finalize_pipeline(
     all_succeeded: bool,
     pipeline_svc: &str,
 ) -> Result<(), PipelineError> {
-    let final_status = if all_succeeded { "success" } else { "failure" };
+    let final_status = if all_succeeded {
+        PipelineStatus::Success
+    } else {
+        PipelineStatus::Failure
+    };
+
+    // Fetch current status and validate the transition via state machine
+    let current_status_str =
+        sqlx::query_scalar!("SELECT status FROM pipelines WHERE id = $1", pipeline_id,)
+            .fetch_one(&state.pool)
+            .await?;
+
+    let final_status_str = final_status.as_str();
+
+    if let Some(current) = PipelineStatus::parse(&current_status_str) {
+        if !current.can_transition_to(final_status) {
+            tracing::warn!(
+                %pipeline_id,
+                from = current_status_str,
+                to = final_status_str,
+                "invalid pipeline status transition in finalize; skipping update"
+            );
+            return Ok(());
+        }
+    } else {
+        tracing::warn!(
+            %pipeline_id,
+            status = current_status_str,
+            "unknown pipeline status in finalize; skipping update"
+        );
+        return Ok(());
+    }
+
     sqlx::query!(
         "UPDATE pipelines SET status = $2, finished_at = now() WHERE id = $1",
         pipeline_id,
-        final_status,
+        final_status_str,
     )
     .execute(&state.pool)
     .await?;
@@ -314,7 +357,7 @@ async fn finalize_pipeline(
         crate::api::merge_requests::try_auto_merge(state, project_id).await;
     }
 
-    fire_build_webhook(&state.pool, project_id, pipeline_id, final_status).await;
+    fire_build_webhook(&state.pool, project_id, pipeline_id, final_status_str).await;
 
     let log_level = if all_succeeded { "info" } else { "error" };
     emit_pipeline_log(
@@ -322,12 +365,14 @@ async fn finalize_pipeline(
         project_id,
         pipeline_svc,
         log_level,
-        &format!("Pipeline {final_status}"),
-        Some(serde_json::json!({"pipeline_id": pipeline_id.to_string(), "status": final_status})),
+        &format!("Pipeline {final_status_str}"),
+        Some(
+            serde_json::json!({"pipeline_id": pipeline_id.to_string(), "status": final_status_str}),
+        ),
     )
     .await;
 
-    tracing::info!(%pipeline_id, status = final_status, "pipeline finished");
+    tracing::info!(%pipeline_id, status = final_status_str, "pipeline finished");
     Ok(())
 }
 
@@ -2757,7 +2802,7 @@ async fn is_cancelled(pool: &PgPool, pipeline_id: Uuid) -> Result<bool, Pipeline
         .fetch_one(pool)
         .await?;
 
-    Ok(status == "cancelled")
+    Ok(PipelineStatus::parse(&status) == Some(PipelineStatus::Cancelled))
 }
 
 async fn skip_remaining_steps(pool: &PgPool, pipeline_id: Uuid) -> Result<(), PipelineError> {
@@ -2789,9 +2834,38 @@ async fn skip_remaining_after(
 }
 
 async fn mark_pipeline_failed(pool: &PgPool, pipeline_id: Uuid) -> Result<(), PipelineError> {
+    // Fetch current status and validate transition via state machine
+    let current_status_str =
+        sqlx::query_scalar!("SELECT status FROM pipelines WHERE id = $1", pipeline_id,)
+            .fetch_one(pool)
+            .await?;
+
+    let to = PipelineStatus::Failure;
+
+    if let Some(current) = PipelineStatus::parse(&current_status_str) {
+        if !current.can_transition_to(to) {
+            tracing::warn!(
+                %pipeline_id,
+                from = current_status_str,
+                to = to.as_str(),
+                "invalid pipeline status transition in mark_pipeline_failed; skipping"
+            );
+            return Ok(());
+        }
+    } else {
+        tracing::warn!(
+            %pipeline_id,
+            status = current_status_str,
+            "unknown pipeline status in mark_pipeline_failed; skipping"
+        );
+        return Ok(());
+    }
+
     sqlx::query!(
-        "UPDATE pipelines SET status = 'failure', finished_at = now() WHERE id = $1 AND status IN ('pending', 'running')",
+        "UPDATE pipelines SET status = $2, finished_at = now() WHERE id = $1 AND status = $3",
         pipeline_id,
+        to.as_str(),
+        current_status_str,
     )
     .execute(pool)
     .await?;
@@ -3199,10 +3273,39 @@ async fn fire_build_webhook(pool: &PgPool, project_id: Uuid, pipeline_id: Uuid, 
 /// Cancel a running pipeline: delete K8s pods and mark as cancelled.
 #[tracing::instrument(skip(state), fields(%pipeline_id), err)]
 pub async fn cancel_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), PipelineError> {
-    // Mark pipeline as cancelled
+    // Fetch current status and validate transition via state machine
+    let current_status_str =
+        sqlx::query_scalar!("SELECT status FROM pipelines WHERE id = $1", pipeline_id,)
+            .fetch_one(&state.pool)
+            .await?;
+
+    let to = PipelineStatus::Cancelled;
+
+    if let Some(current) = PipelineStatus::parse(&current_status_str) {
+        if !current.can_transition_to(to) {
+            tracing::warn!(
+                %pipeline_id,
+                from = current_status_str,
+                to = to.as_str(),
+                "invalid pipeline status transition in cancel_pipeline; skipping"
+            );
+            return Ok(());
+        }
+    } else {
+        tracing::warn!(
+            %pipeline_id,
+            status = current_status_str,
+            "unknown pipeline status in cancel_pipeline; skipping"
+        );
+        return Ok(());
+    }
+
+    // Mark pipeline as cancelled (use WHERE guard on current status to prevent races)
     sqlx::query!(
-        "UPDATE pipelines SET status = 'cancelled', finished_at = now() WHERE id = $1 AND status IN ('pending', 'running')",
+        "UPDATE pipelines SET status = $2, finished_at = now() WHERE id = $1 AND status = $3",
         pipeline_id,
+        to.as_str(),
+        current_status_str,
     )
     .execute(&state.pool)
     .await?;

@@ -126,6 +126,7 @@ pub async fn e2e_state_with_api_url(
         std::env::var("MINIO_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".into());
     let minio_access = std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "platform".into());
     let minio_secret = std::env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "devdevdev".into());
+    let minio_insecure = std::env::var("MINIO_INSECURE").ok().as_deref() == Some("true");
 
     let minio = {
         let builder = opendal::services::S3::default()
@@ -136,7 +137,21 @@ pub async fn e2e_state_with_api_url(
             .region("us-east-1");
         // Fall back to in-memory if MinIO is unavailable
         match opendal::Operator::new(builder) {
-            Ok(op) => op.finish(),
+            Ok(op) => {
+                let op = op.finish();
+                // S55: accept self-signed TLS certs for MinIO in dev/test
+                if minio_insecure {
+                    let client = reqwest_opendal::Client::builder()
+                        .danger_accept_invalid_certs(true)
+                        .build()
+                        .expect("insecure reqwest client");
+                    op.layer(opendal::layers::HttpClientLayer::new(
+                        opendal::raw::HttpClient::with(client),
+                    ))
+                } else {
+                    op
+                }
+            }
             Err(_) => opendal::Operator::new(opendal::services::Memory::default())
                 .expect("memory operator")
                 .finish(),
@@ -180,6 +195,7 @@ pub async fn e2e_state_with_api_url(
         minio_endpoint,
         minio_access_key: minio_access,
         minio_secret_key: minio_secret,
+        minio_insecure,
         master_key: std::env::var("PLATFORM_MASTER_KEY").ok().or(Some(
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
         )),
@@ -305,12 +321,37 @@ pub async fn e2e_state_with_api_url(
 // ---------------------------------------------------------------------------
 
 /// Build the full API router for E2E testing.
+///
+/// Includes the main API router plus observe (query + alerts), git protocol,
+/// and registry routers. Matches the integration test router in
+/// `tests/helpers/mod.rs`. The observe ingest routes (OTLP) are omitted
+/// since they require background channels — use `observe_pipeline_test_router`
+/// for tests that need OTLP ingest.
 pub fn test_router(state: AppState) -> Router {
+    use axum::extract::DefaultBodyLimit;
+    use tower_http::limit::RequestBodyLimitLayer;
     Router::new()
         .route("/healthz", axum::routing::get(|| async { "ok" }))
         .merge(platform::api::router())
         .merge(platform::api::preview::router())
+        .merge(platform::observe::query::router())
+        .merge(platform::observe::alert::router())
+        // Git protocol + registry routes need a higher body limit (500 MB).
+        // Both RequestBodyLimitLayer AND DefaultBodyLimit must be set because
+        // axum's Bytes extractor wraps the body in an *additional* Limited
+        // based on DefaultBodyLimit (see axum-core with_limited_body()).
+        .merge(
+            platform::git::git_protocol_router()
+                .layer(DefaultBodyLimit::disable())
+                .layer(RequestBodyLimitLayer::new(500 * 1024 * 1024)),
+        )
+        .merge(
+            platform::registry::router()
+                .layer(DefaultBodyLimit::disable())
+                .layer(RequestBodyLimitLayer::new(500 * 1024 * 1024)),
+        )
         .with_state(state)
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
 }
 
 // ---------------------------------------------------------------------------

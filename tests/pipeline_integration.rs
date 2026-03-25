@@ -920,6 +920,79 @@ async fn trigger_pipeline_no_repo_path(pool: PgPool) {
 }
 
 // ===========================================================================
+// T44: Pipeline trigger edge cases
+// ===========================================================================
+
+/// Triggering a pipeline with an empty git_ref should return 400.
+/// `check_branch_name()` enforces min length of 1 character.
+#[sqlx::test(migrations = "./migrations")]
+async fn trigger_pipeline_empty_git_ref(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let token = admin_token.clone();
+
+    let project_id = create_project(&app, &token, "pl-empty-ref", "private").await;
+
+    let (status, _) = post_json(
+        &app,
+        &token,
+        &format!("/api/projects/{project_id}/pipelines"),
+        serde_json::json!({ "git_ref": "" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "empty git_ref should be rejected"
+    );
+}
+
+/// A user with no project role should not be able to cancel a pipeline.
+/// The cancel endpoint calls `require_project_write()`, which returns 403
+/// for unauthorized users.
+#[sqlx::test(migrations = "./migrations")]
+async fn cancel_pipeline_by_non_member(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let uid = admin_user_id(&pool).await;
+
+    let project_id = create_project(&app, &admin_token, "pl-cancel-norol", "private").await;
+    let pipeline_id =
+        insert_pipeline(&pool, project_id, uid, "pending", "refs/heads/main", "api").await;
+
+    // Create a user with no roles on this project
+    let (_user_id, user_token) = create_user(
+        &app,
+        &admin_token,
+        "outsider-cancel",
+        "outsider-cancel@test.com",
+    )
+    .await;
+
+    // Non-member cannot cancel — require_project_write returns Forbidden
+    let (status, _) = post_json(
+        &app,
+        &user_token,
+        &format!("/api/projects/{project_id}/pipelines/{pipeline_id}/cancel"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "non-member should not be able to cancel pipeline"
+    );
+
+    // Verify pipeline status is unchanged
+    let (db_status,): (String,) = sqlx::query_as("SELECT status FROM pipelines WHERE id = $1")
+        .bind(pipeline_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(db_status, "pending", "pipeline should remain pending");
+}
+
+// ===========================================================================
 // Public project access
 // ===========================================================================
 

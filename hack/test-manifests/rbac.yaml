@@ -11,7 +11,7 @@ metadata:
 rules:
   # Pipeline and agent pod management
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "pods/exec", "services", "configmaps", "persistentvolumeclaims"]
+    resources: ["pods", "pods/log", "pods/exec", "pods/attach", "services", "configmaps", "persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Job management (for pipeline steps)
   - apiGroups: ["batch"]
@@ -40,6 +40,14 @@ rules:
   # Network policies
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies", "ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # HPA (deployer)
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # PDB (deployer)
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Gateway API (progressive delivery traffic splitting)
   - apiGroups: ["gateway.networking.k8s.io"]

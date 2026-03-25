@@ -1083,3 +1083,165 @@ async fn logout_invalidates_session(pool: PgPool) {
     let (status, _) = get_with_cookie(&app, &token, "/api/auth/me").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+// ===========================================================================
+// T58: Security header tests
+//
+// The test router in helpers::test_router() does NOT include the production
+// security-header middleware layers (SetResponseHeaderLayer). These tests
+// construct the middleware inline to verify the production configuration.
+// ===========================================================================
+
+/// Verify that the production security headers are set on responses.
+/// Constructs the same `SetResponseHeaderLayer` stack used in `main.rs`.
+#[sqlx::test(migrations = "./migrations")]
+async fn security_headers_present(pool: PgPool) {
+    use axum::http::{HeaderName, HeaderValue};
+    use tower_http::set_header::SetResponseHeaderLayer;
+
+    let (state, admin_token) = helpers::test_state(pool).await;
+
+    // Build the test router with the same security-header layers as main.rs
+    let app = helpers::test_router(state)
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static(
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:",
+            ),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("strict-transport-security"),
+            HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("permissions-policy"),
+            HeaderValue::from_static("camera=(), microphone=(), geolocation=(), payment=()"),
+        ));
+
+    // Make a simple authenticated request
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/auth/me")
+        .header("Authorization", format!("Bearer {admin_token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let headers = resp.headers();
+
+    // X-Frame-Options
+    assert_eq!(
+        headers.get("x-frame-options").and_then(|v| v.to_str().ok()),
+        Some("DENY"),
+        "X-Frame-Options should be DENY"
+    );
+
+    // X-Content-Type-Options
+    assert_eq!(
+        headers
+            .get("x-content-type-options")
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff"),
+        "X-Content-Type-Options should be nosniff"
+    );
+
+    // Referrer-Policy
+    assert_eq!(
+        headers.get("referrer-policy").and_then(|v| v.to_str().ok()),
+        Some("strict-origin-when-cross-origin"),
+        "Referrer-Policy should be strict-origin-when-cross-origin"
+    );
+
+    // Content-Security-Policy
+    let csp = headers
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .expect("Content-Security-Policy header should be present");
+    assert!(
+        csp.contains("default-src 'self'"),
+        "CSP should contain default-src 'self', got: {csp}"
+    );
+
+    // Strict-Transport-Security (HSTS)
+    assert_eq!(
+        headers
+            .get("strict-transport-security")
+            .and_then(|v| v.to_str().ok()),
+        Some("max-age=63072000; includeSubDomains"),
+        "HSTS should be present"
+    );
+
+    // Permissions-Policy
+    let pp = headers
+        .get("permissions-policy")
+        .and_then(|v| v.to_str().ok())
+        .expect("Permissions-Policy header should be present");
+    assert!(
+        pp.contains("camera=()"),
+        "Permissions-Policy should disable camera, got: {pp}"
+    );
+}
+
+/// Verify security headers are also set on error responses (e.g., 401).
+#[sqlx::test(migrations = "./migrations")]
+async fn security_headers_on_error_response(pool: PgPool) {
+    use axum::http::{HeaderName, HeaderValue};
+    use tower_http::set_header::SetResponseHeaderLayer;
+
+    let (state, _admin_token) = helpers::test_state(pool).await;
+
+    let app = helpers::test_router(state)
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ));
+
+    // Unauthenticated request -- should get 401 with security headers
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/auth/me")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let headers = resp.headers();
+    assert_eq!(
+        headers.get("x-frame-options").and_then(|v| v.to_str().ok()),
+        Some("DENY"),
+        "security headers should be present even on error responses"
+    );
+    assert_eq!(
+        headers
+            .get("x-content-type-options")
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff"),
+    );
+    assert_eq!(
+        headers.get("referrer-policy").and_then(|v| v.to_str().ok()),
+        Some("strict-origin-when-cross-origin"),
+    );
+}

@@ -10,7 +10,7 @@ use crate::error::ApiError;
 use crate::store::AppState;
 
 /// Authenticated user extracted from request.
-/// Set as request extension by the auth middleware.
+/// Implemented as an axum `FromRequestParts` extractor.
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub user_id: Uuid,

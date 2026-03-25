@@ -54,11 +54,11 @@ const TOOLS = [
         display_name: { type: "string", description: "Optional display name" },
         user_type: {
           type: "string",
-          enum: ["human", "agent", "service"],
+          enum: ["human", "agent", "service_account"],
           description: "User type (default: human)",
         },
       },
-      required: ["name", "email", "password"],
+      required: ["name", "email"],
     },
   },
   {

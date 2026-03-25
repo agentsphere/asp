@@ -160,13 +160,13 @@ Key state machines:
 
 ## Testing Strategy
 
-4-tier pyramid with 1,339 total tests:
+4-tier pyramid:
 
 | Tier | Count | Runtime | Infra | Mock LLM |
 |---|---|---|---|---|
-| Unit | 716 | ~1s | None | N/A |
-| Integration | 574 | ~2.5min | Postgres, Valkey, MinIO, K8s | Mock CLI |
-| E2E | 49 | ~2.5min | All real + background tasks | Disabled |
+| Unit | ~1600 | ~1s | None | N/A |
+| Integration | 52 files | ~2.5min | Postgres, Valkey, MinIO, K8s | Mock CLI |
+| E2E | 9 files | ~2.5min | All real + background tasks | Disabled |
 | LLM | — | Variable | Real Claude CLI | Real API |
 
 Key patterns:

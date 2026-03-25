@@ -839,6 +839,62 @@ async fn update_webhook_ssrf_url_rejected(pool: PgPool) {
 }
 
 // ---------------------------------------------------------------------------
+// T43: SSRF DNS rebinding edge cases
+// ---------------------------------------------------------------------------
+
+/// IPv4-mapped IPv6 addresses should be blocked (SSRF bypass via `::ffff:10.0.0.1`).
+#[sqlx::test(migrations = "./migrations")]
+async fn ssrf_blocks_ipv4_mapped_ipv6(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-ssrf-mapped", "public").await;
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks"),
+        serde_json::json!({
+            "url": "http://[::ffff:10.0.0.1]/hook",
+            "events": ["push"],
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "IPv4-mapped IPv6 private address should be blocked"
+    );
+}
+
+/// Hex-encoded IP addresses should be blocked (SSRF bypass via `0x7f000001` = 127.0.0.1).
+#[sqlx::test(migrations = "./migrations")]
+async fn ssrf_blocks_hex_encoded_ip(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    let project_id = helpers::create_project(&app, &admin_token, "wh-ssrf-hex", "public").await;
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/webhooks"),
+        serde_json::json!({
+            "url": "http://0x7f000001/hook",
+            "events": ["push"],
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "hex-encoded loopback IP should be blocked"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Webhook dispatch integration tests (moved from e2e_webhook.rs)
 //
 // These test single-endpoint webhook dispatch behavior using wiremock.

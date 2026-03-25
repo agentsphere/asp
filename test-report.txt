@@ -1,24 +1,5 @@
-Test Report: FAIL
+Test Report: PASS
 ========================================================================
-Total: 1  Passed: 0  Failed: 1  Errors: 0
+Total: 1  Passed: 1  Failed: 0  Errors: 0
 
-Failed Tests:
-========================================================================
-
-────────────────────────────────────────────────────────────────────────
-FAIL: admin_list_roles  (4.674s)
-  in: platform::admin_integration
-
-  thread 'admin_list_roles' (41425549) panicked at tests/admin_integration.rs:355:33:
-  called `Option::unwrap()` on a `None` value
-  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-  running 1 test
-  test admin_list_roles ... FAILED
-
-  failures:
-
-      admin_list_roles
-
-  test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 29 filtered out; finished in 4.66s
-  [retry] thread 'admin_list_roles' (41425818) panicked at tests/admin_integration.rs:355:33
-  thread 'admin_list_roles' (41425818) panicked at tests/admin_integration.rs:355:33:
+All tests passed.

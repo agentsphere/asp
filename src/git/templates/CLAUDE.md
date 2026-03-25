@@ -5,10 +5,10 @@ This project runs on the Platform DevOps system.
 ## Key Files
 
 - `.platform.yaml` — CI/CD pipeline definition (kaniko build)
-- `Dockerfile` — Application container image (Python/FastAPI)
+- `Dockerfile` — Application container image (Python/FastAPI). Creates these files before running `docker build`: `requirements.txt`, `app/`, `static/`.
 - `Dockerfile.test` — Test runner image (pytest API tests)
 - `Dockerfile.dev` — Dev/agent image build (customise agent environment)
-- `deploy/production.yaml` — K8s deployment manifests (minijinja templates)
+- `deploy/production.yaml` — K8s deployment manifests (minijinja templates). Note: contains template variables (e.g., `{{ project_name }}`). Render with actual values before applying, or use the platform's deployment API instead.
 - `requirements.txt` — Python dependencies
 - `requirements-test.txt` — Test dependencies (pytest-timeout, httpx)
 - `tests-e2e/` — E2E test stubs (healthz + root smoke tests with 3s timeout)
@@ -202,6 +202,8 @@ else
 fi
 
 # Level 5: Deploy to session namespace and verify
+# Note: deploy/production.yaml contains template variables (e.g. {{ project_name }}).
+# Render with actual values before applying, or use the platform's deployment API.
 kubectl apply -f <(cat deploy/production.yaml)  # apply rendered manifests
 kubectl rollout status deployment/$(basename $PWD) --timeout=60s
 kubectl get pods
@@ -240,9 +242,9 @@ After pushing:
 ## Pipeline
 
 Pushing triggers the pipeline defined in `.platform.yaml`.
-Available env vars in pipeline steps: `$REGISTRY`, `$PROJECT`, `$COMMIT_SHA`, `$COMMIT_BRANCH`, `$PIPELINE_TRIGGER`.
+Available env vars in pipeline steps: `$REGISTRY`, `$PROJECT`, `$COMMIT_SHA`, `$COMMIT_BRANCH`, `$PIPELINE_TRIGGER`. Note: these may not be set in all environments (e.g. local dev). Use guards like `${REGISTRY:-}` and `${COMMIT_SHA:-}` when referencing them in scripts.
 
-Available env vars in agent pods: `$REGISTRY` (registry push URL), `$PROJECT` (project name), `$SESSION_SHORT_ID` (8-char session prefix), `$DOCKER_CONFIG` (kaniko config path, auto-configured).
+Available env vars in agent pods: `$REGISTRY` (registry push URL), `$PROJECT` (project name), `$SESSION_SHORT_ID` (8-char session prefix), `$DOCKER_CONFIG` (kaniko config path, auto-configured). Note: `$REGISTRY` may not be set if the platform registry is not configured. Use `${REGISTRY:-}` guards in scripts.
 
 ### Per-Step Conditions
 
@@ -396,6 +398,8 @@ echo "REGISTRY=$REGISTRY PROJECT=$PROJECT SESSION_SHORT_ID=$SESSION_SHORT_ID"
   --destination=$REGISTRY/$PROJECT/session-$SESSION_SHORT_ID-test:latest --insecure
 
 # Deploy to your session namespace
+# Note: deploy/production.yaml contains template variables (e.g. {{ project_name }}).
+# Render with actual values before applying, or use the platform's deployment API.
 kubectl apply -f deploy/production.yaml
 kubectl rollout status deployment/$(basename $PWD) --timeout=120s
 ```
@@ -413,7 +417,7 @@ This lets you verify everything works before committing and running the full pip
 
 ## Default Project Structure
 
-The repo ships with starter templates. Adapt them to your tech stack:
+These files are starter templates -- create them to match your project's needs. Adapt file names and layout when using a different language or framework.
 
 ```
 app/              # application source code
@@ -429,8 +433,6 @@ tests-e2e/        # E2E tests (run against deployed app via APP_HOST / APP_PORT)
 requirements.txt      # app dependencies
 requirements-test.txt # test dependencies (pytest-timeout, httpx)
 ```
-
-Adjust file names and layout when using a different language or framework.
 
 ## What NOT to Create
 
@@ -512,4 +514,4 @@ Create versioned deployments for canary rollouts:
 2. Bump `VERSION` to the new version
 3. Configure `.platform.yaml` with `deploy.specs[].type: canary` referencing versioned services
 
-Traffic is shifted automatically: 10% → 25% → 50% → 100%. After promotion, the old version is downscaled.
+Traffic is shifted automatically: 10% → 25% → 50% → 100% (these percentages are configurable via `.platform.yaml`). After promotion, the old version is downscaled.

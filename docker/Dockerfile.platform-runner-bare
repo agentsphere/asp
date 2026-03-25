@@ -1,6 +1,6 @@
 # Bare agent image: minimal base for testing the auto-setup flow.
 #
-# Contains only Node.js, git, curl, and sudo. The platform's setup-tools init
+# Contains only Node.js, git, curl, sudo, and Kaniko executor. The platform's setup-tools init
 # container will download agent-runner and install Claude CLI at pod start.
 FROM gcr.io/kaniko-project/executor:v1.23.2 AS kaniko
 

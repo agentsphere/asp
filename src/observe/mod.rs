@@ -1,3 +1,5 @@
+//! Observability: OTLP ingest, Parquet storage, query, and alerts.
+
 pub mod alert;
 pub mod correlation;
 pub mod error;

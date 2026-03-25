@@ -44,7 +44,7 @@ Run tests in this order — fix failures before moving on:
 1. Unit tests: `python -m pytest tests/unit/ -v`
 2. E2E tests: Start the app, run `python -m pytest tests-e2e/ -v`
 3. Build images with kaniko (see CLAUDE.md Level 3-4)
-4. Deploy to namespace and verify: `kubectl apply -f deploy/production.yaml`
+4. Deploy to namespace and verify: `kubectl apply -f deploy/production.yaml` (note: this file contains template variables like `{{ project_name }}` -- render with actual values before applying, or use the platform's deployment API)
 
 == STEP 7: PUSH + CREATE MR ==
 Only after ALL tests pass:

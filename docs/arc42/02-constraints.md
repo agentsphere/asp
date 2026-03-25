@@ -6,10 +6,10 @@
 |---|---|
 | **Rust (edition 2024), `forbid(unsafe_code)`** | Memory safety without GC; unsafe forbidden in `Cargo.toml` lints |
 | **rustls only — openssl banned** | `deny.toml` blocks `openssl`/`openssl-sys`; pure-Rust TLS stack |
-| **Single crate** | No workspace split unless `cargo check` exceeds 30s; currently ~23K LOC in 11 modules |
+| **Single crate** | No workspace split unless `cargo check` exceeds 30s; currently ~72K LOC in 15 modules |
 | **sqlx compile-time checking** | All queries use `sqlx::query!` / `sqlx::query_as!`; CI uses `SQLX_OFFLINE=true` |
 | **Kubernetes-native** | Pipeline steps, agent sessions, and deployments all run as K8s pods |
-| **PostgreSQL as primary store** | ACID transactions, 28 migration pairs, compile-time validated queries |
+| **PostgreSQL as primary store** | ACID transactions, 64 migration pairs, compile-time validated queries |
 | **Valkey (Redis fork) for caching** | Permission cache, rate limiting, pub/sub, session state |
 | **MinIO (S3 API) for objects** | Build artifacts, Parquet files, LFS objects, OCI blobs |
 
@@ -26,7 +26,7 @@
 | Convention | Enforced By |
 |---|---|
 | `CLAUDE.md` coding standards | AI agent context; human reference |
-| `just` task runner | 30+ recipes for build, test, deploy, coverage |
+| `just` task runner | 34+ recipes for build, test, deploy, coverage |
 | Pre-commit hooks | `rustfmt --check`, `clippy`, YAML validation |
 | Commit `Cargo.lock` | Binary project convention |
 | Commit `.sqlx/` cache | Enables offline CI builds |

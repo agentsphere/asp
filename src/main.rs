@@ -126,9 +126,27 @@ async fn main() -> anyhow::Result<()> {
             .secret_access_key(&cfg.minio_secret_key)
             .bucket("platform")
             .region("us-east-1");
-        opendal::Operator::new(builder)?.finish()
+        let op = opendal::Operator::new(builder)?.finish();
+        // S55: Accept self-signed TLS certificates for MinIO in dev/test.
+        // Uses reqwest 0.12 (matching opendal's internal dep) to build a
+        // client with danger_accept_invalid_certs, then layers it onto the
+        // operator via HttpClientLayer.
+        if cfg.minio_insecure {
+            let insecure_client = reqwest_opendal::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .build()
+                .expect("insecure reqwest client for MinIO");
+            let http_client = opendal::raw::HttpClient::with(insecure_client);
+            op.layer(opendal::layers::HttpClientLayer::new(http_client))
+        } else {
+            op
+        }
     };
-    tracing::info!("minio operator created");
+    tracing::info!(
+        endpoint = %cfg.minio_endpoint,
+        insecure = cfg.minio_insecure,
+        "minio operator created"
+    );
 
     // Create Kubernetes client
     let kube = kube::Client::try_default().await?;
@@ -261,7 +279,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(SetResponseHeaderLayer::if_not_present(
             HeaderName::from_static("content-security-policy"),
             HeaderValue::from_static(
-                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:",
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-src 'self'",
             ),
         ))
         // S51: HSTS — browsers only process this over HTTPS (no-op over HTTP per RFC 6797)

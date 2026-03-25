@@ -256,7 +256,6 @@ Built-in container image registry (~3.4K LOC, 11 files) implementing the OCI Dis
 |---|---|
 | `v2` | OCI v2 API: manifests, blobs, tags, catalog |
 | `gc` | Garbage collection of unreferenced layers |
-| `proxy` | DaemonSet-based pull-through proxy for Kind clusters |
 
 ### Remaining Modules
 

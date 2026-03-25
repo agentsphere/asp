@@ -49,7 +49,7 @@ async fn create_project_invalid_name(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
-    let (status, _) = helpers::post_json(
+    let (status, body) = helpers::post_json(
         &app,
         &admin_token,
         "/api/projects",
@@ -58,6 +58,10 @@ async fn create_project_invalid_name(pool: PgPool) {
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].is_string(),
+        "error response should have 'error' field"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -65,7 +69,7 @@ async fn create_project_empty_name(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
-    let (status, _) = helpers::post_json(
+    let (status, body) = helpers::post_json(
         &app,
         &admin_token,
         "/api/projects",
@@ -74,6 +78,10 @@ async fn create_project_empty_name(pool: PgPool) {
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].is_string(),
+        "error response should have 'error' field"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -82,7 +90,7 @@ async fn create_project_name_too_long(pool: PgPool) {
     let app = helpers::test_router(state);
 
     let long_name = "a".repeat(256);
-    let (status, _) = helpers::post_json(
+    let (status, body) = helpers::post_json(
         &app,
         &admin_token,
         "/api/projects",
@@ -91,6 +99,10 @@ async fn create_project_name_too_long(pool: PgPool) {
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].is_string(),
+        "error response should have 'error' field"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]

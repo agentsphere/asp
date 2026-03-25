@@ -1,3 +1,5 @@
+//! OCI container registry: push, pull, and manifest management.
+
 pub mod auth;
 pub mod blobs;
 pub mod digest;

@@ -44,13 +44,11 @@ describe("platform-deploy", () => {
   it("create_release sends POST /api/projects/:id/deploy-releases", async () => {
     api.setResponse(201, { id: "rel-1" });
     await client.callTool("create_release", {
-      target_id: "tgt-1",
       image_ref: "registry/app:v1",
     });
     const req = api.lastRequest();
     assert.equal(req.method, "POST");
     assert.ok(req.path.includes(`/api/projects/${projectId}/deploy-releases`));
-    assert.equal(req.body.target_id, "tgt-1");
     assert.equal(req.body.image_ref, "registry/app:v1");
   });
 
@@ -68,7 +66,7 @@ describe("platform-deploy", () => {
     const req = api.lastRequest();
     assert.equal(req.method, "PATCH");
     assert.ok(req.path.includes("/deploy-releases/rel-1/traffic"));
-    assert.equal(req.body.weight, 50);
+    assert.equal(req.body.traffic_weight, 50);
   });
 
   it("handles error responses", async () => {

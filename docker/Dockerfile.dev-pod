@@ -3,7 +3,7 @@
 # and all cargo tools needed by the Justfile (nextest, llvm-cov, sqlx, deny).
 #
 # Build:  docker build -f docker/Dockerfile.dev-pod -t platform-dev-pod:latest .
-# Import: sudo ctr -a /run/k3s/containerd/containerd.sock -n k8s.io image import dev-pod.tar
+# Import: kind load docker-image platform-dev-pod:latest --name platform
 
 FROM rust:1.93-bookworm
 
@@ -62,7 +62,7 @@ RUN pipx install diff-cover && pipx ensurepath
 # Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
-# Playwright headless Chromium (for `just test-ui-headless`)
+# Playwright headless Chromium (for UI browser tests)
 RUN npx playwright install --with-deps chromium
 
 # Non-root user — `claude --dangerously-skip-permissions` refuses to run as root

@@ -1,3 +1,5 @@
+//! Git hosting: smart HTTP, SSH, LFS, and repository management.
+
 pub mod browser;
 pub mod gpg_keys;
 pub mod hooks;

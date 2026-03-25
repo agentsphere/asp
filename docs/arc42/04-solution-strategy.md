@@ -5,7 +5,7 @@
 | # | Decision | Motivation | Trade-off |
 |---|---|---|---|
 | 1 | **Single Rust binary** over microservices | Eliminates IPC overhead, simplifies deployment to one K8s Deployment + one IngressRoute, single container image | No independent scaling; single point of failure (mitigated by K8s restart policy) |
-| 2 | **PostgreSQL as the brain** | Unified schema (28 migrations), compile-time validated queries via sqlx, ACID transactions for all state | Vertical scaling limit; no read replicas yet |
+| 2 | **PostgreSQL as the brain** | Unified schema (64 migrations), compile-time validated queries via sqlx, ACID transactions for all state | Vertical scaling limit; no read replicas yet |
 | 3 | **Event-driven + reconciliation** | `Notify` for immediate wake-up, polling loops for crash recovery; best of both worlds | Slight delay on recovery (up to 10s poll interval) |
 | 4 | **Per-project K8s namespaces** | Tenant isolation via namespace boundaries, NetworkPolicy enforcement, resource quotas | Namespace proliferation; requires cleanup for preview environments |
 | 5 | **Agents as first-class users** | Uniform RBAC for humans and AI; delegation model grants scoped, time-bounded permissions | Agent identity lifecycle tied to session lifecycle |
@@ -29,7 +29,7 @@
 
 The platform follows a **modular monolith** pattern:
 
-- 11 modules under `src/` with clear boundaries
+- 15 modules under `src/` with clear boundaries
 - Modules communicate only through `AppState` — never import each other's internals
 - Cross-module types live in `src/error.rs` or `src/config.rs`
 - Each module owns its DB tables and defines its own error types
