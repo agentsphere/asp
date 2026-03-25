@@ -804,6 +804,15 @@ async fn mark_failed_updates_status(pool: PgPool) {
 
 // ---------------------------------------------------------------------------
 // Preview cleanup on MR merge
+//
+// Tier classification note: this test spans 3 API calls across 2 domains
+// (deploy targets + merge requests), making it a multi-endpoint journey
+// that the decision tree would classify as E2E. It remains in integration
+// because: (a) it tests a single deployment lifecycle concern (preview
+// cleanup triggered by MR merge) within the progressive delivery domain,
+// (b) it uses integration helpers (test_state, test_router) and does not
+// need #[ignore] / Kind cluster, and (c) moving it to E2E would reduce
+// coverage visibility since E2E only runs with `just test-e2e`.
 // ---------------------------------------------------------------------------
 
 /// MR merge triggers preview cleanup via `stop_preview_for_branch`.
@@ -1349,6 +1358,16 @@ async fn analysis_creates_record_for_canary_release(pool: PgPool) {
 
 // ---------------------------------------------------------------------------
 // Canary release lifecycle tests
+//
+// Tier classification note: canary_release_full_lifecycle spans 6 API calls
+// (create target, create release, DB update, adjust traffic, promote, get
+// history) and canary_rollback_lifecycle spans 5 calls. By the decision
+// tree these multi-endpoint journeys would be E2E. They remain in
+// integration because: (a) they exercise a single domain concern (canary
+// release state machine) and all calls target the progressive delivery API,
+// (b) they use integration helpers and don't need #[ignore], and (c) the
+// DB state transitions between calls are the core assertion — not
+// cross-domain user journeys.
 // ---------------------------------------------------------------------------
 
 #[sqlx::test(migrations = "./migrations")]
@@ -1516,6 +1535,15 @@ async fn canary_rollback_lifecycle(pool: PgPool) {
 
 // ---------------------------------------------------------------------------
 // Flags from ops repo integration tests
+//
+// Tier classification note: this test spans 3 domains (ops repo init,
+// eventbus event, flags evaluation API) across multiple API calls, which
+// the decision tree would classify as E2E. It remains in integration
+// because: (a) it validates a single feature flow (ops repo flags sync)
+// where the eventbus call is a side-effect trigger, not a separate user
+// action, (b) it uses integration helpers and doesn't need #[ignore],
+// and (c) the ops repo + flags feature is tightly coupled — testing them
+// separately would require duplicating setup.
 // ---------------------------------------------------------------------------
 
 #[sqlx::test(migrations = "./migrations")]
@@ -1601,6 +1629,15 @@ flags:
 
 // ---------------------------------------------------------------------------
 // Demo project integration tests
+//
+// Tier classification note: this test calls a single function
+// (create_demo_project) that internally creates a project, MR, pipeline,
+// ops repo, and issues — spanning multiple domains. By the decision tree
+// it could be E2E. It remains in integration because: (a) from the test's
+// perspective it invokes one function and verifies its side effects, not
+// a multi-step user journey, (b) it uses integration helpers and doesn't
+// need #[ignore], and (c) the demo project feature is a single atomic
+// operation (onboarding) even though it touches multiple tables.
 // ---------------------------------------------------------------------------
 
 #[sqlx::test(migrations = "./migrations")]

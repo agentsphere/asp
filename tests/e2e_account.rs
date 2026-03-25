@@ -202,7 +202,7 @@ async fn passkey_register_list_rename_delete_journey(pool: PgPool) {
     // 2. List passkeys — verify 1 result
     let (status, body) = e2e_helpers::get_json(&app, &user_token, "/api/auth/passkeys").await;
     assert_eq!(status, StatusCode::OK);
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 1, "should have 1 passkey");
     assert_eq!(keys[0]["id"], cred1_id.to_string());
 
@@ -218,7 +218,7 @@ async fn passkey_register_list_rename_delete_journey(pool: PgPool) {
 
     // Verify name changed
     let (_, body) = e2e_helpers::get_json(&app, &user_token, "/api/auth/passkeys").await;
-    assert_eq!(body[0]["name"], "My YubiKey");
+    assert_eq!(body["items"][0]["name"], "My YubiKey");
 
     // 4. Register second passkey
     let mut auth2 = SoftPasskey::new(true);
@@ -226,7 +226,11 @@ async fn passkey_register_list_rename_delete_journey(pool: PgPool) {
 
     // 5. List — verify 2
     let (_, body) = e2e_helpers::get_json(&app, &user_token, "/api/auth/passkeys").await;
-    assert_eq!(body.as_array().unwrap().len(), 2, "should have 2 passkeys");
+    assert_eq!(
+        body["items"].as_array().unwrap().len(),
+        2,
+        "should have 2 passkeys"
+    );
 
     // 6. Delete first passkey
     let (status, _) =
@@ -236,7 +240,7 @@ async fn passkey_register_list_rename_delete_journey(pool: PgPool) {
 
     // 7. List — verify 1 remaining
     let (_, body) = e2e_helpers::get_json(&app, &user_token, "/api/auth/passkeys").await;
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 1, "should have 1 passkey after delete");
     assert_ne!(
         keys[0]["id"].as_str().unwrap(),

@@ -1,5 +1,6 @@
 //! AI agent session orchestration and ephemeral identity.
 
+#[allow(dead_code)]
 pub mod claude_cli;
 pub mod claude_code;
 pub mod cli_invoke;

@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, ToSocketAddrs};
 
 use crate::error::ApiError;
 
@@ -97,11 +97,11 @@ fn is_ipv6_unique_local(v6: &std::net::Ipv6Addr) -> bool {
 /// Check whether an IP address is private/reserved (loopback, link-local, etc.).
 pub fn is_private_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => is_private_ipv4(&v4),
+        IpAddr::V4(v4) => is_private_ipv4(v4),
         IpAddr::V6(v6) => {
             // Check IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) — SSRF bypass vector
             if let Some(mapped_v4) = v6.to_ipv4_mapped() {
-                return is_private_ipv4(&mapped_v4);
+                return is_private_ipv4(mapped_v4);
             }
             v6.is_loopback()          // ::1
                 || v6.is_unspecified() // ::
@@ -112,7 +112,7 @@ pub fn is_private_ip(ip: IpAddr) -> bool {
 }
 
 /// Check whether an IPv4 address is private/reserved.
-fn is_private_ipv4(v4: &std::net::Ipv4Addr) -> bool {
+fn is_private_ipv4(v4: std::net::Ipv4Addr) -> bool {
     v4.is_loopback()          // 127.0.0.0/8
         || v4.is_private()    // 10/8, 172.16/12, 192.168/16
         || v4.is_link_local() // 169.254/16
@@ -169,7 +169,6 @@ pub fn check_ssrf_url(url_str: &str, allowed_schemes: &[&str]) -> Result<(), Api
     // Note: this is best-effort. True time-of-check/time-of-use rebinding
     // (where DNS changes between validation and request) requires pinning
     // the resolved IP for the HTTP request, which is a separate concern.
-    use std::net::ToSocketAddrs;
     if let Ok(addrs) = (host, 0u16).to_socket_addrs() {
         for addr in addrs {
             if is_private_ip(addr.ip()) {

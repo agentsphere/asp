@@ -306,6 +306,7 @@ pub async fn get_or_create_default_workspace(
 }
 
 /// Get workspace role for a user. Returns None if not a member.
+#[allow(dead_code)]
 pub async fn get_member_role(
     pool: &PgPool,
     workspace_id: Uuid,

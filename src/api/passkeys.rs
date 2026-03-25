@@ -10,6 +10,8 @@ use webauthn_rs::prelude::*;
 
 use ts_rs::TS;
 
+use sqlx::Row;
+
 use crate::audit::{AuditEntry, write_audit};
 use crate::auth::middleware::AuthUser;
 use crate::auth::{passkey, token};
@@ -95,7 +97,9 @@ pub fn router() -> Router<AppState> {
         .route("/api/auth/passkeys", get(list_passkeys))
         .route(
             "/api/auth/passkeys/{id}",
-            delete(delete_passkey).patch(rename_passkey),
+            delete(delete_passkey)
+                .patch(rename_passkey)
+                .get(get_passkey),
         )
         // Authentication (unauthenticated)
         .route("/api/auth/passkeys/login/begin", post(begin_login))
@@ -251,6 +255,32 @@ async fn list_passkeys(
 
     let total = i64::try_from(items.len()).unwrap_or(0);
     Ok(Json(ListResponse { items, total }))
+}
+
+async fn get_passkey(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<PasskeyResponse>, ApiError> {
+    let row = sqlx::query(
+        "SELECT id, name, created_at, last_used_at, backup_eligible, backup_state, transports
+         FROM passkey_credentials WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(auth.user_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("passkey".into()))?;
+
+    Ok(Json(PasskeyResponse {
+        id: row.get("id"),
+        name: row.get("name"),
+        created_at: row.get("created_at"),
+        last_used_at: row.get("last_used_at"),
+        backup_eligible: row.get("backup_eligible"),
+        backup_state: row.get("backup_state"),
+        transports: row.get("transports"),
+    }))
 }
 
 #[tracing::instrument(skip(state), fields(%id, user_id = %auth.user_id), err)]

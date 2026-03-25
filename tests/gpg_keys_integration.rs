@@ -579,10 +579,10 @@ async fn test_list_gpg_keys_only_own_keys(pool: PgPool) {
 
     // Each user should only see their own keys
     let (_, admin_keys) = helpers::get_json(&app, &admin_token, "/api/users/me/gpg-keys").await;
-    assert_eq!(admin_keys.as_array().unwrap().len(), 1);
+    assert_eq!(admin_keys["items"].as_array().unwrap().len(), 1);
 
     let (_, other_keys) = helpers::get_json(&app, &other_token, "/api/users/me/gpg-keys").await;
-    assert_eq!(other_keys.as_array().unwrap().len(), 1);
+    assert_eq!(other_keys["items"].as_array().unwrap().len(), 1);
 }
 
 #[sqlx::test(migrations = "./migrations")]

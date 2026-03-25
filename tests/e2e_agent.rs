@@ -5,7 +5,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
-// E2E Agent Session Lifecycle Tests (8 tests)
+// E2E Agent Session Lifecycle Tests (10 tests)
 //
 // These tests require a Kind cluster with real K8s, Postgres, and Valkey.
 // Agent tests exercise session creation, identity management, pod lifecycle,
@@ -16,6 +16,21 @@ use uuid::Uuid;
 // (e.g., image pull, namespace missing), the session is still inserted as
 // a DB row but the create_session API returns an error. Tests that need
 // a running session handle this gracefully.
+//
+// Tier classification note:
+// By the project decision tree, most of these tests (1-7, 10) are borderline
+// integration — each tests a single endpoint (POST /sessions) plus its K8s
+// pod side effect. However, they remain in E2E for practical reasons:
+//   1. They create real K8s pods and namespaces, requiring #[ignore] + Kind
+//      cluster. Moving to integration tier wouldn't change the runtime
+//      requirement — `just test-integration` also runs in-cluster.
+//   2. They use `e2e_helpers::e2e_state()` (not `helpers::test_state()`),
+//      which sets up a dedicated MinIO bucket (`platform-e2e`) and different
+//      config from integration helpers. Rewriting to use integration helpers
+//      would be a non-trivial refactor for no behavioral gain.
+//   3. Tests 8-9 (pubsub flow, git clone+push) are genuine multi-step E2E
+//      journeys. Keeping the single-endpoint agent tests alongside them in
+//      the same file avoids fragmenting related agent test infrastructure.
 // ---------------------------------------------------------------------------
 
 /// Helper: create a project for agent tests and set up a bare repo (required

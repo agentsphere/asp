@@ -2,6 +2,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 #[derive(Debug, thiserror::Error)]
+#[allow(dead_code)]
 pub enum ApiError {
     #[error("not found: {0}")]
     NotFound(String),

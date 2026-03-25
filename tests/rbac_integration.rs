@@ -374,7 +374,7 @@ async fn custom_role_crud(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(perms.as_array().unwrap().len(), 2);
+    assert_eq!(perms["items"].as_array().unwrap().len(), 2);
 
     // Assign to user and verify access
     let (user_id, user_token) =
@@ -455,7 +455,7 @@ async fn list_permissions_and_roles(pool: PgPool) {
     // List roles
     let (status, roles) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;
     assert_eq!(status, StatusCode::OK);
-    let roles_array = roles.as_array().unwrap();
+    let roles_array = roles["items"].as_array().unwrap();
     // Bootstrap seeds 10 system roles
     assert_eq!(
         roles_array.len(),

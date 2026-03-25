@@ -688,6 +688,11 @@ fn find_oauth_token(text: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    // =====================================================================
+    // Pure unit tests — no I/O, testing private parsing/extraction helpers.
+    // These are correctly placed in the unit tier.
+    // =====================================================================
+
     #[test]
     fn strip_ansi_removes_csi_sequences() {
         let input = "\x1b[?2026h\x1b[32mHello\x1b[0m world\x1b[?2026l";
@@ -831,10 +836,19 @@ mod tests {
         let _manager = CliAuthManager::new();
     }
 
-    // -----------------------------------------------------------------
-    // PTY integration tests — verify the full spawn → read URL →
-    // write code → read token flow through macOS `script`.
-    // -----------------------------------------------------------------
+    // =====================================================================
+    // PTY subprocess tests — spawn real processes + filesystem I/O.
+    //
+    // Tier exception: these tests spawn real subprocesses (mock CLI via
+    // macOS `script` PTY wrapper) and perform filesystem I/O (temp dirs,
+    // writing mock scripts). By the decision tree they would be integration
+    // tier. However, they remain in the unit tier (#[cfg(test)] mod tests)
+    // because they test private functions (`spawn_claude_setup_token`,
+    // `extract_oauth_url`, `extract_token_from_stdout`) that are not
+    // accessible from external `tests/` binaries. Moving them out would
+    // require making those functions `pub`, leaking implementation details
+    // into the public API.
+    // =====================================================================
 
     /// Create a temporary mock CLI script that behaves like `claude setup-token`:
     /// 1. Prints banner + OAuth URL on stdout
@@ -872,6 +886,7 @@ echo "Store this token securely."
         script
     }
 
+    /// Tier exception: spawns real subprocess + filesystem I/O (see block comment above).
     #[tokio::test]
     async fn pty_flow_url_extraction() {
         let tmp = tempfile::tempdir().unwrap();
@@ -900,6 +915,7 @@ echo "Store this token securely."
         child.kill().await.ok();
     }
 
+    /// Tier exception: spawns real subprocess + filesystem I/O (see block comment above).
     #[tokio::test]
     async fn pty_flow_full_code_to_token() {
         let tmp = tempfile::tempdir().unwrap();
@@ -958,6 +974,7 @@ echo "Store this token securely."
         child.kill().await.ok();
     }
 
+    /// Tier exception: spawns real subprocess + filesystem I/O (see block comment above).
     #[tokio::test]
     async fn pty_flow_manager_start_auth() {
         let tmp = tempfile::tempdir().unwrap();

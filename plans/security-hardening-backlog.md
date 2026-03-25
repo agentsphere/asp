@@ -9,11 +9,11 @@
 |---|---|---|---|
 | 1 | S44 | ✅ Done | Version-prefixed encrypt (`0x01`), decrypt with previous key fallback, 6 new tests |
 | 2 | S54 | ✅ Done | Immutable `v*` tags — block overwrite, allow idempotent same-digest push |
-| 3 | S55 | ⬜ Deferred | MinIO HTTPS — needs minio.yaml cert setup + opendal TLS config |
+| 3 | S55 | ✅ Done | MinIO HTTPS — TLS certs init container, `--certs-dir`, `MINIO_INSECURE` for self-signed |
 | 4 | S59 | ✅ Done | Proxy trust CIDR — `trust_proxy_cidrs` config + ConnectInfo IP check, 8 new tests |
 | 5 | S68 | ✅ Done | russh 0.49 still uses affected `rsa` crate — documented in deny.toml |
 | 6 | S71 | ✅ Done | `token_max_expiry_days` config (default 365), enforced in create_api_token |
-| 7 | S77 | ⬜ Deferred | DNS rebinding — requires making `check_ssrf_url` async (many call sites) |
+| 7 | S77 | ✅ Done | DNS rebinding — sync `ToSocketAddrs` resolution in `check_ssrf_url`, no async change needed |
 | 8 | S78 | ⬜ Deferred | Image allowlist — needs migration + project API + definition validation |
 | 9 | S84 | ✅ Done | Already covered — ensure_namespace applies NP to test namespaces |
 | 10 | S85 | ✅ Done | Gateway allowedRoutes restricted to `platform.io/managed-by` label |

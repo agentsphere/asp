@@ -64,7 +64,7 @@ async fn list_provider_keys_empty(pool: PgPool) {
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/users/me/provider-keys").await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.as_array().unwrap().is_empty());
+    assert!(body["items"].as_array().unwrap().is_empty());
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -83,7 +83,7 @@ async fn list_provider_keys_after_set(pool: PgPool) {
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/users/me/provider-keys").await;
 
     assert_eq!(status, StatusCode::OK);
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0]["provider"], "anthropic");
 }
@@ -109,7 +109,7 @@ async fn delete_provider_key(pool: PgPool) {
 
     // List should be empty
     let (_, body) = helpers::get_json(&app, &admin_token, "/api/users/me/provider-keys").await;
-    assert!(body.as_array().unwrap().is_empty());
+    assert!(body["items"].as_array().unwrap().is_empty());
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -153,7 +153,7 @@ async fn set_provider_key_overwrites(pool: PgPool) {
 
     // Still only one key
     let (_, body) = helpers::get_json(&app, &admin_token, "/api/users/me/provider-keys").await;
-    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +198,7 @@ async fn list_shows_key_suffix_not_raw_key(pool: PgPool) {
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/users/me/provider-keys").await;
     assert_eq!(status, StatusCode::OK);
 
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 1);
     // key_suffix should show last 4 chars only, prefixed with "..."
     assert_eq!(keys[0]["key_suffix"], "...mnop");
@@ -236,7 +236,7 @@ async fn list_multiple_providers(pool: PgPool) {
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/users/me/provider-keys").await;
     assert_eq!(status, StatusCode::OK);
 
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 2);
 
     // Should be ordered by provider name
@@ -265,7 +265,7 @@ async fn list_includes_timestamps(pool: PgPool) {
     .await;
 
     let (_, body) = helpers::get_json(&app, &admin_token, "/api/users/me/provider-keys").await;
-    let keys = body.as_array().unwrap();
+    let keys = body["items"].as_array().unwrap();
     assert_eq!(keys.len(), 1);
 
     // created_at and updated_at should be present and non-null
@@ -298,7 +298,7 @@ async fn keys_are_per_user(pool: PgPool) {
     // User2 should see an empty list (not admin's keys)
     let (status, body) = helpers::get_json(&app, &user2_token, "/api/users/me/provider-keys").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.as_array().unwrap().is_empty());
+    assert!(body["items"].as_array().unwrap().is_empty());
 
     // User2 sets their own key
     helpers::put_json(
@@ -311,11 +311,11 @@ async fn keys_are_per_user(pool: PgPool) {
 
     // User2 sees exactly 1 key
     let (_, body) = helpers::get_json(&app, &user2_token, "/api/users/me/provider-keys").await;
-    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
 
     // Admin still sees exactly 1 key (their own)
     let (_, body) = helpers::get_json(&app, &admin_token, "/api/users/me/provider-keys").await;
-    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -432,7 +432,10 @@ async fn overwrite_updates_key_suffix(pool: PgPool) {
     .await;
 
     let (_, body) = helpers::get_json(&app, &admin_token, "/api/users/me/provider-keys").await;
-    assert_eq!(body.as_array().unwrap()[0]["key_suffix"], "...AAAA");
+    assert_eq!(
+        body["items"].as_array().unwrap()[0]["key_suffix"],
+        "...AAAA"
+    );
 
     // Overwrite with key ending in "BBBB"
     helpers::put_json(
@@ -444,7 +447,10 @@ async fn overwrite_updates_key_suffix(pool: PgPool) {
     .await;
 
     let (_, body) = helpers::get_json(&app, &admin_token, "/api/users/me/provider-keys").await;
-    assert_eq!(body.as_array().unwrap()[0]["key_suffix"], "...BBBB");
+    assert_eq!(
+        body["items"].as_array().unwrap()[0]["key_suffix"],
+        "...BBBB"
+    );
 }
 
 // ---------------------------------------------------------------------------

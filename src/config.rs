@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 
 #[derive(Clone)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(clippy::struct_excessive_bools, dead_code)]
 pub struct Config {
     pub listen: String,
     pub database_url: String,
