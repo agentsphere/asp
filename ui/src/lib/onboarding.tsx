@@ -33,6 +33,7 @@ export function OnboardingProvider({ children }: { children: any }) {
     setLoading(true);
     api.get<OnboardingStatus>('/api/onboarding/status')
       .then(s => setStatus(s))
+      // Onboarding status check failed — skip
       .catch(() => setStatus(null))
       .finally(() => setLoading(false));
   }, []);

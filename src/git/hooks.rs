@@ -228,7 +228,14 @@ pub async fn post_receive(state: &AppState, params: &PostReceiveParams) -> Resul
             "project_id": params.project_id,
             "pusher": params.user_name,
         });
-        crate::api::webhooks::fire_webhooks(&state.pool, params.project_id, "push", &payload).await;
+        crate::api::webhooks::fire_webhooks(
+            &state.pool,
+            params.project_id,
+            "push",
+            &payload,
+            &state.webhook_semaphore,
+        )
+        .await;
     }
 
     // Handle MR sync on push: update head_sha and trigger MR pipelines
@@ -262,7 +269,14 @@ pub async fn post_receive(state: &AppState, params: &PostReceiveParams) -> Resul
             "project_id": params.project_id,
             "pusher": params.user_name,
         });
-        crate::api::webhooks::fire_webhooks(&state.pool, params.project_id, "push", &payload).await;
+        crate::api::webhooks::fire_webhooks(
+            &state.pool,
+            params.project_id,
+            "push",
+            &payload,
+            &state.webhook_semaphore,
+        )
+        .await;
     }
 
     Ok(())

@@ -40,12 +40,23 @@ async fn dashboard_stats_with_data(pool: PgPool) {
     // Create a project (adds 1 to project count)
     let proj_id = create_project(&app, &admin_token, "dash-proj", "private").await;
 
-    // Insert a healthy deployment
+    // Insert a deploy target + healthy release
+    let target_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO deployments (id, project_id, environment, image_ref, desired_status, current_status)
-         VALUES ($1, $2, 'production', 'app:v1', 'active', 'healthy')",
+        "INSERT INTO deploy_targets (id, project_id, name, environment, default_strategy, is_active)
+         VALUES ($1, $2, 'prod', 'production', 'rolling', true)",
+    )
+    .bind(target_id)
+    .bind(proj_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO deploy_releases (id, target_id, project_id, image_ref, phase, health)
+         VALUES ($1, $2, $3, 'app:v1', 'progressing', 'healthy')",
     )
     .bind(Uuid::new_v4())
+    .bind(target_id)
     .bind(proj_id)
     .execute(&pool)
     .await

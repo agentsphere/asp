@@ -1,32 +1,45 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-pub struct AuditEntry<'a> {
-    pub actor_id: Uuid,
-    pub actor_name: &'a str,
-    pub action: &'a str,
-    pub resource: &'a str,
-    pub resource_id: Option<Uuid>,
-    pub project_id: Option<Uuid>,
-    pub detail: Option<serde_json::Value>,
-    pub ip_addr: Option<&'a str>,
+/// Handle for fire-and-forget audit logging.
+///
+/// Each call to [`send_audit`] spawns an independent tokio task that writes to
+/// the `audit_log` table. This keeps handler latency unaffected by DB pool
+/// pressure while ensuring entries are visible to subsequent queries within
+/// the same tokio runtime (the spawned task is polled during the next `.await`).
+#[derive(Clone)]
+pub struct AuditLog {
+    pool: PgPool,
 }
 
-pub async fn write_audit(pool: &PgPool, entry: &AuditEntry<'_>) {
-    if let Err(e) = write_audit_inner(pool, entry).await {
-        tracing::warn!(
-            error = %e,
-            action = entry.action,
-            resource = entry.resource,
-            "failed to write audit log entry"
-        );
+impl AuditLog {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
     }
 }
 
-async fn write_audit_inner(pool: &PgPool, entry: &AuditEntry<'_>) -> Result<(), sqlx::Error> {
-    let ip: Option<ipnetwork::IpNetwork> = entry.ip_addr.and_then(|s| s.parse().ok());
+pub struct AuditEntry {
+    pub actor_id: Uuid,
+    pub actor_name: String,
+    pub action: String,
+    pub resource: String,
+    pub resource_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    pub detail: Option<serde_json::Value>,
+    pub ip_addr: Option<String>,
+}
 
-    sqlx::query!(
+pub fn send_audit(log: &AuditLog, entry: AuditEntry) {
+    let pool = log.pool.clone();
+    tokio::spawn(async move {
+        write_audit_inner(&pool, &entry).await;
+    });
+}
+
+async fn write_audit_inner(pool: &PgPool, entry: &AuditEntry) {
+    let ip: Option<ipnetwork::IpNetwork> = entry.ip_addr.as_deref().and_then(|s| s.parse().ok());
+
+    if let Err(e) = sqlx::query!(
         r#"
         INSERT INTO audit_log (actor_id, actor_name, action, resource, resource_id, project_id, detail, ip_addr)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -41,7 +54,13 @@ async fn write_audit_inner(pool: &PgPool, entry: &AuditEntry<'_>) -> Result<(), 
         ip as Option<ipnetwork::IpNetwork>,
     )
     .execute(pool)
-    .await?;
-
-    Ok(())
+    .await
+    {
+        tracing::warn!(
+            error = %e,
+            action = %entry.action,
+            resource = %entry.resource,
+            "failed to write audit log entry"
+        );
+    }
 }

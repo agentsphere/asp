@@ -240,6 +240,7 @@ async fn handle_pending(state: &AppState, release: &PendingRelease) -> Result<()
         env_suffix(&release.environment),
         &release.project_id.to_string(),
         &state.config.platform_namespace,
+        false,
     )
     .await?;
 
@@ -1311,7 +1312,14 @@ async fn fire_webhook(state: &AppState, release: &PendingRelease, action: &str) 
         "image_ref": release.image_ref,
         "release_id": release.id,
     });
-    crate::api::webhooks::fire_webhooks(&state.pool, release.project_id, "deploy", &payload).await;
+    crate::api::webhooks::fire_webhooks(
+        &state.pool,
+        release.project_id,
+        "deploy",
+        &payload,
+        &state.webhook_semaphore,
+    )
+    .await;
 }
 
 // ---------------------------------------------------------------------------

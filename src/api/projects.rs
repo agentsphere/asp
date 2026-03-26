@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use ts_rs::TS;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::deployer::namespace::slugify_namespace;
 use crate::error::ApiError;
@@ -87,7 +87,7 @@ async fn insert_project_row(
     repo_path: &str,
     workspace_id: Uuid,
 ) -> Result<ProjectRow, ApiError> {
-    let slug = slugify_namespace(&body.name);
+    let slug = slugify_namespace(&body.name)?;
 
     match try_insert_project(
         pool,
@@ -212,6 +212,7 @@ pub async fn setup_project_infrastructure(
         "dev",
         &project_id_str,
         &state.config.platform_namespace,
+        false,
     )
     .await
     {
@@ -225,6 +226,7 @@ pub async fn setup_project_infrastructure(
         "prod",
         &project_id_str,
         &state.config.platform_namespace,
+        false,
     )
     .await
     {
@@ -476,20 +478,19 @@ async fn create_project(
         tracing::warn!(error = %e, project_id = %project.id, "failed to create default branch protection");
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "project.create",
-            resource: "project",
+            actor_name: auth.user_name.clone(),
+            action: "project.create".into(),
+            resource: "project".into(),
             resource_id: Some(project.id),
             project_id: Some(project.id),
             detail: Some(serde_json::json!({"name": body.name, "visibility": visibility})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((StatusCode::CREATED, Json(project_row_to_response(project))))
 }
@@ -499,9 +500,12 @@ async fn list_projects(
     auth: AuthUser,
     Query(params): Query<ListProjectsParams>,
 ) -> Result<Json<ListResponse<ProjectResponse>>, ApiError> {
-    let limit = params.limit.unwrap_or(50).min(100);
-    let offset = params.offset.unwrap_or(0);
-    let search_pattern = params.search.as_deref().map(|s| format!("%{s}%"));
+    let limit = params.limit.unwrap_or(50).clamp(0, 100);
+    let offset = params.offset.unwrap_or(0).max(0);
+    let search_pattern = params.search.as_deref().map(|s| {
+        let escaped = s.replace('%', "\\%").replace('_', "\\_");
+        format!("%{escaped}%")
+    });
 
     // Count matching projects visible to the user
     // A30: include RBAC-granted and workspace-member visibility for private projects
@@ -716,20 +720,19 @@ async fn update_project(
     .await?
     .ok_or_else(|| ApiError::NotFound("project".into()))?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "project.update",
-            resource: "project",
+            actor_name: auth.user_name.clone(),
+            action: "project.update".into(),
+            resource: "project".into(),
             resource_id: Some(id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(project_row_to_response(project)))
 }
@@ -774,20 +777,19 @@ async fn delete_project(
         .execute(&state.pool)
         .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "project.delete",
-            resource: "project",
+            actor_name: auth.user_name.clone(),
+            action: "project.delete".into(),
+            resource: "project".into(),
             resource_id: Some(id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use ts_rs::TS;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::git::ssh_keys;
@@ -118,13 +118,13 @@ async fn add_ssh_key(
     .execute(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "ssh_key.add",
-            resource: "ssh_key",
+            actor_name: auth.user_name.clone(),
+            action: "ssh_key.add".into(),
+            resource: "ssh_key".into(),
             resource_id: Some(id),
             project_id: None,
             detail: Some(serde_json::json!({
@@ -132,10 +132,9 @@ async fn add_ssh_key(
                 "algorithm": parsed.algorithm,
                 "fingerprint": parsed.fingerprint,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     let resp = SshKeyResponse {
         id,
@@ -214,22 +213,21 @@ async fn delete_ssh_key(
 
     let row = result.ok_or_else(|| ApiError::NotFound("ssh key".into()))?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "ssh_key.delete",
-            resource: "ssh_key",
+            actor_name: auth.user_name.clone(),
+            action: "ssh_key.delete".into(),
+            resource: "ssh_key".into(),
             resource_id: Some(id),
             project_id: None,
             detail: Some(serde_json::json!({
                 "fingerprint": row.fingerprint,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

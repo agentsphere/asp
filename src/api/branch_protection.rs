@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use ts_rs::TS;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::store::AppState;
@@ -185,20 +185,19 @@ async fn create_protection(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "branch_protection.create",
-            resource: "branch_protection",
+            actor_name: auth.user_name.clone(),
+            action: "branch_protection.create".into(),
+            resource: "branch_protection".into(),
             resource_id: Some(row.id),
             project_id: Some(id),
             detail: Some(serde_json::json!({"pattern": body.pattern})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -313,20 +312,19 @@ async fn update_protection(
     .await?
     .ok_or_else(|| ApiError::NotFound("branch protection rule".into()))?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "branch_protection.update",
-            resource: "branch_protection",
+            actor_name: auth.user_name.clone(),
+            action: "branch_protection.update".into(),
+            resource: "branch_protection".into(),
             resource_id: Some(rule_id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(ProtectionResponse {
         id: row.id,
@@ -365,20 +363,19 @@ async fn delete_protection(
         return Err(ApiError::NotFound("branch protection rule".into()));
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "branch_protection.delete",
-            resource: "branch_protection",
+            actor_name: auth.user_name.clone(),
+            action: "branch_protection.delete".into(),
+            resource: "branch_protection".into(),
             resource_id: Some(rule_id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

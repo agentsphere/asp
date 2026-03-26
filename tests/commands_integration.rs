@@ -353,15 +353,9 @@ async fn command_audit_logged(pool: PgPool) {
     .await;
     let id = body["id"].as_str().unwrap();
 
-    // Check audit log for create
-    let create_audit: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM audit_log WHERE action = 'command.create' AND resource_id = $1::uuid",
-    )
-    .bind(id)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap();
-    assert_eq!(create_audit.0, 1, "expected create audit entry");
+    // Check audit log for create (async write — poll until visible)
+    let count = helpers::wait_for_audit(&state.pool, "command.create", 2000).await;
+    assert_eq!(count, 1, "expected create audit entry");
 
     // Update
     helpers::put_json(
@@ -372,26 +366,14 @@ async fn command_audit_logged(pool: PgPool) {
     )
     .await;
 
-    let update_audit: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM audit_log WHERE action = 'command.update' AND resource_id = $1::uuid",
-    )
-    .bind(id)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap();
-    assert_eq!(update_audit.0, 1, "expected update audit entry");
+    let update_count = helpers::wait_for_audit(&state.pool, "command.update", 2000).await;
+    assert_eq!(update_count, 1, "expected update audit entry");
 
     // Delete
     helpers::delete_json(&app, &admin_token, &format!("/api/commands/{id}")).await;
 
-    let delete_audit: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM audit_log WHERE action = 'command.delete' AND resource_id = $1::uuid",
-    )
-    .bind(id)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap();
-    assert_eq!(delete_audit.0, 1, "expected delete audit entry");
+    let delete_count = helpers::wait_for_audit(&state.pool, "command.delete", 2000).await;
+    assert_eq!(delete_count, 1, "expected delete audit entry");
 }
 
 #[sqlx::test(migrations = "./migrations")]

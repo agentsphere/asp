@@ -4,3 +4,15 @@ fail-fast = false
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# Serialize tests that bind to PLATFORM_LISTEN_PORT (shared TCP port)
+[test-groups.serial-listen-port]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = "test(::pull_platform_runner_image) | test(::pull_platform_runner_bare_image) | test(::auto_setup_downloads_agent_runner)"
+test-group = "serial-listen-port"
+
+[[profile.ci.overrides]]
+filter = "test(::pull_platform_runner_image) | test(::pull_platform_runner_bare_image) | test(::auto_setup_downloads_agent_runner)"
+test-group = "serial-listen-port"

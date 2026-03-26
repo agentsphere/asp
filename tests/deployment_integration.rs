@@ -593,7 +593,8 @@ async fn create_release_requires_deploy_promote(pool: PgPool) {
         serde_json::json!({ "image_ref": "app:hacked" }),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Security pattern: return 404 to avoid leaking resource existence
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -621,7 +622,8 @@ async fn rollback_requires_deploy_promote(pool: PgPool) {
         serde_json::json!({}),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Security pattern: return 404 to avoid leaking resource existence
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 // ---------------------------------------------------------------------------
@@ -1234,7 +1236,8 @@ async fn promote_staging_requires_deploy_promote(pool: PgPool) {
         serde_json::json!({}),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Security pattern: return 404 to avoid leaking resource existence
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -1674,13 +1677,16 @@ async fn demo_project_creates_mr_and_triggers_pipeline(pool: PgPool) {
 
     // Verify MR exists with feature branch
     let mr_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM merge_requests WHERE project_id = $1 AND source_branch = 'feature/shop-app'",
+        "SELECT COUNT(*) FROM merge_requests WHERE project_id = $1 AND source_branch = 'feature/shop-app-v0.1'",
     )
     .bind(project_id)
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(mr_count, 1, "should have created MR for feature/shop-app");
+    assert_eq!(
+        mr_count, 1,
+        "should have created MR for feature/shop-app-v0.1"
+    );
 
     // Verify pipeline was triggered (may be pending, running, or already finished)
     let pipeline_count: i64 =

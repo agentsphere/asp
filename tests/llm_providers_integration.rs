@@ -169,7 +169,9 @@ async fn list_providers(pool: PgPool) {
     // List
     let (status, body) = helpers::get_json(&app, &token, "/api/users/me/llm-providers").await;
     assert_eq!(status, StatusCode::OK, "list providers failed: {body}");
-    let items = body.as_array().expect("response should be an array");
+    let items = body["items"]
+        .as_array()
+        .expect("response should have items array");
     assert_eq!(items.len(), 2, "should have exactly 2 providers");
 
     // Verify fields present on each item (metadata only, no secrets)
@@ -232,7 +234,7 @@ async fn update_provider(pool: PgPool) {
 
     // Verify via list
     let (_, list_body) = helpers::get_json(&app, &token, "/api/users/me/llm-providers").await;
-    let items = list_body.as_array().unwrap();
+    let items = list_body["items"].as_array().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["label"], "Updated Label");
     // validation_status should reset to untested after update
@@ -279,7 +281,7 @@ async fn delete_provider(pool: PgPool) {
 
     // Verify gone
     let (_, list_body) = helpers::get_json(&app, &token, "/api/users/me/llm-providers").await;
-    let items = list_body.as_array().unwrap();
+    let items = list_body["items"].as_array().unwrap();
     assert!(items.is_empty(), "provider should be gone after delete");
 }
 
@@ -318,7 +320,7 @@ async fn provider_scoped_to_user(pool: PgPool) {
     // User B lists — should see zero
     let (status, body) = helpers::get_json(&app, &token_b, "/api/users/me/llm-providers").await;
     assert_eq!(status, StatusCode::OK);
-    let items = body.as_array().unwrap();
+    let items = body["items"].as_array().unwrap();
     assert!(items.is_empty(), "user B should see no providers");
 
     // User B tries to update user A's provider — should get 404 (ownership check)
@@ -355,7 +357,7 @@ async fn provider_scoped_to_user(pool: PgPool) {
 
     // User A can still see their provider
     let (_, body) = helpers::get_json(&app, &token_a, "/api/users/me/llm-providers").await;
-    let items = body.as_array().unwrap();
+    let items = body["items"].as_array().unwrap();
     assert_eq!(items.len(), 1, "user A should still have their provider");
 }
 
@@ -548,7 +550,8 @@ async fn delete_active_provider_reverts_to_auto(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let (user_id, token) = create_user(&app, &admin_token, "llmrevert", "llmrevert@test.com").await;
+    let (_user_id, token) =
+        create_user(&app, &admin_token, "llmrevert", "llmrevert@test.com").await;
 
     // Create a provider config
     let (_, create_body) = helpers::post_json(

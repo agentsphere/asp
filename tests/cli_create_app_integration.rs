@@ -77,8 +77,8 @@ async fn cli_create_app_no_credentials(pool: PgPool) {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let error = body["error"].as_str().unwrap_or("");
     assert!(
-        error.contains("API key"),
-        "expected API key error, got: {error}"
+        error.contains("LLM provider"),
+        "expected LLM provider error, got: {error}"
     );
 }
 

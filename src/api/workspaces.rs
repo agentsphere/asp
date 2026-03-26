@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use ts_rs::TS;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::rbac::resolver;
@@ -163,20 +163,19 @@ async fn create_workspace(
     )
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "workspace.create",
-            resource: "workspace",
+            actor_name: auth.user_name.clone(),
+            action: "workspace.create".into(),
+            resource: "workspace".into(),
             resource_id: Some(ws.id),
             project_id: None,
             detail: Some(serde_json::json!({ "name": ws.name })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((StatusCode::CREATED, Json(ws.into())))
 }
@@ -240,20 +239,19 @@ async fn update_workspace(
     )
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "workspace.update",
-            resource: "workspace",
+            actor_name: auth.user_name.clone(),
+            action: "workspace.update".into(),
+            resource: "workspace".into(),
             resource_id: Some(id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(ws.into()))
 }
@@ -284,20 +282,19 @@ async fn delete_workspace(
         let _ = resolver::invalidate_permissions(&state.valkey, member.user_id, None).await;
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "workspace.delete",
-            resource: "workspace",
+            actor_name: auth.user_name.clone(),
+            action: "workspace.delete".into(),
+            resource: "workspace".into(),
             resource_id: Some(id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -307,13 +304,50 @@ async fn list_members(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
+    Query(params): Query<ListParams>,
 ) -> Result<Json<ListResponse<MemberResponse>>, ApiError> {
     auth.check_workspace_scope(id)?;
     require_workspace_member(&state, &auth, id).await?;
 
-    let members = service::list_members(&state.pool, id).await?;
-    let items: Vec<MemberResponse> = members.into_iter().map(Into::into).collect();
-    let total = i64::try_from(items.len()).unwrap_or(0);
+    let limit = params.limit.unwrap_or(50).min(100);
+    let offset = params.offset.unwrap_or(0);
+
+    let total: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM workspace_members WHERE workspace_id = $1")
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(Some(0))
+            .unwrap_or(0);
+
+    let rows = sqlx::query(
+        r"SELECT wm.id, wm.user_id, u.name as user_name, wm.role, wm.created_at
+          FROM workspace_members wm
+          JOIN users u ON u.id = wm.user_id
+          WHERE wm.workspace_id = $1
+          ORDER BY wm.created_at
+          LIMIT $2 OFFSET $3",
+    )
+    .bind(id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let items = rows
+        .into_iter()
+        .map(|r| {
+            use sqlx::Row;
+            MemberResponse {
+                id: r.get("id"),
+                user_id: r.get("user_id"),
+                user_name: r.get("user_name"),
+                role: r.get("role"),
+                created_at: r.get("created_at"),
+            }
+        })
+        .collect();
+
     Ok(Json(ListResponse { items, total }))
 }
 
@@ -355,20 +389,19 @@ async fn add_member(
     // Invalidate permission cache — workspace membership grants project access
     let _ = resolver::invalidate_permissions(&state.valkey, body.user_id, None).await;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "workspace.member_add",
-            resource: "workspace_member",
+            actor_name: auth.user_name.clone(),
+            action: "workspace.member_add".into(),
+            resource: "workspace_member".into(),
             resource_id: Some(id),
             project_id: None,
             detail: Some(serde_json::json!({ "user_id": body.user_id, "role": role })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::CREATED)
 }
@@ -395,20 +428,19 @@ async fn remove_member(
     // Invalidate permission cache — workspace membership grants project access
     let _ = resolver::invalidate_permissions(&state.valkey, user_id, None).await;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "workspace.member_remove",
-            resource: "workspace_member",
+            actor_name: auth.user_name.clone(),
+            action: "workspace.member_remove".into(),
+            resource: "workspace_member".into(),
             resource_id: Some(id),
             project_id: None,
             detail: Some(serde_json::json!({ "user_id": user_id })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

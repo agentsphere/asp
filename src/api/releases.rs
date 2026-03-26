@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use ts_rs::TS;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::store::AppState;
@@ -191,20 +191,19 @@ async fn create_release(
 
     let release_id: Uuid = row.get("id");
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "release.create",
-            resource: "release",
+            actor_name: auth.user_name.clone(),
+            action: "release.create".into(),
+            resource: "release".into(),
             resource_id: Some(release_id),
             project_id: Some(id),
             detail: Some(serde_json::json!({"tag_name": body.tag_name})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -298,20 +297,19 @@ async fn update_release(
 
     let release_id: Uuid = row.get("id");
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "release.update",
-            resource: "release",
+            actor_name: auth.user_name.clone(),
+            action: "release.update".into(),
+            resource: "release".into(),
             resource_id: Some(release_id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(ReleaseResponse {
         id: release_id,
@@ -360,20 +358,19 @@ async fn delete_release(
         .execute(&state.pool)
         .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "release.delete",
-            resource: "release",
+            actor_name: auth.user_name.clone(),
+            action: "release.delete".into(),
+            resource: "release".into(),
             resource_id: Some(release),
             project_id: Some(id),
             detail: Some(serde_json::json!({"tag_name": tag_name})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

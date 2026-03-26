@@ -38,4 +38,8 @@ pub struct AppState {
     pub task_registry: Arc<TaskRegistry>,
     /// Manages active Claude CLI auth sessions for onboarding.
     pub cli_auth_manager: Arc<CliAuthManager>,
+    /// Fire-and-forget audit log handle.
+    pub audit_tx: crate::audit::AuditLog,
+    /// Concurrency limiter for webhook dispatch (max 50 concurrent deliveries).
+    pub webhook_semaphore: Arc<tokio::sync::Semaphore>,
 }

@@ -127,6 +127,8 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");
 
+    let audit_tx = platform::audit::AuditLog::new(pool.clone());
+
     let state = platform::store::AppState {
         pool,
         valkey,
@@ -147,6 +149,8 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
         cli_auth_manager: std::sync::Arc::new(
             platform::onboarding::claude_auth::CliAuthManager::new(),
         ),
+        audit_tx,
+        webhook_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(50)),
     };
 
     (state, setup_token)

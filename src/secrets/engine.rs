@@ -68,6 +68,10 @@ pub fn encrypt(plaintext: &[u8], master_key: &[u8; 32]) -> anyhow::Result<Vec<u8
 ///
 /// If decryption with `master_key` fails and `previous_key` is `Some`, retries with the previous key.
 /// This allows seamless key rotation: re-encrypt data at leisure while both keys work.
+///
+// TODO(A85): Add `zeroize` crate to clear decrypted plaintext from memory after use.
+// The returned Vec<u8> should implement Drop with zeroize to prevent secrets from
+// lingering in memory after the caller drops the buffer.
 pub fn decrypt(
     encrypted: &[u8],
     master_key: &[u8; 32],

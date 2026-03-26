@@ -45,7 +45,7 @@ async fn wizard_status_non_admin_sees_false(pool: PgPool) {
 // Complete wizard
 // ---------------------------------------------------------------------------
 
-/// Admin can complete the wizard with solo_dev org type.
+/// Admin can complete the wizard with solo org type.
 #[sqlx::test(migrations = "./migrations")]
 async fn complete_wizard_solo_dev(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool).await;
@@ -55,7 +55,7 @@ async fn complete_wizard_solo_dev(pool: PgPool) {
         &app,
         &admin_token,
         "/api/onboarding/wizard",
-        serde_json::json!({ "org_type": "solo_dev" }),
+        serde_json::json!({ "org_type": "solo" }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "wizard failed: {body}");
@@ -81,7 +81,7 @@ async fn complete_wizard_non_admin_forbidden(pool: PgPool) {
         &app,
         &user_token,
         "/api/onboarding/wizard",
-        serde_json::json!({ "org_type": "solo_dev" }),
+        serde_json::json!({ "org_type": "solo" }),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);

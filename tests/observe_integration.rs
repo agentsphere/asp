@@ -456,8 +456,8 @@ async fn create_alert_validation(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    // Missing required "query" field
-    let (status, _) = helpers::post_json(
+    // Missing required "query" field — axum rejects with 422 (plain text, not JSON)
+    let status = helpers::post_status(
         &app,
         &admin_token,
         "/api/observe/alerts",

@@ -22,6 +22,7 @@ export function AuthProvider({ children }: { children: any }) {
   useEffect(() => {
     api.get<User>('/api/auth/me')
       .then(u => setUser(u))
+      // Auth check failed — treat as not logged in
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
   }, []);
@@ -45,6 +46,7 @@ export function AuthProvider({ children }: { children: any }) {
   };
 
   const logout = async () => {
+    // Logout failure is non-critical — clear local state regardless
     await api.post('/api/auth/logout').catch(() => {});
     setUser(null);
   };

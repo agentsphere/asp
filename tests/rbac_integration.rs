@@ -151,13 +151,10 @@ async fn role_assignment_creates_audit(pool: PgPool) {
         helpers::create_user(&app, &admin_token, "auditee", "auditee@test.com").await;
     helpers::assign_role(&app, &admin_token, user_id, "developer", None, &pool).await;
 
-    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE action = 'role.assign'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
+    // Audit entries are written asynchronously — poll until visible
+    let count = helpers::wait_for_audit(&pool, "role.assign", 2000).await;
     assert_eq!(
-        row.0, 1,
+        count, 1,
         "expected exactly one audit_log entry for role.assign"
     );
 }
@@ -518,14 +515,10 @@ async fn delegation_audit_logged(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    // Verify audit log for create
-    let create_audit: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE action = 'delegation.create'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    // Verify audit log for create (async write — poll until visible)
+    let create_count = helpers::wait_for_audit(&pool, "delegation.create", 2000).await;
     assert_eq!(
-        create_audit.0, 1,
+        create_count, 1,
         "expected exactly one delegation.create audit entry"
     );
 
@@ -539,14 +532,10 @@ async fn delegation_audit_logged(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // Verify audit log for revoke
-    let revoke_audit: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE action = 'delegation.revoke'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    // Verify audit log for revoke (async write — poll until visible)
+    let revoke_count = helpers::wait_for_audit(&pool, "delegation.revoke", 2000).await;
     assert_eq!(
-        revoke_audit.0, 1,
+        revoke_count, 1,
         "expected exactly one delegation.revoke audit entry"
     );
 }

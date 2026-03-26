@@ -139,6 +139,8 @@ async fn ops_repo_updated_reads_platform_yaml(pool: PgPool) {
         .unwrap();
 
     // Write platform.yaml with canary config
+    // Include `stages: [production]` so canary applies to the "production" environment
+    // (default canary stages are ["staging"] only)
     let platform_yaml = r#"
 pipeline:
   steps:
@@ -149,6 +151,7 @@ deploy:
   specs:
     - name: api
       type: canary
+      stages: [production]
       canary:
         stable_service: app-stable
         canary_service: app-canary

@@ -137,20 +137,19 @@ async fn setup(
     .await?;
 
     // Audit
-    crate::audit::write_audit(
-        &state.pool,
-        &crate::audit::AuditEntry {
+    crate::audit::send_audit(
+        &state.audit_tx,
+        crate::audit::AuditEntry {
             actor_id: admin_id,
-            actor_name: &body.name,
-            action: "setup.complete",
-            resource: "user",
+            actor_name: body.name.clone(),
+            action: "setup.complete".into(),
+            resource: "user".into(),
             resource_id: Some(admin_id),
             project_id: None,
             detail: Some(serde_json::json!({"email": body.email})),
             ip_addr: None,
         },
-    )
-    .await;
+    );
 
     tracing::info!(user_id = %admin_id, name = %body.name, "setup completed — admin user created");
 

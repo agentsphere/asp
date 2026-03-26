@@ -12,7 +12,7 @@ use ts_rs::TS;
 
 use sqlx::Row;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::auth::{passkey, token};
 use crate::error::ApiError;
@@ -192,20 +192,19 @@ async fn complete_register(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "auth.passkey_register",
-            resource: "passkey_credential",
+            actor_name: auth.user_name.clone(),
+            action: "auth.passkey_register".into(),
+            resource: "passkey_credential".into(),
             resource_id: Some(row.id),
             project_id: None,
             detail: Some(serde_json::json!({"name": name})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -305,20 +304,19 @@ async fn rename_passkey(
         return Err(ApiError::NotFound("passkey".into()));
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "auth.passkey_rename",
-            resource: "passkey",
+            actor_name: auth.user_name.clone(),
+            action: "auth.passkey_rename".into(),
+            resource: "passkey".into(),
             resource_id: Some(id),
             project_id: None,
             detail: Some(serde_json::json!({"name": body.name})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(serde_json::json!({"ok": true})))
 }
@@ -341,20 +339,19 @@ async fn delete_passkey(
         return Err(ApiError::NotFound("passkey".into()));
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "auth.passkey_delete",
-            resource: "passkey_credential",
+            actor_name: auth.user_name.clone(),
+            action: "auth.passkey_delete".into(),
+            resource: "passkey_credential".into(),
             resource_id: Some(id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -383,6 +380,11 @@ async fn complete_login(
     State(state): State<AppState>,
     Json(body): Json<CompleteLoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // A62: No AuthUser in this unauthenticated flow; IP is not available without
+    // ConnectInfo (requires into_make_service_with_connect_info on the router).
+    // Passkey login audit entries use ip_addr: None for now.
+    let ip_addr: Option<String> = None;
+
     // Rate-limit passkey login attempts (global key — challenge_id is per-ceremony
     // and would allow unlimited attempts across ceremonies)
     crate::auth::rate_limit::check_rate(&state.valkey, "passkey_login", "global", 50, 300).await?;
@@ -491,12 +493,13 @@ async fn complete_login(
         credential_id: row_id,
     };
 
-    build_passkey_session(&state, &login_user).await
+    build_passkey_session(&state, &login_user, ip_addr).await
 }
 
 async fn build_passkey_session(
     state: &AppState,
     u: &PasskeyLoginUser,
+    ip_addr: Option<String>,
 ) -> Result<
     (
         StatusCode,
@@ -517,20 +520,19 @@ async fn build_passkey_session(
     .execute(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: u.user_id,
-            actor_name: &u.user_name,
-            action: "auth.passkey_login",
-            resource: "session",
+            actor_name: u.user_name.clone(),
+            action: "auth.passkey_login".into(),
+            resource: "session".into(),
             resource_id: None,
             project_id: None,
             detail: Some(serde_json::json!({"credential_id": u.credential_id})),
-            ip_addr: None,
+            ip_addr,
         },
-    )
-    .await;
+    );
 
     let response = LoginResponse {
         token: raw_token.clone(),

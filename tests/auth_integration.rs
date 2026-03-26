@@ -384,7 +384,7 @@ async fn list_and_delete_api_token(pool: PgPool) {
     let (status, list_body) = helpers::get_json(&app, &token, "/api/tokens").await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        list_body
+        list_body["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -399,7 +399,7 @@ async fn list_and_delete_api_token(pool: PgPool) {
     let (status, list_body) = helpers::get_json(&app, &token, "/api/tokens").await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        !list_body
+        !list_body["items"]
             .as_array()
             .unwrap()
             .iter()

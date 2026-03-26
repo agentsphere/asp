@@ -14,7 +14,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::secrets::{engine, llm_providers};
@@ -142,23 +142,22 @@ async fn create_provider(
     .await
     .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "llm_provider.create",
-            resource: "llm_provider_config",
+            actor_name: auth.user_name.clone(),
+            action: "llm_provider.create".into(),
+            resource: "llm_provider_config".into(),
             resource_id: Some(id),
             project_id: None,
             detail: Some(serde_json::json!({
                 "provider_type": body.provider_type,
                 "label": label,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((StatusCode::CREATED, Json(CreateProviderResponse { id })))
 }
@@ -236,20 +235,19 @@ async fn update_provider(
         return Err(ApiError::NotFound("llm provider config".into()));
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "llm_provider.update",
-            resource: "llm_provider_config",
+            actor_name: auth.user_name.clone(),
+            action: "llm_provider.update".into(),
+            resource: "llm_provider_config".into(),
             resource_id: Some(id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -268,20 +266,19 @@ async fn delete_provider(
         return Err(ApiError::NotFound("llm provider config".into()));
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "llm_provider.delete",
-            resource: "llm_provider_config",
+            actor_name: auth.user_name.clone(),
+            action: "llm_provider.delete".into(),
+            resource: "llm_provider_config".into(),
             resource_id: Some(id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -428,20 +425,19 @@ async fn set_active_provider(
         .await
         .map_err(ApiError::Internal)?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "llm_provider.switch",
-            resource: "user",
+            actor_name: auth.user_name.clone(),
+            action: "llm_provider.switch".into(),
+            resource: "user".into(),
             resource_id: None,
             project_id: None,
             detail: Some(serde_json::json!({ "provider": value })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

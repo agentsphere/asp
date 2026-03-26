@@ -99,7 +99,8 @@ async fn create_flag_duplicate(pool: PgPool) {
 
     let payload = serde_json::json!({
         "key": "feature_x",
-        "default_value": false
+        "default_value": false,
+        "environment": "staging"
     });
 
     let (status, _) = post_json(
@@ -111,7 +112,7 @@ async fn create_flag_duplicate(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // Second create with same key
+    // Second create with same key and same environment
     let (status, body) = post_json(
         &app,
         &admin_token,
@@ -502,7 +503,9 @@ async fn set_override(pool: PgPool) {
     )
     .await;
 
-    let target_user_id = Uuid::new_v4();
+    // Use a real user so the FK constraint on feature_flag_overrides.user_id is satisfied
+    let (target_user_id, _target_token) =
+        create_user(&app, &admin_token, "flag-target", "flag-target@test.com").await;
     let (status, body) = put_json(
         &app,
         &admin_token,
@@ -548,7 +551,14 @@ async fn delete_override(pool: PgPool) {
     )
     .await;
 
-    let target_user_id = Uuid::new_v4();
+    // Use a real user so the FK constraint on feature_flag_overrides.user_id is satisfied
+    let (target_user_id, _target_token) = create_user(
+        &app,
+        &admin_token,
+        "flag-deltarget",
+        "flag-deltarget@test.com",
+    )
+    .await;
 
     // Set override
     put_json(

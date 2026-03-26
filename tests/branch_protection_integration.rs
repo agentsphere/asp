@@ -20,7 +20,7 @@ async fn create_protection(pool: PgPool) {
         &admin_token,
         &format!("/api/projects/{project_id}/branch-protections"),
         serde_json::json!({
-            "pattern": "main",
+            "pattern": "develop",
             "require_pr": true,
             "block_force_push": true,
             "required_approvals": 2,
@@ -36,7 +36,7 @@ async fn create_protection(pool: PgPool) {
     assert_eq!(status, StatusCode::CREATED);
     assert!(body["id"].is_string());
     assert_eq!(body["project_id"], project_id.to_string());
-    assert_eq!(body["pattern"], "main");
+    assert_eq!(body["pattern"], "develop");
     assert_eq!(body["require_pr"], true);
     assert_eq!(body["block_force_push"], true);
     assert_eq!(body["required_approvals"], 2);
@@ -138,13 +138,13 @@ async fn list_protections(pool: PgPool) {
 
     let project_id = helpers::create_project(&app, &admin_token, "bp-list", "private").await;
 
-    // Create two rules
+    // Create two additional rules (project already has auto-created "main" rule)
     let (s1, _) = helpers::post_json(
         &app,
         &admin_token,
         &format!("/api/projects/{project_id}/branch-protections"),
         serde_json::json!({
-            "pattern": "main",
+            "pattern": "develop",
             "merge_methods": ["merge"],
         }),
     )
@@ -163,7 +163,7 @@ async fn list_protections(pool: PgPool) {
     .await;
     assert_eq!(s2, StatusCode::CREATED);
 
-    // List
+    // List — includes auto-created "main" + "develop" + "release/*"
     let (status, body) = helpers::get_json(
         &app,
         &admin_token,
@@ -172,12 +172,13 @@ async fn list_protections(pool: PgPool) {
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["total"].as_i64().unwrap(), 2);
+    assert_eq!(body["total"].as_i64().unwrap(), 3);
     let items = body["items"].as_array().unwrap();
-    assert_eq!(items.len(), 2);
-    // Ordered by created_at ASC, so first is "main"
+    assert_eq!(items.len(), 3);
+    // Ordered by created_at ASC: auto-created "main", then "develop", then "release/*"
     assert_eq!(items[0]["pattern"], "main");
-    assert_eq!(items[1]["pattern"], "release/*");
+    assert_eq!(items[1]["pattern"], "develop");
+    assert_eq!(items[2]["pattern"], "release/*");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -242,7 +243,7 @@ async fn update_protection(pool: PgPool) {
         &admin_token,
         &format!("/api/projects/{project_id}/branch-protections"),
         serde_json::json!({
-            "pattern": "main",
+            "pattern": "develop",
             "require_pr": true,
             "block_force_push": true,
             "required_approvals": 1,
@@ -268,7 +269,7 @@ async fn update_protection(pool: PgPool) {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["id"], rule_id);
-    assert_eq!(body["pattern"], "main"); // unchanged
+    assert_eq!(body["pattern"], "develop"); // unchanged
     assert_eq!(body["require_pr"], true); // unchanged
     assert_eq!(body["block_force_push"], true); // unchanged
     assert_eq!(body["required_approvals"], 3); // updated
@@ -288,7 +289,7 @@ async fn delete_protection(pool: PgPool) {
         &admin_token,
         &format!("/api/projects/{project_id}/branch-protections"),
         serde_json::json!({
-            "pattern": "main",
+            "pattern": "develop",
             "merge_methods": ["merge"],
         }),
     )

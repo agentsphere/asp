@@ -129,9 +129,8 @@ async fn proxy_owner_can_access(pool: PgPool) {
 
     // Owner can access — gets 502 because no real backend is running.
     // When PLATFORM_PREVIEW_PROXY_URL is set, the response comes from the proxy pod
-    // (non-JSON nginx 502), otherwise from platform's own error handler (JSON).
-    let (status, _body) =
-        helpers::get_json(&app, &admin_token, &format!("/preview/{session_id}")).await;
+    // (non-JSON nginx 502), so use get_status instead of get_json.
+    let status = helpers::get_status(&app, &admin_token, &format!("/preview/{session_id}")).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
 }
 
@@ -159,9 +158,9 @@ async fn proxy_project_reader_can_access(pool: PgPool) {
     )
     .await;
 
-    // Reader can access — gets 502 because no real backend
-    let (status, _body) =
-        helpers::get_json(&app, &reader_token, &format!("/preview/{session_id}")).await;
+    // Reader can access — gets 502 because no real backend.
+    // Response may be non-JSON (nginx proxy), so use get_status.
+    let status = helpers::get_status(&app, &reader_token, &format!("/preview/{session_id}")).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
 }
 
@@ -201,7 +200,8 @@ async fn proxy_backend_unreachable_returns_502(pool: PgPool) {
     let project_id = create_project(&app, &admin_token, "preview-502", "private").await;
     let session_id = insert_session(&pool, project_id, admin_id, "running", Some("valid-ns")).await;
 
-    let (status, _body) = helpers::get_json(
+    // Response may be non-JSON (nginx proxy), so use get_status.
+    let status = helpers::get_status(
         &app,
         &admin_token,
         &format!("/preview/{session_id}/index.html"),
@@ -225,8 +225,9 @@ async fn proxy_preserves_path_and_query(pool: PgPool) {
     let project_id = create_project(&app, &admin_token, "preview-path", "private").await;
     let session_id = insert_session(&pool, project_id, admin_id, "running", Some("valid-ns")).await;
 
-    // Request with a deep path + query string — should hit the proxy (502 from no backend)
-    let (status, _body) = helpers::get_json(
+    // Request with a deep path + query string — should hit the proxy (502 from no backend).
+    // Response may be non-JSON (nginx proxy), so use get_status.
+    let status = helpers::get_status(
         &app,
         &admin_token,
         &format!("/preview/{session_id}/api/data?page=1&limit=10"),

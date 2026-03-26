@@ -106,6 +106,7 @@ pub async fn ensure_session_namespace(
         "session",
         project_id,
         platform_namespace,
+        dev_mode,
     )
     .await?;
 
@@ -313,7 +314,10 @@ pub async fn delete_namespace(kube: &kube::Client, ns_name: &str) -> Result<(), 
 /// - Collapses consecutive hyphens
 /// - Strips leading/trailing hyphens
 /// - Truncates to 40 chars (leaves room for `-dev`/`-prod` suffix, total ≤ 48)
-pub fn slugify_namespace(name: &str) -> String {
+///
+/// Returns an error if the resulting slug would be empty (e.g. input is empty
+/// or contains only non-alphanumeric characters).
+pub fn slugify_namespace(name: &str) -> anyhow::Result<String> {
     let mut slug = String::with_capacity(name.len());
     let mut prev_hyphen = true; // suppress leading hyphens
 
@@ -340,13 +344,22 @@ pub fn slugify_namespace(name: &str) -> String {
         }
     }
 
-    slug
+    if slug.is_empty() {
+        anyhow::bail!("namespace slug cannot be empty (input: {name:?})");
+    }
+
+    Ok(slug)
 }
 
 /// Build a Namespace JSON object for server-side apply.
 ///
 /// `ns_name` is the full namespace name (e.g. `my-app-dev` or `prefix-my-app-dev`).
-pub fn build_namespace_object(ns_name: &str, env: &str, project_id: &str) -> serde_json::Value {
+pub fn build_namespace_object(
+    ns_name: &str,
+    env: &str,
+    project_id: &str,
+    dev_mode: bool,
+) -> serde_json::Value {
     let mut labels = serde_json::json!({
         "platform.io/project": project_id,
         "platform.io/env": env,
@@ -356,7 +369,7 @@ pub fn build_namespace_object(ns_name: &str, env: &str, project_id: &str) -> ser
     // S3: PodSecurityAdmission — baseline enforcement on session namespaces
     // prevents agents from creating privileged pods, hostPath mounts, hostNetwork, etc.
     // Warn on restricted to surface what would break under stricter policy.
-    if env == "session" {
+    if env == "session" && !dev_mode {
         let labels_obj = labels
             .as_object_mut()
             .expect("json!({}) always produces an Object");
@@ -550,8 +563,9 @@ pub async fn ensure_namespace(
     env: &str,
     project_id: &str,
     platform_namespace: &str,
+    dev_mode: bool,
 ) -> Result<(), super::error::DeployerError> {
-    let ns_json = build_namespace_object(ns_name, env, project_id);
+    let ns_json = build_namespace_object(ns_name, env, project_id, dev_mode);
 
     let ar = kube::discovery::ApiResource {
         group: String::new(),
@@ -754,13 +768,13 @@ mod tests {
 
     #[test]
     fn slugify_namespace_basic() {
-        assert_eq!(slugify_namespace("my-project"), "my-project");
+        assert_eq!(slugify_namespace("my-project").unwrap(), "my-project");
     }
 
     #[test]
     fn slugify_namespace_max_40_chars() {
         let long_name = "a".repeat(60);
-        let slug = slugify_namespace(&long_name);
+        let slug = slugify_namespace(&long_name).unwrap();
         assert!(
             slug.len() <= 40,
             "slug should be ≤40 chars, got {}",
@@ -770,51 +784,51 @@ mod tests {
 
     #[test]
     fn slugify_namespace_lowercase() {
-        assert_eq!(slugify_namespace("My-Project"), "my-project");
-        assert_eq!(slugify_namespace("UPPER"), "upper");
+        assert_eq!(slugify_namespace("My-Project").unwrap(), "my-project");
+        assert_eq!(slugify_namespace("UPPER").unwrap(), "upper");
     }
 
     #[test]
     fn slugify_namespace_special_chars() {
-        assert_eq!(slugify_namespace("my_project!v2"), "my-project-v2");
-        assert_eq!(slugify_namespace("hello  world"), "hello-world");
+        assert_eq!(slugify_namespace("my_project!v2").unwrap(), "my-project-v2");
+        assert_eq!(slugify_namespace("hello  world").unwrap(), "hello-world");
     }
 
     #[test]
     fn slugify_namespace_leading_trailing_hyphens() {
-        assert_eq!(slugify_namespace("--test--"), "test");
-        assert_eq!(slugify_namespace("___test___"), "test");
+        assert_eq!(slugify_namespace("--test--").unwrap(), "test");
+        assert_eq!(slugify_namespace("___test___").unwrap(), "test");
     }
 
     #[test]
     fn slugify_namespace_empty() {
-        assert_eq!(slugify_namespace(""), "");
+        assert!(slugify_namespace("").is_err());
     }
 
     #[test]
     fn slugify_namespace_all_special() {
-        assert_eq!(slugify_namespace("!!!"), "");
+        assert!(slugify_namespace("!!!").is_err());
     }
 
     #[test]
     fn slugify_namespace_truncation_no_trailing_hyphen() {
         // 42 chars where char 40 is a hyphen
         let name = format!("{}-{}", "a".repeat(39), "b".repeat(2));
-        let slug = slugify_namespace(&name);
+        let slug = slugify_namespace(&name).unwrap();
         assert!(slug.len() <= 40);
         assert!(!slug.ends_with('-'));
     }
 
     #[test]
     fn slugify_namespace_unicode_replaced() {
-        assert_eq!(slugify_namespace("café-app"), "caf-app");
+        assert_eq!(slugify_namespace("café-app").unwrap(), "caf-app");
     }
 
     // -- build_namespace_object --
 
     #[test]
     fn namespace_object_has_correct_labels() {
-        let ns = build_namespace_object("my-app-dev", "dev", "abc-123");
+        let ns = build_namespace_object("my-app-dev", "dev", "abc-123", false);
         let labels = ns["metadata"]["labels"].as_object().unwrap();
         assert_eq!(labels["platform.io/project"], "abc-123");
         assert_eq!(labels["platform.io/env"], "dev");
@@ -824,7 +838,7 @@ mod tests {
 
     #[test]
     fn namespace_object_prod_env() {
-        let ns = build_namespace_object("my-app-prod", "prod", "abc-123");
+        let ns = build_namespace_object("my-app-prod", "prod", "abc-123", false);
         assert_eq!(ns["metadata"]["name"], "my-app-prod");
         assert_eq!(ns["metadata"]["labels"]["platform.io/env"], "prod");
     }

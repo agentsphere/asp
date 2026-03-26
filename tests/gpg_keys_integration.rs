@@ -507,11 +507,7 @@ async fn test_add_gpg_key_creates_audit_log(pool: PgPool) {
     )
     .await;
 
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE action = 'gpg_key.add'")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
+    let count = helpers::wait_for_audit(&state.pool, "gpg_key.add", 2000).await;
     assert_eq!(count, 1);
 }
 
@@ -536,11 +532,7 @@ async fn test_delete_gpg_key_creates_audit_log(pool: PgPool) {
     )
     .await;
 
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE action = 'gpg_key.delete'")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
+    let count = helpers::wait_for_audit(&state.pool, "gpg_key.delete", 2000).await;
     assert_eq!(count, 1);
 }
 

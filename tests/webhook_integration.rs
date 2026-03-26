@@ -942,6 +942,9 @@ async fn webhook_fires_on_issue_create(pool: PgPool) {
         "issue create failed: {issue_body}"
     );
 
+    // Allow the spawned webhook dispatch task time to execute
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
     // wiremock's verify() polls with backoff until the expected request count is met
     mock_server.verify().await;
 
@@ -999,6 +1002,9 @@ async fn webhook_hmac_signature(pool: PgPool) {
         serde_json::json!({ "title": "HMAC test issue" }),
     )
     .await;
+
+    // Allow the spawned webhook dispatch task time to execute
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     mock_server.verify().await;
 
@@ -1062,6 +1068,9 @@ async fn webhook_no_signature_without_secret(pool: PgPool) {
         serde_json::json!({ "title": "No-sig test" }),
     )
     .await;
+
+    // Allow the spawned webhook dispatch task time to execute
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     mock_server.verify().await;
 

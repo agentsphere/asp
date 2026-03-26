@@ -287,14 +287,9 @@ async fn test_store_credentials_audit_logged(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // Check audit_log
-    let row: (String,) = sqlx::query_as(
-        "SELECT action FROM audit_log WHERE action = 'cli_creds.store' ORDER BY created_at DESC LIMIT 1",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("audit log entry should exist");
-    assert_eq!(row.0, "cli_creds.store");
+    // Check audit_log (async write — poll until visible)
+    let count = helpers::wait_for_audit(&pool, "cli_creds.store", 2000).await;
+    assert!(count > 0, "expected audit log entry for cli_creds.store");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -319,14 +314,9 @@ async fn test_delete_credentials_audit_logged(pool: PgPool) {
     let (status, _) = helpers::delete_json(&app, &admin_token, "/api/auth/cli-credentials").await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // Check audit_log
-    let row: (String,) = sqlx::query_as(
-        "SELECT action FROM audit_log WHERE action = 'cli_creds.delete' ORDER BY created_at DESC LIMIT 1",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("delete audit log entry should exist");
-    assert_eq!(row.0, "cli_creds.delete");
+    // Check audit_log (async write — poll until visible)
+    let count = helpers::wait_for_audit(&pool, "cli_creds.delete", 2000).await;
+    assert!(count > 0, "expected audit log entry for cli_creds.delete");
 }
 
 // ---------------------------------------------------------------------------

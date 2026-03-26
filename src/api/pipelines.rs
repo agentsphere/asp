@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use ts_rs::TS;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::store::AppState;
@@ -154,20 +154,19 @@ async fn trigger_pipeline(
     // Notify executor
     crate::pipeline::trigger::notify_executor(&state, pipeline_id).await;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "pipeline.create",
-            resource: "pipeline",
+            actor_name: auth.user_name.clone(),
+            action: "pipeline.create".into(),
+            resource: "pipeline".into(),
             resource_id: Some(pipeline_id),
             project_id: Some(id),
             detail: Some(serde_json::json!({"git_ref": body.git_ref, "trigger": "api"})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     // Fetch the created pipeline to return
     let pipeline = fetch_pipeline(&state, pipeline_id).await?;
@@ -314,20 +313,19 @@ async fn cancel_pipeline(
         .await
         .map_err(ApiError::from)?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "pipeline.cancel",
-            resource: "pipeline",
+            actor_name: auth.user_name.clone(),
+            action: "pipeline.cancel".into(),
+            resource: "pipeline".into(),
             resource_id: Some(pipeline_id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(serde_json::json!({"ok": true})))
 }

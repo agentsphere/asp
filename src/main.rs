@@ -171,6 +171,8 @@ async fn main() -> anyhow::Result<()> {
         health: Arc::new(std::sync::RwLock::new(health::HealthSnapshot::default())),
         task_registry: Arc::new(health::TaskRegistry::new()),
         cli_auth_manager: Arc::new(onboarding::claude_auth::CliAuthManager::new()),
+        audit_tx: audit::AuditLog::new(pool.clone()),
+        webhook_semaphore: Arc::new(tokio::sync::Semaphore::new(50)),
     };
 
     // Set configurable permission cache TTL

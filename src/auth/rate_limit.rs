@@ -18,13 +18,14 @@ pub async fn check_rate(
 
     let count: u64 = valkey.incr(&key).await.map_err(ApiError::from)?;
 
-    // Set expiry only when the key is newly created (count == 1)
-    if count == 1 {
-        let _: () = valkey
-            .expire(&key, window_secs, None)
-            .await
-            .map_err(ApiError::from)?;
-    }
+    // A64: Always set EXPIRE after INCR to avoid TOCTOU race. If the process
+    // crashed between INCR (count==1) and a conditional EXPIRE, the key would
+    // persist forever. EXPIRE is idempotent — calling it on every request just
+    // resets the TTL, which is acceptable for a sliding-window limiter.
+    let _: () = valkey
+        .expire(&key, window_secs, None)
+        .await
+        .map_err(ApiError::from)?;
 
     check_rate_result(count, max_attempts)
 }

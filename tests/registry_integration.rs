@@ -288,7 +288,7 @@ async fn blob_get_returns_data(pool: PgPool) {
     let data = b"get-me-back";
     let digest = registry_upload_blob(&app, &admin_api_token, "blobget-test", data).await;
 
-    let (status, _, body) = registry_request(
+    let (status, headers, _body) = registry_request(
         &app,
         &admin_api_token,
         "GET",
@@ -296,8 +296,12 @@ async fn blob_get_returns_data(pool: PgPool) {
     )
     .await;
 
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, data);
+    // Blob GET returns 307 redirect to presigned MinIO URL
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
+    assert!(
+        headers.contains_key("location"),
+        "expected location header for redirect"
+    );
 }
 
 /// Push a manifest referencing an existing blob, then pull it back.
@@ -601,16 +605,19 @@ async fn chunked_blob_upload(pool: PgPool) {
     let resp = tower::ServiceExt::oneshot(app.clone(), req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Verify blob exists
-    let (status, _, body) = registry_request(
+    // Verify blob exists (GET returns 307 redirect to presigned URL)
+    let (status, headers, _body) = registry_request(
         &app,
         &admin_api_token,
         "GET",
         &format!("/v2/chunked-test/blobs/{digest}"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, chunk);
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
+    assert!(
+        headers.contains_key("location"),
+        "expected location header for redirect"
+    );
 }
 
 // ---------------------------------------------------------------------------

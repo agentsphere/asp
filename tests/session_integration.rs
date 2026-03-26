@@ -284,7 +284,7 @@ async fn list_children_empty(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_array().unwrap().len(), 0);
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -362,7 +362,7 @@ async fn spawn_child_session(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(children.as_array().unwrap().len(), 1);
+    assert_eq!(children["items"].as_array().unwrap().len(), 1);
 }
 
 /// Spawning at max depth (5) is rejected.
@@ -631,8 +631,8 @@ async fn send_message_project_scoped_non_owner(pool: PgPool) {
         serde_json::json!({ "content": "not mine" }),
     )
     .await;
-    // Non-owner without project:write should be forbidden
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Security pattern: return 404 to avoid leaking resource existence
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -739,7 +739,8 @@ async fn stop_session_non_owner_forbidden(pool: PgPool) {
         serde_json::json!({}),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Security pattern: return 404 to avoid leaking resource existence
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 // ---------------------------------------------------------------------------
@@ -978,7 +979,8 @@ async fn spawn_child_no_agent_spawn_permission(pool: PgPool) {
         serde_json::json!({ "prompt": "child task" }),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Security pattern: return 404 to avoid leaking resource existence
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 // ---------------------------------------------------------------------------
@@ -1042,7 +1044,7 @@ async fn list_children_with_children(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_array().unwrap().len(), 2);
+    assert_eq!(body["items"].as_array().unwrap().len(), 2);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -1061,7 +1063,7 @@ async fn list_children_nonexistent_parent_returns_empty(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_array().unwrap().len(), 0);
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1361,7 +1363,7 @@ async fn list_iframes_returns_empty_for_session(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::OK);
     // No K8s Services exist in test namespace — empty array
-    let arr = body.as_array().unwrap();
+    let arr = body["items"].as_array().unwrap();
     assert!(arr.is_empty());
 }
 

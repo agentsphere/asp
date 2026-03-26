@@ -10,7 +10,7 @@ use super::create_app_prompt;
 use super::error::AgentError;
 use super::provider::{ProgressEvent, ProgressKind};
 use super::pubsub_bridge;
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::store::AppState;
 
 /// Maximum number of automatic tool rounds before giving up.
@@ -377,7 +377,7 @@ async fn execute_create_project(
 
     let project_id = Uuid::new_v4();
     let repo_path_str = repo_path.to_string_lossy().to_string();
-    let namespace_slug = crate::deployer::namespace::slugify_namespace(name);
+    let namespace_slug = crate::deployer::namespace::slugify_namespace(name)?;
 
     // Ensure the user has a workspace for the project
     let workspace_id = crate::workspace::service::get_or_create_default_workspace(
@@ -454,20 +454,19 @@ async fn execute_create_project(
     }
 
     // Audit
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: user_id,
-            actor_name: &owner_name,
-            action: "project.create",
-            resource: "project",
+            actor_name: owner_name.clone(),
+            action: "project.create".into(),
+            resource: "project".into(),
             resource_id: Some(project_id),
             project_id: Some(project_id),
             detail: Some(serde_json::json!({"name": name, "source": "create-app-agent"})),
             ip_addr: None,
         },
-    )
-    .await;
+    );
 
     Ok(serde_json::json!({
         "project_id": project_id.to_string(),

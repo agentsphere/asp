@@ -519,7 +519,7 @@ async fn publish_control_reaches_input_channel(pool: PgPool) {
     let payload: String = msg.value.convert().unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
     assert_eq!(parsed["type"], "control");
-    assert_eq!(parsed["control_type"], "interrupt");
+    assert_eq!(parsed["control"]["type"], "interrupt");
 
     let _ = scoped_sub.unsubscribe(&input_ch).await;
     valkey_acl::delete_session_acl(&state.valkey, session_id)

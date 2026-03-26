@@ -185,7 +185,7 @@ async fn user_key_set_and_list(pool: PgPool) {
     // List keys
     let (status, body) = helpers::get_json(&app, &token, "/api/users/me/provider-keys").await;
     assert_eq!(status, StatusCode::OK);
-    let keys: Vec<serde_json::Value> = serde_json::from_value(body).unwrap();
+    let keys: Vec<serde_json::Value> = serde_json::from_value(body["items"].clone()).unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0]["provider"], "anthropic");
     assert_eq!(keys[0]["key_suffix"], "...1234");
@@ -214,7 +214,7 @@ async fn user_key_delete(pool: PgPool) {
 
     // List should be empty
     let (_, body) = helpers::get_json(&app, &token, "/api/users/me/provider-keys").await;
-    let keys: Vec<serde_json::Value> = serde_json::from_value(body).unwrap();
+    let keys: Vec<serde_json::Value> = serde_json::from_value(body["items"].clone()).unwrap();
     assert!(keys.is_empty());
 }
 
@@ -699,7 +699,7 @@ async fn query_scoped_secrets_deploy(pool: PgPool) {
         &app,
         &admin_token,
         &format!("/api/projects/{proj_id}/secrets"),
-        serde_json::json!({ "name": "DEPLOY_SECRET", "value": "deploy-val", "scope": "deploy" }),
+        serde_json::json!({ "name": "STAGING_SECRET", "value": "staging-val", "scope": "staging" }),
     )
     .await;
     helpers::post_json(
@@ -717,7 +717,7 @@ async fn query_scoped_secrets_deploy(pool: PgPool) {
     )
     .await;
 
-    // Query deploy scope
+    // Query staging scope
     let master_key = platform::secrets::engine::parse_master_key(
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     )
@@ -726,7 +726,7 @@ async fn query_scoped_secrets_deploy(pool: PgPool) {
         &pool,
         &master_key,
         proj_id,
-        &["deploy", "all"],
+        &["staging", "all"],
         None,
     )
     .await
@@ -734,8 +734,8 @@ async fn query_scoped_secrets_deploy(pool: PgPool) {
 
     let names: Vec<&str> = secrets.iter().map(|(n, _)| n.as_str()).collect();
     assert!(
-        names.contains(&"DEPLOY_SECRET"),
-        "should have deploy secret"
+        names.contains(&"STAGING_SECRET"),
+        "should have staging secret"
     );
     assert!(
         names.contains(&"ALL_SECRET"),
@@ -759,7 +759,7 @@ async fn query_scoped_secrets_agent(pool: PgPool) {
         &app,
         &admin_token,
         &format!("/api/projects/{proj_id}/secrets"),
-        serde_json::json!({ "name": "DEPLOY_ONLY", "value": "dv", "scope": "deploy" }),
+        serde_json::json!({ "name": "DEPLOY_ONLY", "value": "dv", "scope": "staging" }),
     )
     .await;
     helpers::post_json(
@@ -813,7 +813,7 @@ async fn query_scoped_secrets_environment_filter(pool: PgPool) {
         &app,
         &admin_token,
         &format!("/api/projects/{proj_id}/secrets"),
-        serde_json::json!({ "name": "STAGING_SECRET", "value": "sv", "scope": "deploy", "environment": "staging" }),
+        serde_json::json!({ "name": "STAGING_SECRET", "value": "sv", "scope": "staging", "environment": "staging" }),
     )
     .await;
     // Secret with no environment (applies to all)
@@ -821,7 +821,7 @@ async fn query_scoped_secrets_environment_filter(pool: PgPool) {
         &app,
         &admin_token,
         &format!("/api/projects/{proj_id}/secrets"),
-        serde_json::json!({ "name": "GLOBAL_SECRET", "value": "gv", "scope": "deploy" }),
+        serde_json::json!({ "name": "GLOBAL_SECRET", "value": "gv", "scope": "staging" }),
     )
     .await;
     // Secret with environment=production
@@ -829,7 +829,7 @@ async fn query_scoped_secrets_environment_filter(pool: PgPool) {
         &app,
         &admin_token,
         &format!("/api/projects/{proj_id}/secrets"),
-        serde_json::json!({ "name": "PROD_SECRET", "value": "pv", "scope": "deploy", "environment": "production" }),
+        serde_json::json!({ "name": "PROD_SECRET", "value": "pv", "scope": "staging", "environment": "production" }),
     )
     .await;
 
@@ -843,7 +843,7 @@ async fn query_scoped_secrets_environment_filter(pool: PgPool) {
         &pool,
         &master_key,
         proj_id,
-        &["deploy", "all"],
+        &["staging", "all"],
         Some("staging"),
     )
     .await
@@ -1026,8 +1026,8 @@ async fn non_authorized_user_cannot_create_secret_request(pool: PgPool) {
         }),
     )
     .await;
-    // No SecretWrite permission → 403
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    // No SecretRead permission on private project → 404 (avoids leaking existence)
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 /// Validation: >5 environments → 400.

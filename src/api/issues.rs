@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use ts_rs::TS;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::rbac::Permission;
@@ -44,6 +44,12 @@ pub struct ListIssuesParams {
     pub offset: Option<i64>,
     pub status: Option<String>,
     pub assignee_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListCommentsParams {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,20 +184,19 @@ async fn create_issue(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "issue.create",
-            resource: "issue",
+            actor_name: auth.user_name.clone(),
+            action: "issue.create".into(),
+            resource: "issue".into(),
             resource_id: Some(issue.id),
             project_id: Some(id),
             detail: Some(serde_json::json!({"number": number, "title": body.title})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     // Fire webhooks
     crate::api::webhooks::fire_webhooks(
@@ -202,6 +207,7 @@ async fn create_issue(
             "action": "created",
             "issue": {"id": issue.id, "number": number, "title": body.title},
         }),
+        &state.webhook_semaphore,
     )
     .await;
 
@@ -340,7 +346,10 @@ async fn update_issue(
         validation::check_labels(labels)?;
     }
 
-    // Author or project:write
+    // A49: Even the author needs current project-write permission (may have been revoked)
+    require_project_write(&state, &auth, id).await?;
+
+    // Verify issue exists and check authorship (non-authors also need admin to edit)
     let issue_author = sqlx::query_scalar!(
         "SELECT author_id FROM issues WHERE project_id = $1 AND number = $2",
         id,
@@ -351,18 +360,18 @@ async fn update_issue(
     .ok_or_else(|| ApiError::NotFound("issue".into()))?;
 
     if issue_author != auth.user_id {
-        let allowed = crate::rbac::resolver::has_permission_scoped(
+        let is_admin = crate::rbac::resolver::has_permission_scoped(
             &state.pool,
             &state.valkey,
             auth.user_id,
-            Some(id),
-            Permission::ProjectWrite,
+            None,
+            Permission::AdminUsers,
             auth.token_scopes.as_deref(),
         )
         .await
         .map_err(ApiError::Internal)?;
 
-        if !allowed {
+        if !is_admin {
             return Err(ApiError::Forbidden);
         }
     }
@@ -396,20 +405,19 @@ async fn update_issue(
     .await?
     .ok_or_else(|| ApiError::NotFound("issue".into()))?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "issue.update",
-            resource: "issue",
+            actor_name: auth.user_name.clone(),
+            action: "issue.update".into(),
+            resource: "issue".into(),
             resource_id: Some(issue.id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(IssueResponse {
         id: issue.id,
@@ -447,20 +455,19 @@ async fn delete_issue(
     if let Some(row) = row {
         let issue_id: Uuid = row.get("id");
 
-        write_audit(
-            &state.pool,
-            &AuditEntry {
+        send_audit(
+            &state.audit_tx,
+            AuditEntry {
                 actor_id: auth.user_id,
-                actor_name: &auth.user_name,
-                action: "issue.delete",
-                resource: "issue",
+                actor_name: auth.user_name.clone(),
+                action: "issue.delete".into(),
+                resource: "issue".into(),
                 resource_id: Some(issue_id),
                 project_id: Some(id),
                 detail: Some(serde_json::json!({"number": number})),
-                ip_addr: auth.ip_addr.as_deref(),
+                ip_addr: auth.ip_addr.clone(),
             },
-        )
-        .await;
+        );
 
         crate::api::webhooks::fire_webhooks(
             &state.pool,
@@ -470,6 +477,7 @@ async fn delete_issue(
                 "action": "closed",
                 "issue": {"id": issue_id, "number": number},
             }),
+            &state.webhook_semaphore,
         )
         .await;
     }
@@ -485,8 +493,12 @@ async fn list_comments(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((id, number)): Path<(Uuid, i32)>,
+    Query(params): Query<ListCommentsParams>,
 ) -> Result<Json<ListResponse<CommentResponse>>, ApiError> {
     require_project_read(&state, &auth, id).await?;
+
+    let limit = params.limit.unwrap_or(50).min(100);
+    let offset = params.offset.unwrap_or(0);
 
     let issue_id = sqlx::query_scalar!(
         "SELECT id FROM issues WHERE project_id = $1 AND number = $2",
@@ -497,32 +509,33 @@ async fn list_comments(
     .await?
     .ok_or_else(|| ApiError::NotFound("issue".into()))?;
 
-    let total = sqlx::query_scalar!(
-        r#"SELECT COUNT(*) as "count!: i64" FROM comments WHERE issue_id = $1"#,
-        issue_id,
-    )
-    .fetch_one(&state.pool)
-    .await?;
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM comments WHERE issue_id = $1")
+        .bind(issue_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(Some(0))
+        .unwrap_or(0);
 
-    let rows = sqlx::query!(
-        r#"
-        SELECT id, author_id, body, created_at, updated_at
-        FROM comments WHERE issue_id = $1
-        ORDER BY created_at ASC
-        "#,
-        issue_id,
+    let rows = sqlx::query(
+        "SELECT id, author_id, body, created_at, updated_at \
+         FROM comments WHERE issue_id = $1 \
+         ORDER BY created_at ASC \
+         LIMIT $2 OFFSET $3",
     )
+    .bind(issue_id)
+    .bind(limit)
+    .bind(offset)
     .fetch_all(&state.pool)
     .await?;
 
     let items = rows
         .into_iter()
         .map(|c| CommentResponse {
-            id: c.id,
-            author_id: c.author_id,
-            body: c.body,
-            created_at: c.created_at,
-            updated_at: c.updated_at,
+            id: c.get("id"),
+            author_id: c.get("author_id"),
+            body: c.get("body"),
+            created_at: c.get("created_at"),
+            updated_at: c.get("updated_at"),
         })
         .collect();
 
@@ -562,20 +575,19 @@ async fn create_comment(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "comment.create",
-            resource: "comment",
+            actor_name: auth.user_name.clone(),
+            action: "comment.create".into(),
+            resource: "comment".into(),
             resource_id: Some(comment.id),
             project_id: Some(id),
             detail: Some(serde_json::json!({"issue_number": number})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -597,6 +609,9 @@ async fn update_comment(
     Json(body): Json<UpdateCommentRequest>,
 ) -> Result<Json<CommentResponse>, ApiError> {
     validation::check_length("body", &body.body, 1, 100_000)?;
+
+    // A49: Even the author needs current project-write permission (may have been revoked)
+    require_project_write(&state, &auth, id).await?;
 
     // Verify issue exists
     let _issue_id = sqlx::query_scalar!(
@@ -644,20 +659,19 @@ async fn update_comment(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "comment.update",
-            resource: "comment",
+            actor_name: auth.user_name.clone(),
+            action: "comment.update".into(),
+            resource: "comment".into(),
             resource_id: Some(comment_id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(CommentResponse {
         id: comment.id,
@@ -756,20 +770,19 @@ async fn delete_comment(
         .execute(&state.pool)
         .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "comment.delete",
-            resource: "comment",
+            actor_name: auth.user_name.clone(),
+            action: "comment.delete".into(),
+            resource: "comment".into(),
             resource_id: Some(comment_id),
             project_id: Some(id),
             detail: Some(serde_json::json!({"issue_number": number})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

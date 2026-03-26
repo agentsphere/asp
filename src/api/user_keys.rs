@@ -8,7 +8,7 @@ use sqlx::Row;
 
 use ts_rs::TS;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::secrets::{engine, user_keys};
@@ -127,20 +127,19 @@ async fn set_provider_key(
     .await
     .map_err(ApiError::Internal)?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "provider_key.set",
-            resource: "provider_key",
+            actor_name: auth.user_name.clone(),
+            action: "provider_key.set".into(),
+            resource: "provider_key".into(),
             resource_id: None,
             project_id: None,
             detail: Some(serde_json::json!({ "provider": provider })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -173,20 +172,19 @@ async fn delete_provider_key(
         return Err(ApiError::NotFound("provider key".into()));
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "provider_key.delete",
-            resource: "provider_key",
+            actor_name: auth.user_name.clone(),
+            action: "provider_key.delete".into(),
+            resource: "provider_key".into(),
             resource_id: None,
             project_id: None,
             detail: Some(serde_json::json!({ "provider": provider })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

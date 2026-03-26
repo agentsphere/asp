@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use crate::agent::provider::{ProgressEvent, ProgressKind};
 use crate::agent::pubsub_bridge;
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::rbac::{Permission, resolver};
@@ -33,7 +33,7 @@ pub struct CreateSecretRequest {
     pub environment: Option<String>,
 }
 
-const VALID_SCOPES: &[&str] = &["pipeline", "agent", "deploy", "all"];
+const VALID_SCOPES: &[&str] = &["all", "pipeline", "agent", "test", "staging", "prod"];
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSecretRequestBody {
@@ -202,6 +202,16 @@ async fn create_project_secret(
 ) -> Result<impl IntoResponse, ApiError> {
     require_secret_write(&state, &auth, id).await?;
 
+    // Verify project is active (soft-delete check)
+    let active: bool = sqlx::query_scalar("SELECT is_active FROM projects WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .unwrap_or(false);
+    if !active {
+        return Err(ApiError::NotFound("project".into()));
+    }
+
     validation::check_name(&body.name)?;
     validation::check_length("value", &body.value, 1, 65_536)?;
     validate_scope(&body.scope)?;
@@ -228,13 +238,13 @@ async fn create_project_secret(
     .await
     .map_err(ApiError::Internal)?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "secret.create",
-            resource: "secret",
+            actor_name: auth.user_name.clone(),
+            action: "secret.create".into(),
+            resource: "secret".into(),
             resource_id: Some(meta.id),
             project_id: Some(id),
             detail: Some(serde_json::json!({
@@ -242,10 +252,9 @@ async fn create_project_secret(
                 "scope": body.scope,
                 "environment": body.environment,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((StatusCode::CREATED, Json(meta)))
 }
@@ -304,20 +313,19 @@ async fn read_project_secret(
         })?;
 
     // S43: Audit every secret read — most sensitive data in the platform
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "secret.read",
-            resource: "secret",
+            actor_name: auth.user_name.clone(),
+            action: "secret.read".into(),
+            resource: "secret".into(),
             resource_id: None,
             project_id: Some(id),
             detail: Some(serde_json::json!({ "name": &name, "scope": requested_scope })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(serde_json::json!({
         "name": name,
@@ -341,20 +349,19 @@ async fn delete_project_secret(
         return Err(ApiError::NotFound("secret".into()));
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "secret.delete",
-            resource: "secret",
+            actor_name: auth.user_name.clone(),
+            action: "secret.delete".into(),
+            resource: "secret".into(),
             resource_id: None,
             project_id: Some(id),
             detail: Some(serde_json::json!({"name": name})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -460,23 +467,22 @@ async fn create_secret_request(
         tracing::warn!(error = %e, %req_session_id, "failed to publish SecretRequest SSE event");
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "secret_request.create",
-            resource: "secret_request",
+            actor_name: auth.user_name.clone(),
+            action: "secret_request.create".into(),
+            resource: "secret_request".into(),
             resource_id: Some(response.id),
             project_id: Some(id),
             detail: Some(serde_json::json!({
                 "name": req_name,
                 "session_id": req_session_id,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((StatusCode::CREATED, Json(response)))
 }
@@ -663,20 +669,19 @@ async fn complete_secret_request(
         }
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "secret_request.complete",
-            resource: "secret_request",
+            actor_name: auth.user_name.clone(),
+            action: "secret_request.complete".into(),
+            resource: "secret_request".into(),
             resource_id: Some(request_id),
             project_id: Some(id),
             detail: Some(serde_json::json!({ "name": req_name })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(SecretRequestResponse {
         id: request_id,
@@ -718,22 +723,21 @@ async fn create_global_secret(
     .await
     .map_err(ApiError::Internal)?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "secret.create",
-            resource: "secret",
+            actor_name: auth.user_name.clone(),
+            action: "secret.create".into(),
+            resource: "secret".into(),
             resource_id: Some(meta.id),
             project_id: None,
             detail: Some(
                 serde_json::json!({"name": body.name, "scope": body.scope, "global": true}),
             ),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((StatusCode::CREATED, Json(meta)))
 }
@@ -772,20 +776,19 @@ async fn delete_global_secret(
         return Err(ApiError::NotFound("secret".into()));
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "secret.delete",
-            resource: "secret",
+            actor_name: auth.user_name.clone(),
+            action: "secret.delete".into(),
+            resource: "secret".into(),
             resource_id: None,
             project_id: None,
             detail: Some(serde_json::json!({"name": name, "global": true})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -847,13 +850,13 @@ async fn create_workspace_secret(
     .await
     .map_err(ApiError::Internal)?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "secret.create",
-            resource: "secret",
+            actor_name: auth.user_name.clone(),
+            action: "secret.create".into(),
+            resource: "secret".into(),
             resource_id: Some(meta.id),
             project_id: None,
             detail: Some(serde_json::json!({
@@ -861,10 +864,9 @@ async fn create_workspace_secret(
                 "scope": body.scope,
                 "workspace_id": id,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((StatusCode::CREATED, Json(meta)))
 }
@@ -909,20 +911,19 @@ async fn delete_workspace_secret(
         return Err(ApiError::NotFound("secret".into()));
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "secret.delete",
-            resource: "secret",
+            actor_name: auth.user_name.clone(),
+            action: "secret.delete".into(),
+            resource: "secret".into(),
             resource_id: None,
             project_id: None,
             detail: Some(serde_json::json!({"name": name, "workspace_id": id})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

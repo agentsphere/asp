@@ -98,6 +98,9 @@ pub async fn list_user_workspaces(
 }
 
 /// Create a workspace and add the creator as owner.
+///
+/// Uses a transaction to ensure both the workspace INSERT and the owner
+/// membership INSERT succeed or fail atomically.
 pub async fn create_workspace(
     pool: &PgPool,
     owner_id: Uuid,
@@ -106,6 +109,8 @@ pub async fn create_workspace(
     description: Option<&str>,
 ) -> Result<Workspace, ApiError> {
     let id = Uuid::new_v4();
+
+    let mut tx = pool.begin().await?;
 
     sqlx::query!(
         r#"INSERT INTO workspaces (id, name, display_name, description, owner_id)
@@ -116,7 +121,7 @@ pub async fn create_workspace(
         description,
         owner_id,
     )
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| {
         if let sqlx::Error::Database(ref db_err) = e
@@ -133,8 +138,10 @@ pub async fn create_workspace(
         id,
         owner_id,
     )
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     get_workspace(pool, id)
         .await?

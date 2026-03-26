@@ -33,10 +33,10 @@ export function ProjectCard({ project }: Props) {
     if (!visible) return;
     api.get<ListResponse<AgentSession>>(`/api/projects/${project.id}/sessions?status=running&limit=1`)
       .then(r => { if (r.items.length > 0) setSession(r.items[0]); })
-      .catch(() => {});
+      .catch(e => console.warn('project card:', e));
     api.get<ListResponse<Deployment>>(`/api/projects/${project.id}/deployments?limit=1`)
       .then(r => { if (r.items.length > 0) setDeployment(r.items[0]); })
-      .catch(() => {});
+      .catch(e => console.warn('project card:', e));
   }, [visible, project.id]);
 
   // Fetch progress if running session exists
@@ -44,7 +44,7 @@ export function ProjectCard({ project }: Props) {
     if (!session) return;
     api.get<{ message: string }>(`/api/projects/${project.id}/sessions/${session.id}/progress`)
       .then(r => setProgressText(r.message))
-      .catch(() => {});
+      .catch(e => console.warn('project card:', e));
   }, [session, project.id]);
 
   // Dashboard shows prod deploy previews only (session previews live on SessionDetail)
@@ -52,7 +52,7 @@ export function ProjectCard({ project }: Props) {
     if (!visible || !deployment) return;
     api.get<IframePanel[]>(`/api/projects/${project.id}/deploy-preview/iframes`)
       .then(setDeployIframes)
-      .catch(() => setDeployIframes([]));
+      .catch(e => { console.warn('project card:', e); setDeployIframes([]); });
   }, [visible, deployment, project.id]);
 
   const activeIframes = deployIframes;

@@ -12,7 +12,7 @@ use ts_rs::TS;
 
 use crate::api::helpers::{ListResponse, require_admin};
 use crate::api::users::{CreateTokenResponse, ListParams, TokenResponse, UserResponse};
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::auth::token;
 use crate::auth::user_type::UserType;
@@ -217,20 +217,19 @@ async fn create_role(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "role.create",
-            resource: "role",
+            actor_name: auth.user_name.clone(),
+            action: "role.create".into(),
+            resource: "role".into(),
             resource_id: Some(role.id),
             project_id: None,
             detail: Some(serde_json::json!({"name": body.name})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((StatusCode::CREATED, Json(role)))
 }
@@ -299,20 +298,19 @@ async fn update_role(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "role.update",
-            resource: "role",
+            actor_name: auth.user_name.clone(),
+            action: "role.update".into(),
+            resource: "role".into(),
             resource_id: Some(id),
             project_id: None,
             detail: Some(serde_json::json!({"name": body.name, "description": body.description})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(RoleResponse {
         id: row.get("id"),
@@ -361,20 +359,19 @@ async fn delete_role(
         .execute(&state.pool)
         .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "role.delete",
-            resource: "role",
+            actor_name: auth.user_name.clone(),
+            action: "role.delete".into(),
+            resource: "role".into(),
             resource_id: Some(id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -466,20 +463,19 @@ async fn set_role_permissions(
         let _ = resolver::invalidate_permissions(&state.valkey, uid, None).await;
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "role.update_permissions",
-            resource: "role",
+            actor_name: auth.user_name.clone(),
+            action: "role.update_permissions".into(),
+            resource: "role".into(),
             resource_id: Some(id),
             project_id: None,
             detail: Some(serde_json::json!({"permissions": body.permissions})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(serde_json::json!({"ok": true})))
 }
@@ -515,20 +511,19 @@ async fn assign_role(
 
     let _ = resolver::invalidate_permissions(&state.valkey, user_id, body.project_id).await;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "role.assign",
-            resource: "user_role",
+            actor_name: auth.user_name.clone(),
+            action: "role.assign".into(),
+            resource: "user_role".into(),
             resource_id: Some(id),
             project_id: body.project_id,
             detail: Some(serde_json::json!({"user_id": user_id, "role_id": body.role_id})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((StatusCode::CREATED, Json(serde_json::json!({"ok": true}))))
 }
@@ -552,20 +547,19 @@ async fn remove_role(
 
     let _ = resolver::invalidate_permissions(&state.valkey, user_id, result.project_id).await;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "role.remove",
-            resource: "user_role",
+            actor_name: auth.user_name.clone(),
+            action: "role.remove".into(),
+            resource: "user_role".into(),
             resource_id: None,
             project_id: result.project_id,
             detail: Some(serde_json::json!({"user_id": user_id, "role_id": role_id})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -602,23 +596,22 @@ async fn create_delegation_handler(
 
     let d = delegation::create_delegation(&state.pool, &state.valkey, &params).await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "delegation.create",
-            resource: "delegation",
+            actor_name: auth.user_name.clone(),
+            action: "delegation.create".into(),
+            resource: "delegation".into(),
             resource_id: Some(d.id),
             project_id: body.project_id,
             detail: Some(serde_json::json!({
                 "delegate_id": body.delegate_id,
                 "permission": body.permission,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((StatusCode::CREATED, Json(d)))
 }
@@ -697,20 +690,19 @@ async fn revoke_delegation_handler(
 
     delegation::revoke_delegation(&state.pool, &state.valkey, id).await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "delegation.revoke",
-            resource: "delegation",
+            actor_name: auth.user_name.clone(),
+            action: "delegation.revoke".into(),
+            resource: "delegation".into(),
             resource_id: Some(id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -812,20 +804,19 @@ async fn create_service_account(
         None
     };
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "service_account.create",
-            resource: "user",
+            actor_name: auth.user_name.clone(),
+            action: "service_account.create".into(),
+            resource: "user".into(),
             resource_id: Some(user.id),
             project_id: body.project_id,
             detail: Some(serde_json::json!({"name": body.name})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -956,20 +947,19 @@ async fn deactivate_service_account(
 
     let _ = resolver::invalidate_permissions(&state.valkey, id, None).await;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "service_account.deactivate",
-            resource: "user",
+            actor_name: auth.user_name.clone(),
+            action: "service_account.deactivate".into(),
+            resource: "user".into(),
             resource_id: Some(id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

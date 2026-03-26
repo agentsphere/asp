@@ -405,11 +405,9 @@ async fn test_add_ssh_key_creates_audit_log(pool: PgPool) {
     )
     .await;
 
-    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE action = 'ssh_key.add'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert!(row.0 > 0, "expected audit log entry for ssh_key.add");
+    // Audit entries are written asynchronously — poll until visible
+    let count = helpers::wait_for_audit(&pool, "ssh_key.add", 2000).await;
+    assert!(count > 0, "expected audit log entry for ssh_key.add");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -436,12 +434,9 @@ async fn test_delete_ssh_key_creates_audit_log(pool: PgPool) {
     )
     .await;
 
-    let row: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE action = 'ssh_key.delete'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert!(row.0 > 0, "expected audit log entry for ssh_key.delete");
+    // Audit entries are written asynchronously — poll until visible
+    let count = helpers::wait_for_audit(&pool, "ssh_key.delete", 2000).await;
+    assert!(count > 0, "expected audit log entry for ssh_key.delete");
 }
 
 #[sqlx::test(migrations = "./migrations")]

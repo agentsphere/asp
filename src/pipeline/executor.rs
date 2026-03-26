@@ -357,7 +357,14 @@ async fn finalize_pipeline(
         crate::api::merge_requests::try_auto_merge(state, project_id).await;
     }
 
-    fire_build_webhook(&state.pool, project_id, pipeline_id, final_status_str).await;
+    fire_build_webhook(
+        &state.pool,
+        project_id,
+        pipeline_id,
+        final_status_str,
+        &state.webhook_semaphore,
+    )
+    .await;
 
     let log_level = if all_succeeded { "info" } else { "error" };
     emit_pipeline_log(
@@ -430,6 +437,7 @@ async fn ensure_project_namespace(
         "dev",
         &project_id.to_string(),
         &state.config.platform_namespace,
+        false,
     )
     .await
     .map_err(|e| PipelineError::Other(e.into()))?;
@@ -1919,6 +1927,7 @@ async fn execute_deploy_test_step(
         "test",
         &project_id.to_string(),
         &state.config.platform_namespace,
+        false,
     )
     .await
     .map_err(|e| PipelineError::Other(e.into()))?;
@@ -3247,6 +3256,7 @@ async fn upsert_preview_deployment(
             "image_ref": image_ref,
             "pipeline_id": pipeline_id,
         }),
+        &state.webhook_semaphore,
     )
     .await;
 
@@ -3257,13 +3267,19 @@ async fn upsert_preview_deployment(
 // Webhook
 // ---------------------------------------------------------------------------
 
-async fn fire_build_webhook(pool: &PgPool, project_id: Uuid, pipeline_id: Uuid, status: &str) {
+async fn fire_build_webhook(
+    pool: &PgPool,
+    project_id: Uuid,
+    pipeline_id: Uuid,
+    status: &str,
+    semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+) {
     let payload = serde_json::json!({
         "action": status,
         "pipeline_id": pipeline_id,
         "project_id": project_id,
     });
-    crate::api::webhooks::fire_webhooks(pool, project_id, "build", &payload).await;
+    crate::api::webhooks::fire_webhooks(pool, project_id, "build", &payload, semaphore).await;
 }
 
 // ---------------------------------------------------------------------------

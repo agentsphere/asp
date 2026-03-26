@@ -70,7 +70,7 @@ pub async fn create_delegation(
             JOIN role_permissions rp ON rp.role_id = ur.role_id
             JOIN permissions p ON p.id = rp.permission_id
             WHERE ur.user_id = $1 AND p.name = $2
-            AND (ur.project_id = $3 OR $3::uuid IS NULL)
+            AND (ur.project_id = $3 OR ur.project_id IS NULL OR $3::uuid IS NULL)
         )"#,
     )
     .bind(req.delegator_id)

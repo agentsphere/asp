@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use ts_rs::TS;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::rbac::Permission;
@@ -46,6 +46,12 @@ pub struct ListMrParams {
     pub offset: Option<i64>,
     pub status: Option<String>,
     pub author_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListSubParams {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -454,20 +460,19 @@ async fn update_mr(
     .await?
     .ok_or_else(|| ApiError::NotFound("merge request".into()))?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "mr.update",
-            resource: "merge_request",
+            actor_name: auth.user_name.clone(),
+            action: "mr.update".into(),
+            resource: "merge_request".into(),
             resource_id: Some(mr.id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(MrResponse {
         id: mr.id,
@@ -524,20 +529,19 @@ async fn delete_mr(
         .await?;
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "mr.delete",
-            resource: "merge_request",
+            actor_name: auth.user_name.clone(),
+            action: "mr.delete".into(),
+            resource: "merge_request".into(),
             resource_id: Some(mr_id),
             project_id: Some(id),
             detail: Some(serde_json::json!({"number": number})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     crate::api::webhooks::fire_webhooks(
         &state.pool,
@@ -547,6 +551,7 @@ async fn delete_mr(
             "action": "closed",
             "merge_request": {"id": mr_id, "number": number},
         }),
+        &state.webhook_semaphore,
     )
     .await;
 
@@ -799,8 +804,12 @@ async fn list_reviews(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((id, number)): Path<(Uuid, i32)>,
+    Query(params): Query<ListSubParams>,
 ) -> Result<Json<ListResponse<ReviewResponse>>, ApiError> {
     require_project_read(&state, &auth, id).await?;
+
+    let limit = params.limit.unwrap_or(50).min(100);
+    let offset = params.offset.unwrap_or(0);
 
     let mr_id = sqlx::query_scalar!(
         "SELECT id FROM merge_requests WHERE project_id = $1 AND number = $2",
@@ -811,33 +820,34 @@ async fn list_reviews(
     .await?
     .ok_or_else(|| ApiError::NotFound("merge request".into()))?;
 
-    let total = sqlx::query_scalar!(
-        r#"SELECT COUNT(*) as "count!: i64" FROM mr_reviews WHERE mr_id = $1"#,
-        mr_id,
-    )
-    .fetch_one(&state.pool)
-    .await?;
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mr_reviews WHERE mr_id = $1")
+        .bind(mr_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(Some(0))
+        .unwrap_or(0);
 
-    let rows = sqlx::query!(
-        r#"
-        SELECT id, mr_id, reviewer_id, verdict, body, created_at
-        FROM mr_reviews WHERE mr_id = $1
-        ORDER BY created_at ASC
-        "#,
-        mr_id,
+    let rows = sqlx::query(
+        "SELECT id, mr_id, reviewer_id, verdict, body, created_at \
+         FROM mr_reviews WHERE mr_id = $1 \
+         ORDER BY created_at ASC \
+         LIMIT $2 OFFSET $3",
     )
+    .bind(mr_id)
+    .bind(limit)
+    .bind(offset)
     .fetch_all(&state.pool)
     .await?;
 
     let items = rows
         .into_iter()
         .map(|r| ReviewResponse {
-            id: r.id,
-            mr_id: r.mr_id,
-            reviewer_id: r.reviewer_id,
-            verdict: r.verdict,
-            body: r.body,
-            created_at: r.created_at,
+            id: r.get("id"),
+            mr_id: r.get("mr_id"),
+            reviewer_id: r.get("reviewer_id"),
+            verdict: r.get("verdict"),
+            body: r.get("body"),
+            created_at: r.get("created_at"),
         })
         .collect();
 
@@ -887,20 +897,19 @@ async fn create_review(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "review.create",
-            resource: "mr_review",
+            actor_name: auth.user_name.clone(),
+            action: "review.create".into(),
+            resource: "mr_review".into(),
             resource_id: Some(review.id),
             project_id: Some(id),
             detail: Some(serde_json::json!({"mr_number": number, "verdict": body.verdict})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     // Try auto-merge after approval
     if body.verdict == "approve" {
@@ -968,8 +977,12 @@ async fn list_comments(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((id, number)): Path<(Uuid, i32)>,
+    Query(params): Query<ListSubParams>,
 ) -> Result<Json<ListResponse<CommentResponse>>, ApiError> {
     require_project_read(&state, &auth, id).await?;
+
+    let limit = params.limit.unwrap_or(50).min(100);
+    let offset = params.offset.unwrap_or(0);
 
     let mr_id = sqlx::query_scalar!(
         "SELECT id FROM merge_requests WHERE project_id = $1 AND number = $2",
@@ -980,32 +993,33 @@ async fn list_comments(
     .await?
     .ok_or_else(|| ApiError::NotFound("merge request".into()))?;
 
-    let total = sqlx::query_scalar!(
-        r#"SELECT COUNT(*) as "count!: i64" FROM comments WHERE mr_id = $1"#,
-        mr_id,
-    )
-    .fetch_one(&state.pool)
-    .await?;
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM comments WHERE mr_id = $1")
+        .bind(mr_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(Some(0))
+        .unwrap_or(0);
 
-    let rows = sqlx::query!(
-        r#"
-        SELECT id, author_id, body, created_at, updated_at
-        FROM comments WHERE mr_id = $1
-        ORDER BY created_at ASC
-        "#,
-        mr_id,
+    let rows = sqlx::query(
+        "SELECT id, author_id, body, created_at, updated_at \
+         FROM comments WHERE mr_id = $1 \
+         ORDER BY created_at ASC \
+         LIMIT $2 OFFSET $3",
     )
+    .bind(mr_id)
+    .bind(limit)
+    .bind(offset)
     .fetch_all(&state.pool)
     .await?;
 
     let items = rows
         .into_iter()
         .map(|c| CommentResponse {
-            id: c.id,
-            author_id: c.author_id,
-            body: c.body,
-            created_at: c.created_at,
-            updated_at: c.updated_at,
+            id: c.get("id"),
+            author_id: c.get("author_id"),
+            body: c.get("body"),
+            created_at: c.get("created_at"),
+            updated_at: c.get("updated_at"),
         })
         .collect();
 
@@ -1045,20 +1059,19 @@ async fn create_comment(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "comment.create",
-            resource: "merge_request",
+            actor_name: auth.user_name.clone(),
+            action: "comment.create".into(),
+            resource: "merge_request".into(),
             resource_id: Some(mr_id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -1080,6 +1093,9 @@ async fn update_comment(
     Json(body): Json<UpdateCommentRequest>,
 ) -> Result<Json<CommentResponse>, ApiError> {
     validation::check_length("body", &body.body, 1, 100_000)?;
+
+    // A51: Even the author needs current project-write permission (may have been revoked)
+    require_project_write(&state, &auth, id).await?;
 
     // Verify MR exists
     let _mr_id = sqlx::query_scalar!(
@@ -1126,20 +1142,19 @@ async fn update_comment(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "comment.update",
-            resource: "comment",
+            actor_name: auth.user_name.clone(),
+            action: "comment.update".into(),
+            resource: "comment".into(),
             resource_id: Some(comment_id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(CommentResponse {
         id: comment.id,
@@ -1238,20 +1253,19 @@ async fn delete_comment(
         .execute(&state.pool)
         .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "comment.delete",
-            resource: "comment",
+            actor_name: auth.user_name.clone(),
+            action: "comment.delete".into(),
+            resource: "comment".into(),
             resource_id: Some(comment_id),
             project_id: Some(id),
             detail: Some(serde_json::json!({"mr_number": number})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1569,20 +1583,19 @@ async fn enable_auto_merge(
         return Err(ApiError::NotFound("merge request".into()));
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "mr.auto_merge.enable",
-            resource: "merge_request",
+            actor_name: auth.user_name.clone(),
+            action: "mr.auto_merge.enable".into(),
+            resource: "merge_request".into(),
             resource_id: None,
             project_id: Some(id),
             detail: Some(serde_json::json!({"number": number, "method": merge_method})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::OK)
 }
@@ -1610,20 +1623,19 @@ async fn disable_auto_merge(
         return Err(ApiError::NotFound("merge request".into()));
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "mr.auto_merge.disable",
-            resource: "merge_request",
+            actor_name: auth.user_name.clone(),
+            action: "mr.auto_merge.disable".into(),
+            resource: "merge_request".into(),
             resource_id: None,
             project_id: Some(id),
             detail: Some(serde_json::json!({"number": number})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::OK)
 }
@@ -1702,13 +1714,13 @@ async fn run_mr_create_side_effects(
     body: &CreateMrRequest,
     repo_path: &str,
 ) {
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "mr.create",
-            resource: "merge_request",
+            actor_name: auth.user_name.clone(),
+            action: "mr.create".into(),
+            resource: "merge_request".into(),
             resource_id: Some(*mr_id),
             project_id: Some(project_id),
             detail: Some(serde_json::json!({
@@ -1716,10 +1728,9 @@ async fn run_mr_create_side_effects(
                 "source": body.source_branch,
                 "target": body.target_branch,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     crate::api::webhooks::fire_webhooks(
         &state.pool,
@@ -1729,6 +1740,7 @@ async fn run_mr_create_side_effects(
             "action": "created",
             "merge_request": {"id": mr_id, "number": number, "title": body.title},
         }),
+        &state.webhook_semaphore,
     )
     .await;
 
@@ -1755,13 +1767,13 @@ async fn run_post_merge_side_effects(
     _head_sha: Option<&str>,
     repo_path: &std::path::Path,
 ) {
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "mr.merge",
-            resource: "merge_request",
+            actor_name: auth.user_name.clone(),
+            action: "mr.merge".into(),
+            resource: "merge_request".into(),
             resource_id: Some(*merged_id),
             project_id: Some(project_id),
             detail: Some(serde_json::json!({
@@ -1770,10 +1782,9 @@ async fn run_post_merge_side_effects(
                 "target": target_branch,
                 "method": merge_method,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     crate::api::webhooks::fire_webhooks(
         &state.pool,
@@ -1783,6 +1794,7 @@ async fn run_post_merge_side_effects(
             "action": "merged",
             "merge_request": {"id": merged_id, "number": number},
         }),
+        &state.webhook_semaphore,
     )
     .await;
 

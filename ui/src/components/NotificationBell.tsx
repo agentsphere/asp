@@ -29,7 +29,7 @@ export function NotificationBell() {
   const loadCount = () => {
     api.get<{ count: number }>('/api/notifications/unread-count')
       .then(r => setUnreadCount(r.count))
-      .catch(() => {});
+      .catch(e => console.warn('notification count:', e));
   };
 
   const toggle = (e: Event) => {
@@ -37,7 +37,7 @@ export function NotificationBell() {
     if (!open) {
       api.get<ListResponse<Notification>>('/api/notifications?limit=5&status=unread')
         .then(r => setNotifications(r.items))
-        .catch(() => {});
+        .catch(e => console.warn('notification count:', e));
     }
     setOpen(!open);
   };

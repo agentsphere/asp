@@ -773,7 +773,14 @@ async fn reap_idle_sessions(state: &AppState) -> Result<(), AgentError> {
         .await;
 
         if let Some(pid) = s.project_id {
-            fire_agent_webhook(&state.pool, pid, s.id, "completed").await;
+            fire_agent_webhook(
+                &state.pool,
+                pid,
+                s.id,
+                "completed",
+                &state.webhook_semaphore,
+            )
+            .await;
         }
 
         tracing::info!(session_id = %s.id, "idle agent session reaped");
@@ -816,7 +823,14 @@ async fn finalize_reaped_session(
     }
 
     if let Some(pid) = project_id {
-        fire_agent_webhook(&state.pool, pid, session_id, status).await;
+        fire_agent_webhook(
+            &state.pool,
+            pid,
+            session_id,
+            status,
+            &state.webhook_semaphore,
+        )
+        .await;
     }
 
     notify_parent_of_completion(state, session_id, status).await;
@@ -1069,13 +1083,19 @@ async fn capture_session_logs(pods: &Api<Pod>, pod_name: &str, state: &AppState,
     }
 }
 
-async fn fire_agent_webhook(pool: &PgPool, project_id: Uuid, session_id: Uuid, status: &str) {
+async fn fire_agent_webhook(
+    pool: &PgPool,
+    project_id: Uuid,
+    session_id: Uuid,
+    status: &str,
+    semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+) {
     let payload = serde_json::json!({
         "action": status,
         "session_id": session_id,
         "project_id": project_id,
     });
-    crate::api::webhooks::fire_webhooks(pool, project_id, "agent", &payload).await;
+    crate::api::webhooks::fire_webhooks(pool, project_id, "agent", &payload, semaphore).await;
 }
 
 /// Notify the parent session (Manager Agent) when a child session completes or fails.

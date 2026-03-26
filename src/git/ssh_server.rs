@@ -8,7 +8,7 @@ use russh::{Channel, ChannelId};
 use ssh_key::{PrivateKey, PublicKey};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::store::AppState;
 
 use super::hooks;
@@ -131,7 +131,7 @@ struct SshPushContext {
 ///
 /// Walks pkt-lines to find it. Returns the byte position immediately after the
 /// flush-pkt, or `None` if not yet fully received.
-fn find_flush_pkt(buf: &[u8]) -> Option<usize> {
+pub(super) fn find_flush_pkt(buf: &[u8]) -> Option<usize> {
     let mut pos = 0;
     while pos + 4 <= buf.len() {
         let len_hex = &buf[pos..pos + 4];
@@ -505,20 +505,19 @@ async fn handle_post_push(
         tracing::error!(error = %e, "SSH post-receive hook failed");
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: user_id,
-            actor_name: user_name,
-            action: "git.push",
-            resource: "project",
+            actor_name: user_name.to_string(),
+            action: "git.push".into(),
+            resource: "project".into(),
             resource_id: Some(project.project_id),
             project_id: Some(project.project_id),
             detail: Some(serde_json::json!({"protocol": "ssh"})),
             ip_addr: None,
         },
-    )
-    .await;
+    );
 }
 
 // ---------------------------------------------------------------------------

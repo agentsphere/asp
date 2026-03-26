@@ -643,6 +643,15 @@ async fn merge_squash_strategy(pool: PgPool) {
         .await
         .unwrap();
 
+    // Update auto-created "main" protection rule to allow squash merges
+    sqlx::query(
+        "UPDATE branch_protection_rules SET merge_methods = '{merge,squash}' WHERE project_id = $1 AND pattern = 'main'",
+    )
+    .bind(project_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
     // Merge with squash method
     let (status, body) = helpers::post_json(
         &app,

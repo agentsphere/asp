@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::helpers::require_admin;
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::onboarding::presets::{self, OrgType, PasskeyPolicy};
@@ -211,22 +211,21 @@ async fn complete_wizard(
         .await
         .map_err(|e| ApiError::Internal(e.into()))?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "onboarding.wizard_completed",
-            resource: "platform_settings",
+            actor_name: auth.user_name.clone(),
+            action: "onboarding.wizard_completed".into(),
+            resource: "platform_settings".into(),
             resource_id: None,
             project_id: None,
             detail: Some(serde_json::json!({
                 "org_type": body.org_type,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(WizardResponse { success: true }))
 }
@@ -282,20 +281,19 @@ async fn update_settings(
             create_team_workspace(&state, auth.user_id).await?;
         }
 
-        write_audit(
-            &state.pool,
-            &AuditEntry {
+        send_audit(
+            &state.audit_tx,
+            AuditEntry {
                 actor_id: auth.user_id,
-                actor_name: &auth.user_name,
-                action: "onboarding.settings_updated",
-                resource: "platform_settings",
+                actor_name: auth.user_name.clone(),
+                action: "onboarding.settings_updated".into(),
+                resource: "platform_settings".into(),
                 resource_id: None,
                 project_id: None,
                 detail: Some(serde_json::json!({"org_type": org_type})),
-                ip_addr: auth.ip_addr.as_deref(),
+                ip_addr: auth.ip_addr.clone(),
             },
-        )
-        .await;
+        );
     }
 
     // Re-read and return current settings
@@ -314,20 +312,19 @@ async fn create_demo_project(
             .await
             .map_err(ApiError::Internal)?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "onboarding.demo_project_created",
-            resource: "project",
+            actor_name: auth.user_name.clone(),
+            action: "onboarding.demo_project_created".into(),
+            resource: "project".into(),
             resource_id: Some(project_id),
             project_id: Some(project_id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(DemoProjectResponse {
         project_id,
@@ -504,20 +501,19 @@ async fn start_claude_auth(
         .await
         .map_err(ApiError::Internal)?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "onboarding.claude_auth_started",
-            resource: "cli_auth",
+            actor_name: auth.user_name.clone(),
+            action: "onboarding.claude_auth_started".into(),
+            resource: "cli_auth".into(),
             resource_id: Some(session_id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(ClaudeAuthStartResponse {
         session_id,
@@ -582,20 +578,19 @@ async fn submit_auth_code(
         .await
         .map_err(ApiError::Internal)?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "onboarding.claude_auth_completed",
-            resource: "cli_auth",
+            actor_name: auth.user_name.clone(),
+            action: "onboarding.claude_auth_completed".into(),
+            resource: "cli_auth".into(),
             resource_id: Some(id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(ClaudeAuthCodeResponse { success: true }))
 }
@@ -621,20 +616,19 @@ async fn cancel_claude_auth(
 
     state.cli_auth_manager.cancel(id).await;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "onboarding.claude_auth_cancelled",
-            resource: "cli_auth",
+            actor_name: auth.user_name.clone(),
+            action: "onboarding.claude_auth_cancelled".into(),
+            resource: "cli_auth".into(),
             resource_id: Some(id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -680,20 +674,19 @@ async fn verify_oauth_token(
         )
         .await?;
 
-        write_audit(
-            &state.pool,
-            &AuditEntry {
+        send_audit(
+            &state.audit_tx,
+            AuditEntry {
                 actor_id: auth.user_id,
-                actor_name: &auth.user_name,
-                action: "onboarding.oauth_token_verified",
-                resource: "cli_auth",
+                actor_name: auth.user_name.clone(),
+                action: "onboarding.oauth_token_verified".into(),
+                resource: "cli_auth".into(),
                 resource_id: None,
                 project_id: None,
                 detail: None,
-                ip_addr: auth.ip_addr.as_deref(),
+                ip_addr: auth.ip_addr.clone(),
             },
-        )
-        .await;
+        );
     }
 
     Ok(Json(VerifyOAuthTokenResponse {

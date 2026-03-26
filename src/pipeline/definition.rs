@@ -372,6 +372,7 @@ pub fn parse_platform_file(yaml: &str) -> Result<PlatformFile, PipelineError> {
     Ok(file)
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate(def: &PipelineDefinition) -> Result<(), PipelineError> {
     if def.steps.is_empty() {
         return Err(PipelineError::InvalidDefinition(
@@ -450,6 +451,15 @@ fn validate(def: &PipelineDefinition) -> Result<(), PipelineError> {
 
         if let Some(ref cond) = step.only {
             validate_step_condition(&step.name, cond)?;
+        }
+    }
+
+    // Validate artifact paths — reject path traversal
+    for artifact in &def.artifacts {
+        if artifact.path.contains("..") {
+            return Err(PipelineError::InvalidDefinition(
+                "artifact path must not contain '..'".into(),
+            ));
         }
     }
 

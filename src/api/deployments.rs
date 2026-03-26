@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use ts_rs::TS;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::rbac::{Permission, resolver};
@@ -376,20 +376,19 @@ async fn create_target(
     })?;
 
     let target_id: Uuid = row.get("id");
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "deploy.target.create",
-            resource: "deploy_target",
+            actor_name: auth.user_name.clone(),
+            action: "deploy.target.create".into(),
+            resource: "deploy_target".into(),
             resource_id: Some(target_id),
             project_id: Some(id),
             detail: Some(serde_json::json!({"name": body.name, "environment": env})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((StatusCode::CREATED, Json(row_to_target(&row))))
 }
@@ -517,20 +516,19 @@ async fn create_release(
     )
     .await;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "deploy.release.create",
-            resource: "deploy_release",
+            actor_name: auth.user_name.clone(),
+            action: "deploy.release.create".into(),
+            resource: "deploy_release".into(),
             resource_id: Some(release_id),
             project_id: Some(id),
             detail: Some(serde_json::json!({"image_ref": body.image_ref, "strategy": strategy})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     // Wake reconciler
     state.deploy_notify.notify_one();
@@ -593,20 +591,19 @@ async fn adjust_traffic(
         Some(auth.user_id),
     )
     .await;
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "deploy.traffic.adjust",
-            resource: "deploy_release",
+            actor_name: auth.user_name.clone(),
+            action: "deploy.traffic.adjust".into(),
+            resource: "deploy_release".into(),
             resource_id: Some(release_id),
             project_id: Some(id),
             detail: Some(serde_json::json!({"traffic_weight": body.traffic_weight})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     state.deploy_notify.notify_one();
     Ok(Json(row_to_release(&row)))
@@ -644,20 +641,19 @@ async fn promote_release(
         Some(auth.user_id),
     )
     .await;
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "deploy.release.promote",
-            resource: "deploy_release",
+            actor_name: auth.user_name.clone(),
+            action: "deploy.release.promote".into(),
+            resource: "deploy_release".into(),
             resource_id: Some(release_id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     state.deploy_notify.notify_one();
     Ok(Json(row_to_release(&row)))
@@ -697,20 +693,19 @@ async fn rollback_release(
         Some(auth.user_id),
     )
     .await;
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "deploy.release.rollback",
-            resource: "deploy_release",
+            actor_name: auth.user_name.clone(),
+            action: "deploy.release.rollback".into(),
+            resource: "deploy_release".into(),
             resource_id: Some(release_id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     state.deploy_notify.notify_one();
     Ok(Json(row_to_release(&row)))
@@ -748,20 +743,19 @@ async fn pause_release(
         Some(auth.user_id),
     )
     .await;
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "deploy.release.pause",
-            resource: "deploy_release",
+            actor_name: auth.user_name.clone(),
+            action: "deploy.release.pause".into(),
+            resource: "deploy_release".into(),
             resource_id: Some(release_id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(row_to_release(&row)))
 }
@@ -798,20 +792,19 @@ async fn resume_release(
         Some(auth.user_id),
     )
     .await;
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "deploy.release.resume",
-            resource: "deploy_release",
+            actor_name: auth.user_name.clone(),
+            action: "deploy.release.resume".into(),
+            resource: "deploy_release".into(),
             resource_id: Some(release_id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     state.deploy_notify.notify_one();
     Ok(Json(row_to_release(&row)))
@@ -942,23 +935,22 @@ async fn promote_staging(
     )
     .await;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "deploy.promote_staging",
-            resource: "project",
+            actor_name: auth.user_name.clone(),
+            action: "deploy.promote_staging".into(),
+            resource: "project".into(),
             resource_id: Some(id),
             project_id: Some(id),
             detail: Some(serde_json::json!({
                 "image_ref": image_ref,
                 "commit_sha": new_sha,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(serde_json::json!({
         "status": "promoted",
@@ -1117,20 +1109,19 @@ async fn create_ops_repo(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "ops_repo.create",
-            resource: "ops_repo",
+            actor_name: auth.user_name.clone(),
+            action: "ops_repo.create".into(),
+            resource: "ops_repo".into(),
             resource_id: Some(r.id),
             project_id: None,
             detail: Some(serde_json::json!({"name": body.name})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -1240,20 +1231,19 @@ async fn update_ops_repo(
     .await?
     .ok_or_else(|| ApiError::NotFound("ops_repo".into()))?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "ops_repo.update",
-            resource: "ops_repo",
+            actor_name: auth.user_name.clone(),
+            action: "ops_repo.update".into(),
+            resource: "ops_repo".into(),
             resource_id: Some(repo_id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(OpsRepoResponse {
         id: r.id,
@@ -1304,20 +1294,19 @@ async fn delete_ops_repo(
         return Err(ApiError::NotFound("ops_repo".into()));
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "ops_repo.delete",
-            resource: "ops_repo",
+            actor_name: auth.user_name.clone(),
+            action: "ops_repo.delete".into(),
+            resource: "ops_repo".into(),
             resource_id: Some(repo_id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -6,7 +6,7 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::cli_creds;
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
@@ -98,20 +98,19 @@ async fn store_credentials(
     .map_err(ApiError::Internal)?;
 
     // Audit — never log the credential value
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "cli_creds.store",
-            resource: "cli_credentials",
+            actor_name: auth.user_name.clone(),
+            action: "cli_creds.store".into(),
+            resource: "cli_credentials".into(),
             resource_id: Some(info.id),
             project_id: None,
             detail: Some(serde_json::json!({ "auth_type": body.auth_type })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::OK,
@@ -164,20 +163,19 @@ async fn delete_credentials(
         .map_err(ApiError::Internal)?;
 
     if deleted {
-        write_audit(
-            &state.pool,
-            &AuditEntry {
+        send_audit(
+            &state.audit_tx,
+            AuditEntry {
                 actor_id: auth.user_id,
-                actor_name: &auth.user_name,
-                action: "cli_creds.delete",
-                resource: "cli_credentials",
+                actor_name: auth.user_name.clone(),
+                action: "cli_creds.delete".into(),
+                resource: "cli_credentials".into(),
                 resource_id: None,
                 project_id: None,
                 detail: None,
-                ip_addr: auth.ip_addr.as_deref(),
+                ip_addr: auth.ip_addr.clone(),
             },
-        )
-        .await;
+        );
     }
 
     Ok(StatusCode::NO_CONTENT)

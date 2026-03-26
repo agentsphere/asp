@@ -7,6 +7,7 @@ use axum::http::HeaderMap;
 use axum::http::header::AUTHORIZATION;
 use axum::response::Response;
 use axum::routing::{get, post};
+use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -15,7 +16,7 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::{password, token};
 use crate::error::ApiError;
 use crate::rbac::{Permission, resolver};
@@ -430,8 +431,9 @@ pub async fn enforce_push_protection(
 
 /// `POST /:owner/:repo/git-receive-pack`
 ///
-/// Push: collects full body/stdout (waits for completion to run hooks).
+/// Push: streams body to git stdin (only pkt-line header buffered for protection checks).
 #[tracing::instrument(skip(state, request), fields(%owner, %repo), err)]
+#[allow(clippy::too_many_lines)]
 async fn receive_pack(
     State(state): State<AppState>,
     AxumPath((owner, repo)): AxumPath<(String, String)>,
@@ -444,6 +446,47 @@ async fn receive_pack(
         .expect("receive-pack always authenticates");
 
     let body = request.into_body();
+
+    // A19: Stream body to git stdin instead of buffering the entire pack in memory.
+    // Phase 1: Buffer only the pkt-line header (ref commands, typically <1 KB)
+    //          until the 0000 flush-pkt, then parse and enforce branch protection.
+    // Phase 2: Pipe the buffered header + remaining body frames to git stdin.
+
+    let mut pkt_buf = Vec::new();
+    let mut body_stream = body.into_data_stream();
+    let mut remaining_frame: Option<bytes::Bytes> = None;
+
+    // Read frames until we find the flush-pkt (0000) that ends the ref command section
+    loop {
+        let frame = match body_stream.next().await {
+            Some(Ok(frame)) => frame,
+            Some(Err(e)) => return Err(ApiError::Internal(anyhow::anyhow!("body read: {e}"))),
+            None => return Err(ApiError::BadRequest("incomplete pack data".into())),
+        };
+        pkt_buf.extend_from_slice(&frame);
+
+        // Check for flush-pkt using the same logic as the SSH path
+        if let Some(flush_pos) = super::ssh_server::find_flush_pkt(&pkt_buf) {
+            // Everything after the flush-pkt is PACK data — don't buffer it
+            if flush_pos < pkt_buf.len() {
+                remaining_frame = Some(bytes::Bytes::copy_from_slice(&pkt_buf[flush_pos..]));
+                pkt_buf.truncate(flush_pos);
+            }
+            break;
+        }
+
+        // Safety: cap buffer at 1 MB (same as SSH path) to prevent abuse
+        if pkt_buf.len() > 1_048_576 {
+            return Err(ApiError::BadRequest("pack header too large".into()));
+        }
+    }
+
+    // Parse pushed refs from the pkt-line header
+    let ref_updates = super::hooks::parse_pack_commands(&pkt_buf);
+    let pushed_branches = super::hooks::extract_pushed_branches(&ref_updates);
+
+    // Check branch protection rules before piping anything to git
+    enforce_push_protection(&state, &project, &git_user, &ref_updates).await?;
 
     // Spawn git receive-pack
     let mut child = tokio::process::Command::new("git")
@@ -459,25 +502,20 @@ async fn receive_pack(
     let mut stdin = child.stdin.take().expect("stdin piped");
     let mut stdout = child.stdout.take().expect("stdout piped");
 
-    // A19: Body size limited to 500MB by RequestBodyLimitLayer in main.rs
-    // Read body bytes first so we can parse ref commands before piping to git
-    let body_bytes = body
-        .collect()
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("body read failed: {e}")))?
-        .to_bytes();
-
-    // Parse pushed refs from the pack data before piping to git
-    let ref_updates = super::hooks::parse_pack_commands(&body_bytes);
-    let pushed_branches = super::hooks::extract_pushed_branches(&ref_updates);
-
-    // Check branch protection rules before piping to git
-    enforce_push_protection(&state, &project, &git_user, &ref_updates).await?;
-
-    // Pipe body to stdin and read stdout concurrently
+    // Phase 2: Pipe buffered pkt-line header + stream remaining body to git stdin
     let (stdin_result, stdout_bytes) = tokio::join!(
         async {
-            stdin.write_all(&body_bytes).await?;
+            // Write the buffered pkt-line header
+            stdin.write_all(&pkt_buf).await?;
+            // Write any PACK data that arrived in the same frame as the flush-pkt
+            if let Some(remaining) = remaining_frame {
+                stdin.write_all(&remaining).await?;
+            }
+            // Stream remaining body frames directly to stdin (no buffering)
+            while let Some(frame_result) = body_stream.next().await {
+                let frame = frame_result.map_err(std::io::Error::other)?;
+                stdin.write_all(&frame).await?;
+            }
             stdin.shutdown().await?;
             Ok::<(), std::io::Error>(())
         },
@@ -523,20 +561,19 @@ async fn receive_pack(
     }
 
     // Audit log
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: git_user.user_id,
-            actor_name: &git_user.user_name,
-            action: "git.push",
-            resource: "project",
+            actor_name: git_user.user_name.clone(),
+            action: "git.push".into(),
+            resource: "project".into(),
             resource_id: Some(project.project_id),
             project_id: Some(project.project_id),
             detail: None,
-            ip_addr: git_user.ip_addr.as_deref(),
+            ip_addr: git_user.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Response::builder()
         .header("Content-Type", "application/x-git-receive-pack-result")

@@ -14,7 +14,7 @@ use ts_rs::TS;
 
 use crate::agent::AgentRoleName;
 use crate::agent::service;
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::rbac::{Permission, resolver};
@@ -214,7 +214,7 @@ async fn require_session_write(
     .map_err(ApiError::Internal)?;
 
     if !allowed {
-        return Err(ApiError::Forbidden);
+        return Err(ApiError::NotFound("project".into()));
     }
     Ok(())
 }
@@ -324,13 +324,13 @@ async fn create_session(
     .map_err(ApiError::from)?;
 
     // Audit log (never log prompt content)
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "agent_session.create",
-            resource: "agent_session",
+            actor_name: auth.user_name.clone(),
+            action: "agent_session.create".into(),
+            resource: "agent_session".into(),
             resource_id: Some(session.id),
             project_id: Some(id),
             detail: Some(serde_json::json!({
@@ -338,10 +338,9 @@ async fn create_session(
                 "branch": session.branch,
                 "role": role_str,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     // Fire webhook
     crate::api::webhooks::fire_webhooks(
@@ -349,6 +348,7 @@ async fn create_session(
         id,
         "agent",
         &serde_json::json!({"action": "created", "session_id": session.id}),
+        &state.webhook_semaphore,
     )
     .await;
 
@@ -488,20 +488,19 @@ async fn send_message(
         .await
         .map_err(ApiError::from)?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "agent_session.message",
-            resource: "agent_session",
+            actor_name: auth.user_name.clone(),
+            action: "agent_session.message".into(),
+            resource: "agent_session".into(),
             resource_id: Some(session_id),
             project_id: Some(id),
             detail: None, // Never log message content
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(serde_json::json!({"ok": true})))
 }
@@ -526,26 +525,26 @@ async fn stop_session(
         .await
         .map_err(ApiError::from)?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "agent_session.stop",
-            resource: "agent_session",
+            actor_name: auth.user_name.clone(),
+            action: "agent_session.stop".into(),
+            resource: "agent_session".into(),
             resource_id: Some(session_id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     crate::api::webhooks::fire_webhooks(
         &state.pool,
         id,
         "agent",
         &serde_json::json!({"action": "stopped", "session_id": session_id}),
+        &state.webhook_semaphore,
     )
     .await;
 
@@ -612,20 +611,19 @@ async fn create_app(
         .await
         .map_err(ApiError::from)?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "agent_session.create_app",
-            resource: "agent_session",
+            actor_name: auth.user_name.clone(),
+            action: "agent_session.create_app".into(),
+            resource: "agent_session".into(),
             resource_id: Some(session.id),
             project_id: None,
             detail: Some(serde_json::json!({"provider": provider})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -682,20 +680,19 @@ async fn update_session(
             .execute(&state.pool)
             .await?;
 
-        crate::audit::write_audit(
-            &state.pool,
-            &crate::audit::AuditEntry {
+        crate::audit::send_audit(
+            &state.audit_tx,
+            crate::audit::AuditEntry {
                 actor_id: auth.user_id,
-                actor_name: &auth.user_name,
-                action: "agent_session.update",
-                resource: "agent_session",
+                actor_name: auth.user_name.clone(),
+                action: "agent_session.update".into(),
+                resource: "agent_session".into(),
                 resource_id: Some(session_id),
                 project_id: Some(project_id),
                 detail: None,
-                ip_addr: auth.ip_addr.as_deref(),
+                ip_addr: auth.ip_addr.clone(),
             },
-        )
-        .await;
+        );
     }
 
     let updated = service::fetch_session(&state.pool, session_id)
@@ -736,7 +733,7 @@ async fn spawn_child(
     .await
     .map_err(ApiError::Internal)?;
     if !allowed {
-        return Err(ApiError::Forbidden);
+        return Err(ApiError::NotFound("project".into()));
     }
 
     // Fetch parent session
@@ -777,23 +774,22 @@ async fn spawn_child(
     .execute(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "agent_session.spawn",
-            resource: "agent_session",
+            actor_name: auth.user_name.clone(),
+            action: "agent_session.spawn".into(),
+            resource: "agent_session".into(),
             resource_id: Some(child_id),
             project_id: Some(id),
             detail: Some(serde_json::json!({
                 "parent_session_id": session_id,
                 "spawn_depth": child_depth,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     // Fetch the created child to return
     let child = service::fetch_session(&state.pool, child_id)

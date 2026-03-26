@@ -14,7 +14,7 @@ use uuid::Uuid;
 use ts_rs::TS;
 
 use crate::api::helpers::ListResponse;
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::rbac::{Permission, resolver};
@@ -331,20 +331,19 @@ async fn create_alert(
 
     let row_id: Uuid = row.get("id");
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "alert.create",
-            resource: "alert",
+            actor_name: auth.user_name.clone(),
+            action: "alert.create".into(),
+            resource: "alert".into(),
             resource_id: Some(row_id),
             project_id: body.project_id,
             detail: Some(serde_json::json!({"name": body.name})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -472,20 +471,19 @@ async fn update_alert(
 
     let row_project_id: Option<Uuid> = row.get("project_id");
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "alert.update",
-            resource: "alert",
+            actor_name: auth.user_name.clone(),
+            action: "alert.update".into(),
+            resource: "alert".into(),
             resource_id: Some(id),
             project_id: row_project_id,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(AlertRuleResponse {
         id: row.get("id"),
@@ -519,20 +517,19 @@ async fn delete_alert(
 
     let deleted_project_id: Option<Uuid> = result.get("project_id");
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "alert.delete",
-            resource: "alert",
+            actor_name: auth.user_name.clone(),
+            action: "alert.delete".into(),
+            resource: "alert".into(),
             resource_id: Some(id),
             project_id: deleted_project_id,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

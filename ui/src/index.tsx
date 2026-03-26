@@ -46,6 +46,7 @@ function AppRouter() {
     fetch('/api/setup/status')
       .then(r => r.json())
       .then(d => setNeedsSetup(d.needs_setup))
+      // Setup check failed — assume already set up so the app remains usable
       .catch(() => setNeedsSetup(false));
   }, []);
 
@@ -55,6 +56,7 @@ function AppRouter() {
     fetch('/api/onboarding/wizard-status', { credentials: 'include' })
       .then(r => r.json())
       .then((d: WizardStatus) => setShowWizard(d.show_wizard))
+      // Wizard check failed — skip wizard so user can access the app
       .catch(() => setShowWizard(false));
   }, [user]);
 

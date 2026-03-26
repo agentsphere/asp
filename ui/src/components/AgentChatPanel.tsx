@@ -202,7 +202,7 @@ export function AgentChatPanel({ projectId, open, onClose }: Props) {
           autoCreateSession();
         }
       })
-      .catch(() => {});
+      .catch(e => console.warn('agent chat:', e));
   }, [open, projectId]);
 
   // Focus input when ready
@@ -245,7 +245,7 @@ export function AgentChatPanel({ projectId, open, onClose }: Props) {
       if (data.status === 'completed') setStatus('completed');
       else if (data.status === 'failed') setStatus('failed');
       else if (data.status === 'stopped') setStatus('stopped');
-    }).catch(() => {});
+    }).catch(e => console.warn('agent chat:', e));
   }
 
   function connectSse(sid: string) {
@@ -399,7 +399,7 @@ export function AgentChatPanel({ projectId, open, onClose }: Props) {
     try {
       await api.post(`/api/projects/${projectId}/sessions/${sessionId}/stop`);
       setStatus('stopped');
-    } catch { /* ignore */ }
+    } catch (e) { console.warn('agent chat:', e); }
   }
 
   function handleSubmit(e: Event) {

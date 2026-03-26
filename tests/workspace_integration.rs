@@ -193,7 +193,7 @@ async fn add_and_list_members(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let members = body.as_array().unwrap();
+    let members = body["items"].as_array().unwrap();
     assert_eq!(members.len(), 1);
     assert_eq!(members[0]["role"], "owner");
 
@@ -217,7 +217,7 @@ async fn add_and_list_members(pool: PgPool) {
         &format!("/api/workspaces/{ws_id}/members"),
     )
     .await;
-    assert_eq!(body.as_array().unwrap().len(), 2);
+    assert_eq!(body["items"].as_array().unwrap().len(), 2);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -259,7 +259,7 @@ async fn remove_member(pool: PgPool) {
         &format!("/api/workspaces/{ws_id}/members"),
     )
     .await;
-    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
 }
 
 #[sqlx::test(migrations = "./migrations")]

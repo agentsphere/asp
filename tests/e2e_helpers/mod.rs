@@ -272,6 +272,8 @@ pub async fn e2e_state_with_api_url(
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");
 
+    let audit_tx = platform::audit::AuditLog::new(pool.clone());
+
     let state = AppState {
         pool,
         valkey,
@@ -290,6 +292,8 @@ pub async fn e2e_state_with_api_url(
         )),
         task_registry: Arc::new(platform::health::TaskRegistry::new()),
         cli_auth_manager: Arc::new(platform::onboarding::claude_auth::CliAuthManager::new()),
+        audit_tx,
+        webhook_semaphore: Arc::new(tokio::sync::Semaphore::new(50)),
     };
 
     // Match production behavior: initialize permission cache TTL

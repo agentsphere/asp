@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use ts_rs::TS;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::store::AppState;
@@ -151,9 +151,24 @@ async fn create_webhook(
 ) -> Result<impl IntoResponse, ApiError> {
     require_project_write(&state, &auth, id).await?;
 
+    // Verify project is active (soft-delete check)
+    let active: bool = sqlx::query_scalar("SELECT is_active FROM projects WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .unwrap_or(false);
+    if !active {
+        return Err(ApiError::NotFound("project".into()));
+    }
+
     // Validate URL (format + SSRF protection)
     validation::check_url(&body.url)?;
     validation::check_ssrf_url(&body.url, &["http", "https"])?;
+
+    // Validate secret length
+    if let Some(ref secret) = body.secret {
+        validation::check_length("secret", secret, 0, 1024)?;
+    }
 
     // Validate events
     if body.events.is_empty() {
@@ -185,20 +200,19 @@ async fn create_webhook(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "webhook.create",
-            resource: "webhook",
+            actor_name: auth.user_name.clone(),
+            action: "webhook.create".into(),
+            resource: "webhook".into(),
             resource_id: Some(wh.id),
             project_id: Some(id),
             detail: Some(serde_json::json!({"events": body.events})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -296,6 +310,9 @@ async fn update_webhook(
         validation::check_url(url)?;
         validation::check_ssrf_url(url, &["http", "https"])?;
     }
+    if let Some(ref secret) = body.secret {
+        validation::check_length("secret", secret, 0, 1024)?;
+    }
     if let Some(ref events) = body.events {
         if events.is_empty() {
             return Err(ApiError::BadRequest("events must not be empty".into()));
@@ -334,20 +351,19 @@ async fn update_webhook(
     .await?
     .ok_or_else(|| ApiError::NotFound("webhook".into()))?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "webhook.update",
-            resource: "webhook",
+            actor_name: auth.user_name.clone(),
+            action: "webhook.update".into(),
+            resource: "webhook".into(),
             resource_id: Some(wh_id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(WebhookResponse {
         id: wh.id,
@@ -379,20 +395,19 @@ async fn delete_webhook(
         return Err(ApiError::NotFound("webhook".into()));
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "webhook.delete",
-            resource: "webhook",
+            actor_name: auth.user_name.clone(),
+            action: "webhook.delete".into(),
+            resource: "webhook".into(),
             resource_id: Some(wh_id),
             project_id: Some(id),
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -420,7 +435,13 @@ async fn test_webhook(
         "message": "webhook test delivery",
     });
 
-    dispatch_single(&wh.url, wh.secret.as_deref(), &payload).await;
+    dispatch_single(
+        &wh.url,
+        wh.secret.as_deref(),
+        &payload,
+        &state.webhook_semaphore,
+    )
+    .await;
 
     Ok(Json(serde_json::json!({"ok": true})))
 }
@@ -436,6 +457,7 @@ pub async fn fire_webhooks(
     project_id: Uuid,
     event: &str,
     payload: &serde_json::Value,
+    semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
 ) {
     let webhooks = match sqlx::query!(
         r#"
@@ -460,22 +482,34 @@ pub async fn fire_webhooks(
         let url = wh.url.clone();
         let secret = wh.secret.clone();
         let payload = payload.clone();
+        let sem = semaphore.clone();
 
         tokio::spawn(async move {
-            dispatch_single(&url, secret.as_deref(), &payload).await;
+            dispatch_single(&url, secret.as_deref(), &payload, &sem).await;
         });
     }
 }
 
-pub(crate) async fn dispatch_single(url: &str, secret: Option<&str>, payload: &serde_json::Value) {
+pub(crate) async fn dispatch_single(
+    url: &str,
+    secret: Option<&str>,
+    payload: &serde_json::Value,
+    semaphore: &tokio::sync::Semaphore,
+) {
     // S63: Re-validate SSRF before dispatch — URL may have been modified in DB
-    if crate::validation::check_ssrf_url(url, &["http", "https"]).is_err() {
+    // Skip in dev mode to allow localhost URLs (e.g., test wiremock servers)
+    static DEV_MODE: LazyLock<bool> = LazyLock::new(|| {
+        std::env::var("PLATFORM_DEV")
+            .ok()
+            .is_some_and(|v| v == "true")
+    });
+    if !*DEV_MODE && crate::validation::check_ssrf_url(url, &["http", "https"]).is_err() {
         tracing::warn!("webhook URL failed SSRF re-validation, skipping dispatch");
         return;
     }
 
     // Acquire semaphore permit (concurrency limit)
-    let Ok(_permit) = WEBHOOK_SEMAPHORE.try_acquire() else {
+    let Ok(_permit) = semaphore.try_acquire() else {
         tracing::warn!(url, "webhook dispatch dropped: concurrency limit reached");
         return;
     };

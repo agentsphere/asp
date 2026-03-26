@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use ts_rs::TS;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::auth::user_type::UserType;
 use crate::auth::{password, token};
@@ -250,20 +250,19 @@ async fn create_login_session(
     .execute(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: user_id,
-            actor_name: user_name,
-            action: "auth.login",
-            resource: "session",
+            actor_name: user_name.to_string(),
+            action: "auth.login".into(),
+            resource: "session".into(),
             resource_id: None,
             project_id: None,
             detail: None,
             ip_addr: None,
         },
-    )
-    .await;
+    );
 
     Ok(SessionInfo {
         token: raw_token,
@@ -290,20 +289,19 @@ async fn logout(
             .await?;
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "auth.logout",
-            resource: "session",
+            actor_name: auth.user_name.clone(),
+            action: "auth.logout".into(),
+            resource: "session".into(),
             resource_id: None,
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     let cookie = "session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0";
     Ok((
@@ -401,20 +399,19 @@ async fn create_user(
         .await;
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "user.create",
-            resource: "user",
+            actor_name: auth.user_name.clone(),
+            action: "user.create".into(),
+            resource: "user".into(),
             resource_id: Some(user.id),
             project_id: None,
             detail: Some(serde_json::json!({"name": body.name, "user_type": user_type.as_str()})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -565,20 +562,19 @@ async fn update_user(
     .await?
     .ok_or_else(|| ApiError::NotFound("user".into()))?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "user.update",
-            resource: "user",
+            actor_name: auth.user_name.clone(),
+            action: "user.update".into(),
+            resource: "user".into(),
             resource_id: Some(id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(UserResponse {
         id: user.id,
@@ -600,9 +596,13 @@ async fn deactivate_user(
 ) -> Result<StatusCode, ApiError> {
     require_admin(&state, &auth).await?;
 
-    sqlx::query!("UPDATE users SET is_active = false WHERE id = $1", id,)
+    let result = sqlx::query!("UPDATE users SET is_active = false WHERE id = $1", id,)
         .execute(&state.pool)
         .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(ApiError::NotFound("user".into()));
+    }
 
     // Revoke all sessions and tokens for the deactivated user
     sqlx::query!("DELETE FROM auth_sessions WHERE user_id = $1", id)
@@ -616,20 +616,19 @@ async fn deactivate_user(
     // Invalidate permission cache (best-effort)
     let _ = crate::rbac::resolver::invalidate_permissions(&state.valkey, id, None).await;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "user.deactivate",
-            resource: "user",
+            actor_name: auth.user_name.clone(),
+            action: "user.deactivate".into(),
+            resource: "user".into(),
             resource_id: Some(id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -683,20 +682,19 @@ async fn create_api_token(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "token.create",
-            resource: "api_token",
+            actor_name: auth.user_name.clone(),
+            action: "token.create".into(),
+            resource: "api_token".into(),
             resource_id: Some(row.id),
             project_id: body.project_id,
             detail: Some(serde_json::json!({"name": body.name})),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -829,20 +827,19 @@ async fn revoke_api_token(
         return Err(ApiError::NotFound("token".into()));
     }
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "token.revoke",
-            resource: "api_token",
+            actor_name: auth.user_name.clone(),
+            action: "token.revoke".into(),
+            resource: "api_token".into(),
             resource_id: Some(id),
             project_id: None,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

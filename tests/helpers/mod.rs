@@ -229,6 +229,8 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
     // Build WebAuthn
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");
 
+    let audit_tx = platform::audit::AuditLog::new(pool.clone());
+
     let state = AppState {
         pool,
         valkey,
@@ -247,6 +249,8 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         )),
         task_registry: Arc::new(platform::health::TaskRegistry::new()),
         cli_auth_manager: Arc::new(platform::onboarding::claude_auth::CliAuthManager::new()),
+        audit_tx,
+        webhook_semaphore: Arc::new(tokio::sync::Semaphore::new(50)),
     };
 
     // Match production behavior: initialize permission cache TTL
@@ -542,24 +546,67 @@ pub async fn delete_json(app: &Router, token: &str, path: &str) -> (StatusCode, 
     (status, body)
 }
 
+/// Poll the audit_log table until at least one entry with the given action appears,
+/// or timeout after `max_ms` milliseconds. Returns the count found.
+///
+/// Audit entries are written asynchronously via `tokio::spawn` in `send_audit()`,
+/// so tests that query audit_log immediately after an API call may see zero rows.
+/// This helper avoids that race by polling with short sleeps.
+pub async fn wait_for_audit(pool: &PgPool, action: &str, max_ms: u64) -> i64 {
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(max_ms);
+    loop {
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE action = $1")
+            .bind(action)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        if count > 0 {
+            return count;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return 0;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+    }
+}
+
+/// Guard that aborts a spawned server task when dropped, ensuring the TCP port
+/// is released for the next test.
+pub struct ServerGuard(tokio::task::AbortHandle);
+
+impl Drop for ServerGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Start a real TCP server for integration tests that need pod connectivity.
 ///
 /// Binds to `PLATFORM_LISTEN_PORT` (set by `test-in-cluster.sh`).
-/// Returns `(state, admin_token, server_handle)`.
-pub async fn start_test_server(pool: PgPool) -> (AppState, String, tokio::task::JoinHandle<()>) {
+/// Returns `(state, admin_token, server_guard)`. The guard aborts the server
+/// task on drop so the port is released for subsequent tests.
+pub async fn start_test_server(pool: PgPool) -> (AppState, String, ServerGuard) {
     let port: u16 = std::env::var("PLATFORM_LISTEN_PORT")
         .expect("PLATFORM_LISTEN_PORT must be set — run via: just test-integration")
         .parse()
         .expect("invalid PLATFORM_LISTEN_PORT");
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
-        .await
-        .expect("bind listener");
+    let addr: std::net::SocketAddr = format!("0.0.0.0:{port}")
+        .parse()
+        .expect("parse listen addr");
+    let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+        .expect("create socket");
+    socket.set_reuse_address(true).expect("set SO_REUSEADDR");
+    socket.bind(&addr.into()).expect("bind listener");
+    socket.listen(128).expect("listen");
+    socket.set_nonblocking(true).expect("set nonblocking");
+    let listener =
+        tokio::net::TcpListener::from_std(socket.into()).expect("convert to tokio listener");
     let (state, token) = test_state(pool).await;
     let app = test_router(state.clone());
     let handle = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    (state, token, handle)
+    (state, token, ServerGuard(handle.abort_handle()))
 }
 
 /// Extract JSON body from a response.
@@ -572,7 +619,7 @@ async fn body_json(resp: axum::http::Response<Body>) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// Raw bytes HTTP helper
+// Raw bytes HTTP helpers
 // ---------------------------------------------------------------------------
 
 /// Send a raw GET request and return the body as bytes (for non-JSON endpoints).
@@ -593,6 +640,37 @@ pub async fn get_bytes(app: &Router, token: &str, path: &str) -> (StatusCode, Ve
         .to_bytes()
         .to_vec();
     (status, bytes)
+}
+
+/// Send a raw GET request and return only the status code (for non-JSON endpoints
+/// like proxy responses where the body format is unknown).
+pub async fn get_status(app: &Router, token: &str, path: &str) -> StatusCode {
+    let mut builder = Request::builder().method("GET").uri(path);
+    if !token.is_empty() {
+        builder = builder.header("Authorization", format!("Bearer {token}"));
+    }
+    let req = builder.body(Body::empty()).unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    resp.status()
+}
+
+/// Send a POST request with JSON body and return only the status code (for endpoints
+/// that may return non-JSON responses like axum deserialization rejections).
+pub async fn post_status(app: &Router, token: &str, path: &str, body: Value) -> StatusCode {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("Content-Type", "application/json");
+    if !token.is_empty() {
+        builder = builder.header("Authorization", format!("Bearer {token}"));
+    }
+    let req = builder
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    resp.status()
 }
 
 // ---------------------------------------------------------------------------
@@ -739,10 +817,17 @@ pub async fn insert_branch_protection(
     allow_admin_bypass: bool,
 ) -> Uuid {
     let id = Uuid::new_v4();
-    sqlx::query(
+    let row: (Uuid,) = sqlx::query_as(
         "INSERT INTO branch_protection_rules
          (id, project_id, pattern, required_approvals, merge_methods, required_checks, require_up_to_date, allow_admin_bypass)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (project_id, pattern) DO UPDATE SET
+           required_approvals = EXCLUDED.required_approvals,
+           merge_methods = EXCLUDED.merge_methods,
+           required_checks = EXCLUDED.required_checks,
+           require_up_to_date = EXCLUDED.require_up_to_date,
+           allow_admin_bypass = EXCLUDED.allow_admin_bypass
+         RETURNING id",
     )
     .bind(id)
     .bind(project_id)
@@ -752,10 +837,10 @@ pub async fn insert_branch_protection(
     .bind(required_checks)
     .bind(require_up_to_date)
     .bind(allow_admin_bypass)
-    .execute(pool)
+    .fetch_one(pool)
     .await
     .unwrap();
-    id
+    row.0
 }
 
 /// Insert a pipeline row directly in the DB. Returns the pipeline's UUID.

@@ -28,9 +28,10 @@ async fn download_agent_runner_amd64_integration(pool: PgPool) {
 
     let app = helpers::test_router(state);
 
-    let (status, body) =
-        helpers::get_json(&app, &admin_token, "/api/downloads/agent-runner?arch=amd64").await;
-    assert!(status == StatusCode::OK || body.is_null());
+    let (status, bytes) =
+        helpers::get_bytes(&app, &admin_token, "/api/downloads/agent-runner?arch=amd64").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!bytes.is_empty());
 }
 
 #[sqlx::test(migrations = "./migrations")]

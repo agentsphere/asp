@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use ts_rs::TS;
 
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::git::gpg_keys;
@@ -151,23 +151,22 @@ async fn add_gpg_key(
     .execute(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "gpg_key.add",
-            resource: "gpg_key",
+            actor_name: auth.user_name.clone(),
+            action: "gpg_key.add".into(),
+            resource: "gpg_key".into(),
             resource_id: Some(id),
             project_id: None,
             detail: Some(serde_json::json!({
                 "key_id": parsed.key_id,
                 "fingerprint": parsed.fingerprint,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     let resp = GpgKeyResponse {
         id,
@@ -262,22 +261,21 @@ async fn delete_gpg_key(
 
     let row = result.ok_or_else(|| ApiError::NotFound("gpg key".into()))?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "gpg_key.delete",
-            resource: "gpg_key",
+            actor_name: auth.user_name.clone(),
+            action: "gpg_key.delete".into(),
+            resource: "gpg_key".into(),
             resource_id: Some(id),
             project_id: None,
             detail: Some(serde_json::json!({
                 "fingerprint": row.fingerprint,
             })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

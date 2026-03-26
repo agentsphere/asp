@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::agent::commands::{validate_command_name, validate_template};
-use crate::audit::{AuditEntry, write_audit};
+use crate::audit::{AuditEntry, send_audit};
 use crate::auth::middleware::AuthUser;
 use crate::error::ApiError;
 use crate::rbac::{Permission, resolver};
@@ -207,20 +207,19 @@ async fn create_command(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "command.create",
-            resource: "platform_command",
+            actor_name: auth.user_name.clone(),
+            action: "command.create".into(),
+            resource: "platform_command".into(),
             resource_id: Some(row.id),
             project_id: body.project_id,
             detail: Some(serde_json::json!({ "name": body.name })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -488,20 +487,19 @@ async fn update_command(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "command.update",
-            resource: "platform_command",
+            actor_name: auth.user_name.clone(),
+            action: "command.update".into(),
+            resource: "platform_command".into(),
             resource_id: Some(id),
             project_id: existing.project_id,
             detail: None,
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(Json(CommandResponse {
         id: row.id,
@@ -536,20 +534,19 @@ async fn delete_command(
         .execute(&state.pool)
         .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "command.delete",
-            resource: "platform_command",
+            actor_name: auth.user_name.clone(),
+            action: "command.delete".into(),
+            resource: "platform_command".into(),
             resource_id: Some(id),
             project_id: existing.project_id,
             detail: Some(serde_json::json!({ "name": existing.name })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -697,20 +694,19 @@ async fn create_workspace_command(
     .fetch_one(&state.pool)
     .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "command.create",
-            resource: "platform_command",
+            actor_name: auth.user_name.clone(),
+            action: "command.create".into(),
+            resource: "platform_command".into(),
             resource_id: Some(row.id),
             project_id: None,
             detail: Some(serde_json::json!({ "name": body.name, "workspace_id": id })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -758,20 +754,19 @@ async fn delete_workspace_command(
         .execute(&state.pool)
         .await?;
 
-    write_audit(
-        &state.pool,
-        &AuditEntry {
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
             actor_id: auth.user_id,
-            actor_name: &auth.user_name,
-            action: "command.delete",
-            resource: "platform_command",
+            actor_name: auth.user_name.clone(),
+            action: "command.delete".into(),
+            resource: "platform_command".into(),
             resource_id: Some(command_id),
             project_id: None,
             detail: Some(serde_json::json!({ "name": existing.name, "workspace_id": id })),
-            ip_addr: auth.ip_addr.as_deref(),
+            ip_addr: auth.ip_addr.clone(),
         },
-    )
-    .await;
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

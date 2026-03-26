@@ -5,7 +5,6 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use sqlx::PgPool;
 use tower::ServiceExt;
-use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Release CRUD

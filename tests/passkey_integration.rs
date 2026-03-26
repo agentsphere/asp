@@ -162,7 +162,7 @@ async fn rename_passkey_success(pool: PgPool) {
 
     // Verify name changed
     let (_, keys) = helpers::get_json(&app, &admin_token, "/api/auth/passkeys").await;
-    assert_eq!(keys[0]["name"], "NewName");
+    assert_eq!(keys["items"][0]["name"], "NewName");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -472,8 +472,9 @@ async fn complete_register_invalid_credential_json(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    // Send garbage that doesn't match RegisterPublicKeyCredential
-    let (status, _) = helpers::post_json(
+    // Send garbage that doesn't match RegisterPublicKeyCredential.
+    // Axum's Json rejection returns plain text (not JSON), so use post_status.
+    let status = helpers::post_status(
         &app,
         &admin_token,
         "/api/auth/passkeys/register/complete",
@@ -552,7 +553,8 @@ async fn complete_login_invalid_credential_json(pool: PgPool) {
     let (state, _admin_token) = test_state(pool.clone()).await;
     let app = test_router(state);
 
-    let (status, _) = helpers::post_json(
+    // Axum's Json rejection returns plain text (not JSON), so use post_status.
+    let status = helpers::post_status(
         &app,
         "",
         "/api/auth/passkeys/login/complete",
@@ -823,18 +825,17 @@ async fn delete_passkey_creates_audit_log(pool: PgPool) {
         helpers::delete_json(&app, &admin_token, &format!("/api/auth/passkeys/{cred_id}")).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // Check that audit log has the delete entry
-    let row: Option<(String, String)> = sqlx::query_as(
+    // Check that audit log has the delete entry (async write — poll until visible)
+    helpers::wait_for_audit(&pool, "auth.passkey_delete", 2000).await;
+    let row: (String, String) = sqlx::query_as(
         "SELECT action, resource FROM audit_log WHERE resource_id = $1 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(cred_id)
-    .fetch_optional(&pool)
+    .fetch_one(&pool)
     .await
-    .unwrap();
-
-    let (action, resource) = row.expect("audit log entry should exist");
-    assert_eq!(action, "auth.passkey_delete");
-    assert_eq!(resource, "passkey_credential");
+    .expect("audit log entry should exist after poll");
+    assert_eq!(row.0, "auth.passkey_delete");
+    assert_eq!(row.1, "passkey_credential");
 }
 
 // ---------------------------------------------------------------------------
@@ -1195,17 +1196,17 @@ async fn login_creates_audit_entry(pool: PgPool) {
 
     let _ = login_passkey_ceremony(&app, &pool, user_id, &mut authenticator).await;
 
-    // Verify audit log
-    let row: Option<(String, String)> = sqlx::query_as(
+    // Verify audit log (async write — poll until visible)
+    helpers::wait_for_audit(&pool, "auth.passkey_login", 2000).await;
+    let row: (String, String) = sqlx::query_as(
         "SELECT action, resource FROM audit_log WHERE actor_id = $1 AND action = 'auth.passkey_login' ORDER BY created_at DESC LIMIT 1",
     )
     .bind(user_id)
-    .fetch_optional(&pool)
+    .fetch_one(&pool)
     .await
-    .unwrap();
-    let (action, resource) = row.expect("passkey login audit entry should exist");
-    assert_eq!(action, "auth.passkey_login");
-    assert_eq!(resource, "session");
+    .expect("passkey login audit entry should exist after poll");
+    assert_eq!(row.0, "auth.passkey_login");
+    assert_eq!(row.1, "session");
 }
 
 #[sqlx::test(migrations = "./migrations")]

@@ -10,6 +10,14 @@ use super::types::OciManifest;
 use super::{RepoAccess, resolve_repo_with_access, resolve_repo_with_optional_access};
 use crate::store::AppState;
 
+/// A84: Known OCI/Docker manifest media types.
+const ALLOWED_MEDIA_TYPES: &[&str] = &[
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+];
+
 // ---------------------------------------------------------------------------
 // HEAD /v2/{name}/manifests/{reference}
 // ---------------------------------------------------------------------------
@@ -102,6 +110,13 @@ pub async fn put_manifest(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/vnd.oci.image.manifest.v1+json")
         .to_string();
+
+    // A84: Validate media type against known OCI/Docker manifest types
+    if !ALLOWED_MEDIA_TYPES.contains(&media_type.as_str()) {
+        return Err(RegistryError::ManifestInvalid(format!(
+            "unsupported media type: {media_type}"
+        )));
+    }
 
     // Parse the manifest to validate and extract referenced blobs
     let manifest: OciManifest = serde_json::from_slice(&content)

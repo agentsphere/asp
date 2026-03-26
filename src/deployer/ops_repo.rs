@@ -36,6 +36,11 @@ pub async fn init_ops_repo(
     name: &str,
     branch: &str,
 ) -> Result<PathBuf, DeployerError> {
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(DeployerError::SyncFailed(
+            "invalid ops repo name: must not contain path separators or '..'".into(),
+        ));
+    }
     let dest = repos_dir.join(format!("{name}.git"));
 
     tokio::fs::create_dir_all(&dest)

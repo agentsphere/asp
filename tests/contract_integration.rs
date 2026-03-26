@@ -156,6 +156,9 @@ async fn contract_audit_log_list(pool: PgPool) {
     // Create something to generate audit entries
     create_project(&app, &token, "audit-contract", "private").await;
 
+    // Audit entries are written asynchronously — wait for them to land
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
     let (status, body) = helpers::get_json(&app, &token, "/api/audit-log?limit=10").await;
 
     assert_eq!(status, StatusCode::OK);
@@ -472,12 +475,12 @@ async fn contract_deployment_list(pool: PgPool) {
     let (status, body) = helpers::get_json(
         &app,
         &token,
-        &format!("/api/projects/{proj_id}/deployments?limit=10"),
+        &format!("/api/projects/{proj_id}/deploy-releases?limit=10"),
     )
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_list_response(&body, "deployments");
+    assert_list_response(&body, "releases");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -487,13 +490,24 @@ async fn contract_deployment_with_data(pool: PgPool) {
     let token = admin_token.clone();
     let proj_id = create_project(&app, &token, "dep-data-proj", "private").await;
 
-    // Insert a deployment directly
-    let dep_id = Uuid::new_v4();
+    // Insert a deploy target + release
+    let target_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO deployments (id, project_id, environment, image_ref, desired_status, current_status)
-         VALUES ($1, $2, 'staging', 'app:v1', 'active', 'healthy')",
+        "INSERT INTO deploy_targets (id, project_id, name, environment, default_strategy, is_active)
+         VALUES ($1, $2, 'staging', 'staging', 'rolling', true)",
     )
-    .bind(dep_id)
+    .bind(target_id)
+    .bind(proj_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let release_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO deploy_releases (id, target_id, project_id, image_ref, strategy, phase, health)
+         VALUES ($1, $2, $3, 'app:v1', 'rolling', 'progressing', 'healthy')",
+    )
+    .bind(release_id)
+    .bind(target_id)
     .bind(proj_id)
     .execute(&pool)
     .await
@@ -502,23 +516,24 @@ async fn contract_deployment_with_data(pool: PgPool) {
     let (status, body) = helpers::get_json(
         &app,
         &token,
-        &format!("/api/projects/{proj_id}/deployments?limit=10"),
+        &format!("/api/projects/{proj_id}/deploy-releases?limit=10"),
     )
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    let items = assert_list_response(&body, "deployments");
+    let items = assert_list_response(&body, "releases");
     assert!(!items.is_empty());
 
-    // Deployment shape
-    let dep = &items[0];
-    assert_uuid(&dep["id"], "deployment.id");
-    assert_uuid(&dep["project_id"], "deployment.project_id");
-    assert!(dep["environment"].is_string(), "missing environment");
-    assert!(dep["image_ref"].is_string(), "missing image_ref");
-    assert!(dep["desired_status"].is_string(), "missing desired_status");
-    assert!(dep["current_status"].is_string(), "missing current_status");
-    assert_timestamp(&dep["created_at"], "deployment.created_at");
+    // Release shape
+    let rel = &items[0];
+    assert_uuid(&rel["id"], "release.id");
+    assert_uuid(&rel["project_id"], "release.project_id");
+    assert_uuid(&rel["target_id"], "release.target_id");
+    assert!(rel["image_ref"].is_string(), "missing image_ref");
+    assert!(rel["strategy"].is_string(), "missing strategy");
+    assert!(rel["phase"].is_string(), "missing phase");
+    assert!(rel["health"].is_string(), "missing health");
+    assert_timestamp(&rel["created_at"], "release.created_at");
 }
 
 // =========================================================================
@@ -712,8 +727,10 @@ async fn contract_admin_roles(pool: PgPool) {
     let (status, body) = helpers::get_json(&app, &token, "/api/admin/roles").await;
 
     assert_eq!(status, StatusCode::OK);
-    // Roles endpoint returns a bare array
-    let roles = body.as_array().expect("roles should be array");
+    // Roles endpoint returns ListResponse
+    let roles = body["items"]
+        .as_array()
+        .expect("roles should have items array");
     assert!(!roles.is_empty());
 
     // Role shape
@@ -782,7 +799,7 @@ async fn contract_admin_permissions(pool: PgPool) {
 
     // Get any role to list its permissions
     let (_, roles) = helpers::get_json(&app, &token, "/api/admin/roles").await;
-    let admin_role = roles
+    let admin_role = roles["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -798,7 +815,9 @@ async fn contract_admin_permissions(pool: PgPool) {
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    let perms = body.as_array().expect("permissions should be array");
+    let perms = body["items"]
+        .as_array()
+        .expect("permissions should have items array");
     assert!(!perms.is_empty());
 
     // Permission shape
@@ -843,7 +862,9 @@ async fn contract_api_tokens(pool: PgPool) {
     let (status, list_body) = helpers::get_json(&app, &token, "/api/tokens").await;
 
     assert_eq!(status, StatusCode::OK);
-    let tokens = list_body.as_array().expect("tokens should be array");
+    let tokens = list_body["items"]
+        .as_array()
+        .expect("tokens should have items array");
     assert!(!tokens.is_empty());
 
     // Token list shape (no plaintext token in list)
@@ -867,12 +888,12 @@ async fn contract_preview_list(pool: PgPool) {
     let (status, body) = helpers::get_json(
         &app,
         &token,
-        &format!("/api/projects/{proj_id}/previews?limit=10"),
+        &format!("/api/projects/{proj_id}/targets?limit=10"),
     )
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_list_response(&body, "previews");
+    assert_list_response(&body, "targets");
 }
 
 // =========================================================================
@@ -1088,7 +1109,7 @@ async fn contract_mcp_admin_assign_role(pool: PgPool) {
 
     // Get a role to assign
     let (_, roles_body) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;
-    let viewer_role = roles_body
+    let viewer_role = roles_body["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -1118,8 +1139,10 @@ async fn contract_mcp_admin_list_delegations(pool: PgPool) {
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/admin/delegations").await;
 
     assert_eq!(status, StatusCode::OK);
-    // Returns a Vec<Delegation> (array, not ListResponse)
-    assert!(body.is_array(), "delegations should be array");
+    assert!(
+        body["items"].is_array(),
+        "delegations should have items array"
+    );
 }
 
 // -- platform-issues MCP: issue update --
@@ -1316,13 +1339,24 @@ async fn contract_mcp_deployment_get(pool: PgPool) {
     let app = test_router(state);
     let proj_id = create_project(&app, &admin_token, "mcp-dep-get", "private").await;
 
-    // Insert deployment directly
-    let dep_id = Uuid::new_v4();
+    // Insert deploy target + release
+    let target_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO deployments (id, project_id, environment, image_ref, desired_status, current_status)
-         VALUES ($1, $2, 'production', 'myapp:v2', 'active', 'healthy')",
+        "INSERT INTO deploy_targets (id, project_id, name, environment, default_strategy, is_active)
+         VALUES ($1, $2, 'prod', 'production', 'rolling', true)",
     )
-    .bind(dep_id)
+    .bind(target_id)
+    .bind(proj_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let release_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO deploy_releases (id, target_id, project_id, image_ref, strategy, phase, health)
+         VALUES ($1, $2, $3, 'myapp:v2', 'rolling', 'progressing', 'healthy')",
+    )
+    .bind(release_id)
+    .bind(target_id)
     .bind(proj_id)
     .execute(&pool)
     .await
@@ -1331,24 +1365,21 @@ async fn contract_mcp_deployment_get(pool: PgPool) {
     let (status, body) = helpers::get_json(
         &app,
         &admin_token,
-        &format!("/api/projects/{proj_id}/deployments/production"),
+        &format!("/api/projects/{proj_id}/deploy-releases/{release_id}"),
     )
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_uuid(&body["id"], "deployment.id");
-    assert_uuid(&body["project_id"], "deployment.project_id");
-    assert_eq!(body["environment"], "production");
+    assert_uuid(&body["id"], "release.id");
+    assert_uuid(&body["project_id"], "release.project_id");
+    assert_uuid(&body["target_id"], "release.target_id");
     assert_eq!(body["image_ref"], "myapp:v2");
-    assert!(body["desired_status"].is_string(), "missing desired_status");
-    assert!(body["current_status"].is_string(), "missing current_status");
-    assert_timestamp(&body["created_at"], "deployment.created_at");
-    assert_timestamp(&body["updated_at"], "deployment.updated_at");
+    assert!(body["strategy"].is_string(), "missing strategy");
+    assert!(body["phase"].is_string(), "missing phase");
+    assert!(body["health"].is_string(), "missing health");
+    assert_timestamp(&body["created_at"], "release.created_at");
+    assert_timestamp(&body["updated_at"], "release.updated_at");
     // Nullable fields
-    assert!(
-        body["ops_repo_id"].is_string() || body["ops_repo_id"].is_null(),
-        "ops_repo_id should be string or null"
-    );
     assert!(
         body["deployed_by"].is_string() || body["deployed_by"].is_null(),
         "deployed_by should be string or null"
@@ -1361,24 +1392,36 @@ async fn contract_mcp_deployment_history(pool: PgPool) {
     let app = test_router(state);
     let proj_id = create_project(&app, &admin_token, "mcp-dep-hist", "private").await;
 
-    // Insert deployment + history
-    let dep_id = Uuid::new_v4();
+    // Insert deploy target + release + history
+    let target_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO deployments (id, project_id, environment, image_ref, desired_status, current_status)
-         VALUES ($1, $2, 'staging', 'app:v1', 'active', 'healthy')",
+        "INSERT INTO deploy_targets (id, project_id, name, environment, default_strategy, is_active)
+         VALUES ($1, $2, 'staging', 'staging', 'rolling', true)",
     )
-    .bind(dep_id)
+    .bind(target_id)
+    .bind(proj_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let release_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO deploy_releases (id, target_id, project_id, image_ref, strategy, phase, health)
+         VALUES ($1, $2, $3, 'app:v1', 'rolling', 'progressing', 'healthy')",
+    )
+    .bind(release_id)
+    .bind(target_id)
     .bind(proj_id)
     .execute(&pool)
     .await
     .unwrap();
 
     sqlx::query(
-        "INSERT INTO deployment_history (id, deployment_id, image_ref, action, status)
-         VALUES ($1, $2, 'app:v1', 'deploy', 'success')",
+        "INSERT INTO release_history (id, release_id, target_id, action, phase, image_ref)
+         VALUES ($1, $2, $3, 'created', 'pending', 'app:v1')",
     )
     .bind(Uuid::new_v4())
-    .bind(dep_id)
+    .bind(release_id)
+    .bind(target_id)
     .execute(&pool)
     .await
     .unwrap();
@@ -1386,20 +1429,21 @@ async fn contract_mcp_deployment_history(pool: PgPool) {
     let (status, body) = helpers::get_json(
         &app,
         &admin_token,
-        &format!("/api/projects/{proj_id}/deployments/staging/history?limit=10"),
+        &format!("/api/projects/{proj_id}/deploy-releases/{release_id}/history?limit=10"),
     )
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    let items = assert_list_response(&body, "deployment-history");
+    let items = assert_list_response(&body, "release-history");
     assert!(!items.is_empty());
 
     let entry = &items[0];
     assert_uuid(&entry["id"], "history.id");
-    assert_uuid(&entry["deployment_id"], "history.deployment_id");
+    assert_uuid(&entry["release_id"], "history.release_id");
+    assert_uuid(&entry["target_id"], "history.target_id");
     assert!(entry["image_ref"].is_string(), "missing image_ref");
     assert!(entry["action"].is_string(), "missing action");
-    assert!(entry["status"].is_string(), "missing status");
+    assert!(entry["phase"].is_string(), "missing phase");
     assert_timestamp(&entry["created_at"], "history.created_at");
 }
 

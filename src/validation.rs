@@ -60,11 +60,18 @@ pub fn check_url(value: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+const GIT_UNSAFE: &[char] = &['~', '^', ':', '*', '[', '?', '\\'];
+
 pub fn check_branch_name(value: &str) -> Result<(), ApiError> {
     check_length("branch name", value, 1, 255)?;
     if value.contains("..") || value.contains('\0') {
         return Err(ApiError::BadRequest(
             "branch name must not contain '..' or null bytes".into(),
+        ));
+    }
+    if value.contains(GIT_UNSAFE) {
+        return Err(ApiError::BadRequest(
+            "branch name contains unsafe characters".into(),
         ));
     }
     Ok(())
@@ -546,6 +553,29 @@ mod tests {
             matches!(err, ApiError::BadRequest(ref msg) if msg.contains("branch")),
             "256-char branch should produce BadRequest, got: {err:?}"
         );
+    }
+
+    #[rstest]
+    #[case("feature~1", "tilde")]
+    #[case("main^2", "caret")]
+    #[case("refs:heads", "colon")]
+    #[case("feature*", "asterisk")]
+    #[case("branch[0]", "bracket")]
+    #[case("what?", "question mark")]
+    #[case("back\\slash", "backslash")]
+    fn branch_name_git_unsafe_chars_rejected(#[case] input: &str, #[case] label: &str) {
+        let err = check_branch_name(input).unwrap_err();
+        assert!(
+            matches!(err, ApiError::BadRequest(ref msg) if msg.contains("unsafe")),
+            "{label} in branch name should produce BadRequest with 'unsafe', got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn branch_name_without_git_unsafe_chars_ok() {
+        assert!(check_branch_name("feature/my-branch").is_ok());
+        assert!(check_branch_name("release-1.0").is_ok());
+        assert!(check_branch_name("hotfix_urgent").is_ok());
     }
 
     // -----------------------------------------------------------------------

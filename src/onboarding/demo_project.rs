@@ -198,7 +198,7 @@ pub async fn create_demo_project(
     let repo_path_str = repo_path.to_string_lossy().to_string();
 
     // Generate a slug
-    let namespace_slug = crate::deployer::namespace::slugify_namespace(project_name);
+    let namespace_slug = crate::deployer::namespace::slugify_namespace(project_name)?;
 
     // Insert project row
     let project_id: Uuid = sqlx::query_scalar(
