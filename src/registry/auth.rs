@@ -47,6 +47,26 @@ impl IntoResponse for RegistryAuthRejection {
     }
 }
 
+/// Rejection for rate-limited registry requests — returns 429 with Retry-After.
+pub struct RegistryRateLimitRejection;
+
+impl IntoResponse for RegistryRateLimitRejection {
+    fn into_response(self) -> Response {
+        let body = serde_json::json!({
+            "errors": [{
+                "code": "TOOMANYREQUESTS",
+                "message": "too many requests",
+                "detail": {}
+            }]
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", HeaderValue::from_static("30"));
+
+        (StatusCode::TOO_MANY_REQUESTS, headers, axum::Json(body)).into_response()
+    }
+}
+
 struct TokenLookup {
     user_id: Uuid,
     user_name: String,
@@ -57,7 +77,7 @@ struct TokenLookup {
 }
 
 impl FromRequestParts<AppState> for RegistryUser {
-    type Rejection = RegistryAuthRejection;
+    type Rejection = Response;
 
     async fn from_request_parts(
         parts: &mut Parts,
@@ -69,7 +89,7 @@ impl FromRequestParts<AppState> for RegistryUser {
             .and_then(|v| v.to_str().ok());
 
         let Some(auth_value) = auth_header else {
-            return Err(RegistryAuthRejection);
+            return Err(RegistryAuthRejection.into_response());
         };
 
         // Try Bearer token first
@@ -86,7 +106,7 @@ impl FromRequestParts<AppState> for RegistryUser {
                     registry_tag_pattern: user.registry_tag_pattern,
                 });
             }
-            return Err(RegistryAuthRejection);
+            return Err(RegistryAuthRejection.into_response());
         }
 
         // Try Basic auth (docker login sends user:password as base64)
@@ -95,18 +115,19 @@ impl FromRequestParts<AppState> for RegistryUser {
                 && let Ok(creds) = String::from_utf8(decoded)
                 && let Some((username, password)) = creds.split_once(':')
             {
-                // S53: rate-limit registry basic auth
+                // S53: rate-limit registry basic auth.
+                // 4 pipelines × 3 steps × ~50 auth calls/step = ~600 calls per 5min window.
                 if crate::auth::rate_limit::check_rate(
                     &state.valkey,
                     "registry_auth",
                     username,
-                    20,
+                    2000,
                     300,
                 )
                 .await
                 .is_err()
                 {
-                    return Err(RegistryAuthRejection);
+                    return Err(RegistryRateLimitRejection.into_response());
                 }
                 if let Some(user) = lookup_basic_auth(&state.pool, username, password).await
                     && user.is_active
@@ -120,10 +141,10 @@ impl FromRequestParts<AppState> for RegistryUser {
                     });
                 }
             }
-            return Err(RegistryAuthRejection);
+            return Err(RegistryAuthRejection.into_response());
         }
 
-        Err(RegistryAuthRejection)
+        Err(RegistryAuthRejection.into_response())
     }
 }
 

@@ -601,8 +601,8 @@ pub async fn ensure_namespace(
     )
     .await?;
 
-    // S23/S24: NetworkPolicy — allow DNS + platform API + internet, block cross-namespace access.
-    // Applied in all modes (unlike PSA which is dev-mode-gated for hostPath compatibility).
+    // S23/S24: NetworkPolicy — allow DNS + platform API + same-namespace + internet,
+    // block cross-namespace access to private IPs.
     let netpol = json!({
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
@@ -614,6 +614,17 @@ pub async fn ensure_namespace(
             "podSelector": {},
             "policyTypes": ["Egress"],
             "egress": [
+                // Allow pods within the same namespace to communicate (e.g. app → DB)
+                {
+                    "to": [{
+                        "namespaceSelector": {
+                            "matchLabels": {
+                                "kubernetes.io/metadata.name": ns_name
+                            }
+                        }
+                    }]
+                },
+                // Allow egress to the platform API
                 {
                     "to": [{
                         "namespaceSelector": {
@@ -624,6 +635,7 @@ pub async fn ensure_namespace(
                     }],
                     "ports": [{"port": 8080, "protocol": "TCP"}]
                 },
+                // Allow DNS lookups via kube-dns
                 {
                     "to": [{
                         "namespaceSelector": {
@@ -642,6 +654,7 @@ pub async fn ensure_namespace(
                         {"port": 53, "protocol": "TCP"}
                     ]
                 },
+                // Allow public internet (block private ranges for cross-namespace isolation)
                 {
                     "to": [{
                         "ipBlock": {

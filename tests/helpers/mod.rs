@@ -217,6 +217,7 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         observe_retention_days: 30,
         master_key_previous: None,
         trust_proxy_cidrs: vec![],
+        registry_proxy_blobs: false,
     };
 
     // Seed registry images from OCI tarballs (idempotent, uses file-based cache)

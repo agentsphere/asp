@@ -123,6 +123,7 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
         observe_retention_days: 30,
         master_key_previous: None,
         trust_proxy_cidrs: vec![],
+        registry_proxy_blobs: false,
     };
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");

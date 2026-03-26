@@ -102,6 +102,9 @@ pub struct Config {
     pub master_key_previous: Option<String>,
     /// Trusted proxy CIDRs (S59). When non-empty, X-Forwarded-For only trusted from these IPs.
     pub trust_proxy_cidrs: Vec<String>,
+    /// When true, stream registry blobs through the platform instead of redirecting to `MinIO`.
+    /// Needed when `MinIO` is not directly reachable from registry clients (e.g. kaniko in pods).
+    pub registry_proxy_blobs: bool,
 }
 
 fn parse_cors_origins(s: &str) -> Vec<String> {
@@ -265,6 +268,9 @@ impl Config {
                 .ok()
                 .map(|v| v.split(',').map(|s| s.trim().to_owned()).collect())
                 .unwrap_or_default(),
+            registry_proxy_blobs: env::var("REGISTRY_PROXY_BLOBS")
+                .ok()
+                .is_some_and(|v| v == "true"),
         }
     }
 
@@ -349,6 +355,7 @@ impl Config {
             observe_retention_days: 30,
             master_key_previous: None,
             trust_proxy_cidrs: vec![],
+            registry_proxy_blobs: false,
         }
     }
 }

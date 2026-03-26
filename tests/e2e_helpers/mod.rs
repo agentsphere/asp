@@ -261,6 +261,9 @@ pub async fn e2e_state_with_api_url(
         observe_retention_days: 30,
         master_key_previous: None,
         trust_proxy_cidrs: vec![],
+        registry_proxy_blobs: std::env::var("REGISTRY_PROXY_BLOBS")
+            .ok()
+            .is_some_and(|v| v == "true"),
     };
 
     // Seed registry images from OCI tarballs (idempotent, uses file-based cache)
