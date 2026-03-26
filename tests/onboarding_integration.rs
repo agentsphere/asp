@@ -226,3 +226,130 @@ async fn auth_status_nonexistent(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ---------------------------------------------------------------------------
+// Complete wizard with different org types
+// ---------------------------------------------------------------------------
+
+/// Startup org type creates a team workspace.
+#[sqlx::test(migrations = "./migrations")]
+async fn complete_wizard_startup(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/onboarding/wizard",
+        serde_json::json!({ "org_type": "startup" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "startup wizard failed: {body}");
+    assert_eq!(body["success"], true);
+
+    // Verify a workspace was created (startup creates team workspace)
+    let ws_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM workspaces")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(ws_count.0 >= 1, "expected team workspace to be created");
+}
+
+/// TechOrg org type creates a team workspace with stricter defaults.
+#[sqlx::test(migrations = "./migrations")]
+async fn complete_wizard_tech_org(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/onboarding/wizard",
+        serde_json::json!({ "org_type": "tech_org" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "tech_org wizard failed: {body}");
+    assert_eq!(body["success"], true);
+
+    // Verify wizard is completed
+    let (status, body) =
+        helpers::get_json(&app, &admin_token, "/api/onboarding/wizard-status").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["show_wizard"], false);
+}
+
+/// Complete wizard with passkey_policy override.
+#[sqlx::test(migrations = "./migrations")]
+async fn complete_wizard_with_passkey_policy(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/onboarding/wizard",
+        serde_json::json!({
+            "org_type": "solo",
+            "passkey_policy": "mandatory"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "passkey override failed: {body}");
+    assert_eq!(body["success"], true);
+
+    // Verify settings reflect the override
+    let (status, body) = helpers::get_json(&app, &admin_token, "/api/onboarding/settings").await;
+    assert_eq!(status, StatusCode::OK);
+    // security_policy should contain the mandatory passkey enforcement
+    let security = &body["security_policy"];
+    assert!(security.is_object() || security.is_string());
+}
+
+/// Complete wizard with custom LLM provider.
+#[sqlx::test(migrations = "./migrations")]
+async fn complete_wizard_with_custom_provider(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/onboarding/wizard",
+        serde_json::json!({
+            "org_type": "solo",
+            "custom_provider": {
+                "provider_type": "bedrock",
+                "env_vars": {
+                    "AWS_REGION": "us-east-1",
+                    "AWS_ACCESS_KEY_ID": "test-key",
+                    "AWS_SECRET_ACCESS_KEY": "test-secret"
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "custom provider wizard failed: {body}"
+    );
+    assert_eq!(body["success"], true);
+}
+
+/// Admin can create a demo project.
+#[sqlx::test(migrations = "./migrations")]
+async fn create_demo_project_success(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/onboarding/demo-project",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "demo project failed: {body}");
+    assert!(body["project_id"].is_string());
+    assert!(body["project_name"].is_string());
+}

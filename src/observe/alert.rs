@@ -172,12 +172,14 @@ pub fn router() -> Router<AppState> {
 // ---------------------------------------------------------------------------
 
 async fn require_alert_manage(state: &AppState, auth: &AuthUser) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission(
+    // A7: Use has_permission_scoped to enforce API token scopes
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         None,
         Permission::AlertManage,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;
@@ -189,12 +191,14 @@ async fn require_alert_manage(state: &AppState, auth: &AuthUser) -> Result<(), A
 }
 
 async fn require_observe_read(state: &AppState, auth: &AuthUser) -> Result<(), ApiError> {
-    let allowed = resolver::has_permission(
+    // A7: Use has_permission_scoped to enforce API token scopes
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         auth.user_id,
         None,
         Permission::ObserveRead,
+        auth.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;

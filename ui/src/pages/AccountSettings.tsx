@@ -92,8 +92,8 @@ function PasskeySection() {
   const [success, setSuccess] = useState('');
 
   const load = () => {
-    api.get<PasskeyResponse[]>('/api/auth/passkeys')
-      .then(setPasskeys)
+    api.get<{ items: PasskeyResponse[] }>('/api/auth/passkeys')
+      .then(r => setPasskeys(r.items))
       .catch(e => console.warn(e))
       .finally(() => setLoading(false));
   };

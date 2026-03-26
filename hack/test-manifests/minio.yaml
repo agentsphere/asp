@@ -16,14 +16,18 @@ spec:
       command: ["sh", "-c"]
       args:
         - |
-          apk add --no-cache openssl &&
-          mkdir -p /certs/CAs &&
+          set -e
+          echo "[gen-certs] installing openssl..."
+          apk add --no-cache openssl
+          echo "[gen-certs] generating self-signed cert..."
+          mkdir -p /certs/CAs
           openssl req -new -x509 -days 3650 -nodes \
             -subj "/CN=minio" \
-            -keyout /certs/private.key -out /certs/public.crt &&
-          cp /certs/public.crt /certs/CAs/public.crt &&
-          chmod 644 /certs/public.crt /certs/CAs/public.crt &&
+            -keyout /certs/private.key -out /certs/public.crt
+          cp /certs/public.crt /certs/CAs/public.crt
+          chmod 644 /certs/public.crt /certs/CAs/public.crt
           chmod 600 /certs/private.key
+          echo "[gen-certs] done — cert ready"
       volumeMounts:
         - name: certs
           mountPath: /certs

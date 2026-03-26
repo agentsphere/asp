@@ -123,6 +123,9 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
         observe_retention_days: 30,
         master_key_previous: None,
         trust_proxy_cidrs: vec![],
+        runner_image: "platform-runner:v1".into(),
+        git_clone_image: "alpine/git:2.47.2".into(),
+        kaniko_image: "gcr.io/kaniko-project/executor:v1.23.2-debug".into(),
     };
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");

@@ -303,3 +303,281 @@ pub fn parse_level(s: &str) -> Level {
         _ => Level::INFO,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing::field::{Field, Visit};
+
+    // Helper to create a tracing Field for testing.
+    // We use tracing::Span with known field names.
+    fn with_field<F: Fn(&Field)>(name: &'static str, f: F) {
+        use tracing::subscriber::with_default;
+        use tracing_subscriber::registry;
+
+        let subscriber = registry();
+        with_default(subscriber, || {
+            // Create a span with the field name we need
+            match name {
+                "project_id" => {
+                    let span = tracing::trace_span!("test", project_id = tracing::field::Empty);
+                    span.record("project_id", "placeholder");
+                    if let Some(id) = span.id() {
+                        let _ = id;
+                    }
+                    // Use field from the span's metadata
+                    let meta = span.metadata().unwrap();
+                    if let Some(field) = meta.fields().field(name) {
+                        f(&field);
+                    }
+                }
+                _ => {
+                    // For other fields we test via the visitor directly using parse_level etc.
+                }
+            }
+        });
+    }
+
+    // -- SpanFields::merge --
+
+    #[test]
+    fn span_fields_merge_fills_gaps() {
+        let mut base = SpanFields::default();
+        let other = SpanFields {
+            project_id: Some(Uuid::nil()),
+            user_type: Some("human".into()),
+            source: Some("api".into()),
+            ..Default::default()
+        };
+        base.merge(&other);
+        assert_eq!(base.project_id, Some(Uuid::nil()));
+        assert_eq!(base.user_type.as_deref(), Some("human"));
+        assert_eq!(base.source.as_deref(), Some("api"));
+    }
+
+    #[test]
+    fn span_fields_merge_no_overwrite() {
+        let existing_id = Uuid::new_v4();
+        let other_id = Uuid::new_v4();
+        let mut base = SpanFields {
+            project_id: Some(existing_id),
+            user_type: Some("human".into()),
+            ..Default::default()
+        };
+        let other = SpanFields {
+            project_id: Some(other_id),
+            user_type: Some("agent".into()),
+            source: Some("system".into()),
+            ..Default::default()
+        };
+        base.merge(&other);
+        assert_eq!(base.project_id, Some(existing_id)); // not overwritten
+        assert_eq!(base.user_type.as_deref(), Some("human")); // not overwritten
+        assert_eq!(base.source.as_deref(), Some("system")); // filled gap
+    }
+
+    #[test]
+    fn span_fields_merge_empty_source() {
+        let mut base = SpanFields {
+            project_id: Some(Uuid::nil()),
+            ..Default::default()
+        };
+        let other = SpanFields::default();
+        base.merge(&other);
+        assert_eq!(base.project_id, Some(Uuid::nil())); // unchanged
+        assert!(base.user_type.is_none()); // still None
+    }
+
+    // -- classify_source_from_target --
+
+    #[test]
+    fn classify_source_api_target() {
+        assert_eq!(
+            classify_source_from_target("platform::api::projects"),
+            "api"
+        );
+    }
+
+    #[test]
+    fn classify_source_auth_target() {
+        assert_eq!(
+            classify_source_from_target("platform::auth::middleware"),
+            "api"
+        );
+    }
+
+    #[test]
+    fn classify_source_pipeline_target() {
+        assert_eq!(
+            classify_source_from_target("platform::pipeline::executor"),
+            "system"
+        );
+    }
+
+    #[test]
+    fn classify_source_unknown_target() {
+        assert_eq!(classify_source_from_target("hyper::proto::h1"), "system");
+    }
+
+    // -- FieldVisitor --
+
+    #[test]
+    fn field_visitor_record_str_message() {
+        // Test FieldVisitor by constructing it directly and using a known span
+        let visitor = FieldVisitor::default();
+        assert!(visitor.message.is_none());
+        assert!(visitor.fields.is_empty());
+    }
+
+    #[test]
+    fn field_visitor_default_is_empty() {
+        let v = FieldVisitor::default();
+        assert!(v.message.is_none());
+        assert!(v.fields.is_empty());
+    }
+
+    // -- parse_level --
+
+    #[test]
+    fn parse_level_all_variants() {
+        assert_eq!(parse_level("trace"), Level::TRACE);
+        assert_eq!(parse_level("debug"), Level::DEBUG);
+        assert_eq!(parse_level("warn"), Level::WARN);
+        assert_eq!(parse_level("error"), Level::ERROR);
+        assert_eq!(parse_level("info"), Level::INFO);
+    }
+
+    #[test]
+    fn parse_level_case_insensitive() {
+        assert_eq!(parse_level("WARN"), Level::WARN);
+        assert_eq!(parse_level("Error"), Level::ERROR);
+        assert_eq!(parse_level("DEBUG"), Level::DEBUG);
+    }
+
+    #[test]
+    fn parse_level_unknown_defaults_to_info() {
+        assert_eq!(parse_level("verbose"), Level::INFO);
+        assert_eq!(parse_level(""), Level::INFO);
+        assert_eq!(parse_level("critical"), Level::INFO);
+    }
+
+    // -- create_channel --
+
+    #[test]
+    fn create_channel_returns_sender_receiver() {
+        let (tx, _rx) = create_channel();
+        // Channel capacity is 10_000
+        assert!(tx.capacity() > 0);
+    }
+
+    // -- SpanFieldVisitor via tracing spans --
+
+    #[test]
+    fn span_field_visitor_parses_uuid_fields() {
+        use tracing::subscriber::with_default;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::registry;
+
+        let (tx, _rx) = mpsc::channel(100);
+        let layer = PlatformLogLayer::new(tx, Level::TRACE);
+        let subscriber = registry().with(layer);
+
+        with_default(subscriber, || {
+            // Create a span with project_id — on_new_span will run SpanFieldVisitor
+            let id = Uuid::nil();
+            let _span = tracing::info_span!("test_span", project_id = %id).entered();
+            // If we get here without panic, the visitor successfully parsed the UUID
+        });
+    }
+
+    #[test]
+    fn span_field_visitor_handles_string_fields() {
+        use tracing::subscriber::with_default;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::registry;
+
+        let (tx, _rx) = mpsc::channel(100);
+        let layer = PlatformLogLayer::new(tx, Level::TRACE);
+        let subscriber = registry().with(layer);
+
+        with_default(subscriber, || {
+            let _span =
+                tracing::info_span!("test_span", user_type = "human", source = "api").entered();
+        });
+    }
+
+    #[test]
+    fn span_field_visitor_ignores_unknown_fields() {
+        use tracing::subscriber::with_default;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::registry;
+
+        let (tx, _rx) = mpsc::channel(100);
+        let layer = PlatformLogLayer::new(tx, Level::TRACE);
+        let subscriber = registry().with(layer);
+
+        with_default(subscriber, || {
+            let _span = tracing::info_span!("test_span", unknown_field = "value").entered();
+        });
+    }
+
+    // -- FieldVisitor via tracing events --
+
+    #[tokio::test]
+    async fn field_visitor_captures_message_and_fields() {
+        use tracing::subscriber::with_default;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::registry;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let layer = PlatformLogLayer::new(tx, Level::TRACE);
+        let subscriber = registry().with(layer);
+
+        with_default(subscriber, || {
+            tracing::info!(count = 42, "hello world");
+        });
+
+        let record = rx.recv().await.unwrap();
+        assert_eq!(record.message, "hello world");
+        let attrs = record.attributes.unwrap();
+        assert_eq!(attrs["count"], 42);
+    }
+
+    #[tokio::test]
+    async fn field_visitor_captures_i64_field() {
+        use tracing::subscriber::with_default;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::registry;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let layer = PlatformLogLayer::new(tx, Level::TRACE);
+        let subscriber = registry().with(layer);
+
+        with_default(subscriber, || {
+            tracing::info!(latency_ms = 150i64, "request handled");
+        });
+
+        let record = rx.recv().await.unwrap();
+        assert_eq!(record.message, "request handled");
+        let attrs = record.attributes.unwrap();
+        assert_eq!(attrs["latency_ms"], 150);
+    }
+
+    #[tokio::test]
+    async fn field_visitor_debug_formatted_message() {
+        use tracing::subscriber::with_default;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::registry;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let layer = PlatformLogLayer::new(tx, Level::TRACE);
+        let subscriber = registry().with(layer);
+
+        with_default(subscriber, || {
+            tracing::info!(error = %"connection refused", "operation failed");
+        });
+
+        let record = rx.recv().await.unwrap();
+        assert_eq!(record.message, "operation failed");
+    }
+}

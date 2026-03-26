@@ -375,3 +375,81 @@ pub async fn is_ready(state: &AppState) -> bool {
     let (pg, vk) = tokio::join!(check_postgres(&state.pool), check_valkey(&state.valkey),);
     pg.status == SubsystemStatus::Healthy && vk.status == SubsystemStatus::Healthy
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    // -- elapsed_ms --
+
+    #[test]
+    fn elapsed_ms_returns_small_value() {
+        let start = Instant::now();
+        let ms = elapsed_ms(start);
+        // Should be very small (< 100ms) since we just created it
+        assert!(ms < 100);
+    }
+
+    // -- check_git_repos --
+
+    #[test]
+    fn check_git_repos_path_exists() {
+        let result = check_git_repos(std::path::Path::new("/tmp"));
+        assert_eq!(result.name, "git_repos");
+        assert_eq!(result.status, SubsystemStatus::Healthy);
+        assert!(result.message.is_none());
+    }
+
+    #[test]
+    fn check_git_repos_path_missing() {
+        let result = check_git_repos(std::path::Path::new("/nonexistent/path/xyz"));
+        assert_eq!(result.name, "git_repos");
+        assert_eq!(result.status, SubsystemStatus::Unhealthy);
+        assert!(result.message.unwrap().contains("path not found"));
+    }
+
+    // -- check_secrets_engine --
+
+    #[test]
+    fn check_secrets_engine_with_key() {
+        let key = "my-secret-key".to_string();
+        let result = check_secrets_engine(Some(&key), false);
+        assert_eq!(result.name, "secrets");
+        assert_eq!(result.status, SubsystemStatus::Healthy);
+        assert!(result.message.is_none());
+    }
+
+    #[test]
+    fn check_secrets_engine_dev_mode() {
+        let result = check_secrets_engine(None, true);
+        assert_eq!(result.status, SubsystemStatus::Healthy);
+        assert_eq!(result.message.as_deref(), Some("dev mode (auto key)"));
+    }
+
+    #[test]
+    fn check_secrets_engine_no_key_no_dev() {
+        let result = check_secrets_engine(None, false);
+        assert_eq!(result.status, SubsystemStatus::Unhealthy);
+        assert!(result.message.unwrap().contains("PLATFORM_MASTER_KEY"));
+    }
+
+    // -- check_registry --
+
+    #[test]
+    fn check_registry_configured() {
+        let url = "registry.example.com:5000".to_string();
+        let result = check_registry(Some(&url));
+        assert_eq!(result.name, "registry");
+        assert_eq!(result.status, SubsystemStatus::Healthy);
+        assert!(result.message.is_none());
+    }
+
+    #[test]
+    fn check_registry_not_configured() {
+        let result = check_registry(None);
+        assert_eq!(result.name, "registry");
+        assert_eq!(result.status, SubsystemStatus::Degraded);
+        assert!(result.message.unwrap().contains("not configured"));
+    }
+}

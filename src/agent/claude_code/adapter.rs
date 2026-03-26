@@ -33,6 +33,8 @@ impl AgentProvider for ClaudeCodeProvider {
             registry_push_url: params.registry_push_url,
             project_name: params.project_name,
             session_short_id: params.session_short_id,
+            default_runner_image: params.default_runner_image,
+            git_clone_image: params.git_clone_image,
         }))
     }
 

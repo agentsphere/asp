@@ -12,8 +12,8 @@ export function Tokens() {
   const [error, setError] = useState('');
 
   const load = () => {
-    api.get<ApiToken[]>('/api/tokens?limit=100')
-      .then(r => setTokens(r)).catch(e => console.warn(e));
+    api.get<{ items: ApiToken[] }>('/api/tokens?limit=100')
+      .then(r => setTokens(r.items)).catch(e => console.warn(e));
   };
   useEffect(load, []);
 

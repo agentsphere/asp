@@ -303,6 +303,46 @@ mod tests {
         assert_eq!(json["fields"][1], "email invalid");
     }
 
+    #[tokio::test]
+    async fn forbidden_body_has_error_field() {
+        let resp = ApiError::Forbidden.into_response();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn unauthorized_body_has_error_field() {
+        let resp = ApiError::Unauthorized.into_response();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn too_many_requests_body_has_error_field() {
+        let resp = ApiError::TooManyRequests.into_response();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "too many requests");
+    }
+
+    #[tokio::test]
+    async fn bad_gateway_body_contains_message() {
+        let resp = ApiError::BadGateway("upstream timeout".into()).into_response();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "upstream timeout");
+    }
+
     /// Minimal implementation of `sqlx::DatabaseError` for testing From<sqlx::Error>.
     #[derive(Debug)]
     struct TestDbError {

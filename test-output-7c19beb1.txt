@@ -1,8 +1,0 @@
-   Compiling platform v0.1.0 (/Users/steven/newKid/business/agentsphere/repos/platform)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 34s
-────────────
- Nextest run ID 196eeae4-2142-4c09-9c15-08b39c8cb08e with nextest profile: ci
-    Starting 1 test across 1 binary (29 tests skipped)
-        PASS [   4.176s] (1/1) platform::admin_integration admin_list_roles
-────────────
-     Summary [   4.180s] 1 test run: 1 passed, 29 skipped

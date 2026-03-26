@@ -14,7 +14,7 @@ export function Roles() {
   const [error, setError] = useState('');
 
   const load = () => {
-    api.get<Role[]>('/api/admin/roles').then(setRoles).catch(e => console.warn(e));
+    api.get<{ items: Role[] }>('/api/admin/roles').then(r => setRoles(r.items)).catch(e => console.warn(e));
   };
   useEffect(load, []);
 
@@ -22,14 +22,14 @@ export function Roles() {
     setSelectedRole(role);
     setError('');
     try {
-      const perms = await api.get<Permission[]>(`/api/admin/roles/${role.id}/permissions`);
-      setRolePerms(perms.map(p => p.name));
+      const permsRes = await api.get<{ items: Permission[] }>(`/api/admin/roles/${role.id}/permissions`);
+      setRolePerms(permsRes.items.map(p => p.name));
       if (allPerms.length === 0) {
         // Fetch all permissions from the first system role (admin) to get the full list
         const adminRole = roles.find(r => r.name === 'admin');
         if (adminRole) {
-          const all = await api.get<Permission[]>(`/api/admin/roles/${adminRole.id}/permissions`);
-          setAllPerms(all);
+          const allRes = await api.get<{ items: Permission[] }>(`/api/admin/roles/${adminRole.id}/permissions`);
+          setAllPerms(allRes.items);
         }
       }
     } catch (err: any) { setError(err.message); }

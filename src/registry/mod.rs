@@ -167,12 +167,14 @@ pub async fn resolve_repo_with_access(
             } else {
                 Permission::RegistryPull
             };
-            let allowed = resolver::has_permission(
+            // A8: Use has_permission_scoped to enforce API token scopes
+            let allowed = resolver::has_permission_scoped(
                 &state.pool,
                 &state.valkey,
                 user.user_id,
                 Some(project_id),
                 perm,
+                user.token_scopes.as_deref(),
             )
             .await
             .map_err(RegistryError::Internal)?;

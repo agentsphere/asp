@@ -113,12 +113,14 @@ async fn batch(
         _ => return Err(ApiError::BadRequest("invalid operation".into())),
     };
 
-    let allowed = resolver::has_permission(
+    // A8: Use has_permission_scoped to enforce API token scopes
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         git_user.user_id,
         Some(project.project_id),
         required_perm,
+        git_user.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;

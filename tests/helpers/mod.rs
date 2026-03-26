@@ -217,6 +217,9 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         observe_retention_days: 30,
         master_key_previous: None,
         trust_proxy_cidrs: vec![],
+        runner_image: "platform-runner:v1".into(),
+        git_clone_image: "alpine/git:2.47.2".into(),
+        kaniko_image: "gcr.io/kaniko-project/executor:v1.23.2-debug".into(),
     };
 
     // Seed registry images from OCI tarballs (idempotent, uses file-based cache)
@@ -609,6 +612,18 @@ pub async fn start_test_server(pool: PgPool) -> (AppState, String, ServerGuard) 
     (state, token, ServerGuard(handle.abort_handle()))
 }
 
+/// Start a real TCP server for pipeline executor tests.
+///
+/// Binds to `PLATFORM_LISTEN_PORT` (same as `start_test_server`) so that K8s
+/// pods in Kind can reach the host via the address configured by the test script.
+/// **Must be serialized** via nextest test-groups to avoid port conflicts — see
+/// `.config/nextest.toml` `serial-listen-port` group.
+///
+/// Returns `(state, admin_token, server_guard)`.
+pub async fn start_pipeline_server(pool: PgPool) -> (AppState, String, ServerGuard) {
+    start_test_server(pool).await
+}
+
 /// Extract JSON body from a response.
 async fn body_json(resp: axum::http::Response<Body>) -> Value {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
@@ -867,4 +882,33 @@ pub async fn insert_pipeline(
     .await
     .unwrap();
     id
+}
+
+/// Poll a pipeline's status until it reaches a terminal state (success/failure/cancelled).
+/// Returns the final status string. Panics if timeout is exceeded.
+pub async fn poll_pipeline_status(
+    app: &Router,
+    token: &str,
+    project_id: Uuid,
+    pipeline_id: &str,
+    timeout_secs: u64,
+) -> String {
+    let start = std::time::Instant::now();
+    loop {
+        let (_, body) = get_json(
+            app,
+            token,
+            &format!("/api/projects/{project_id}/pipelines/{pipeline_id}"),
+        )
+        .await;
+        let status = body["status"].as_str().unwrap_or("unknown").to_string();
+        if matches!(status.as_str(), "success" | "failure" | "cancelled") {
+            return status;
+        }
+        assert!(
+            start.elapsed().as_secs() <= timeout_secs,
+            "pipeline did not complete within {timeout_secs}s, last status: {status}"
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
 }

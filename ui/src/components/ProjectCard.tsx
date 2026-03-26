@@ -49,11 +49,11 @@ export function ProjectCard({ project }: Props) {
 
   // Dashboard shows prod deploy previews only (session previews live on SessionDetail)
   useEffect(() => {
-    if (!visible || !deployment) return;
+    if (!visible) return;
     api.get<IframePanel[]>(`/api/projects/${project.id}/deploy-preview/iframes`)
       .then(setDeployIframes)
       .catch(e => { console.warn('project card:', e); setDeployIframes([]); });
-  }, [visible, deployment, project.id]);
+  }, [visible, project.id]);
 
   const activeIframes = deployIframes;
   const clampedIdx = Math.min(activePreviewIdx, Math.max(0, activeIframes.length - 1));

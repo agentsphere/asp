@@ -77,6 +77,10 @@ pub struct PodBuildParams<'a> {
     pub project_name: Option<&'a str>,
     /// Session short ID for kaniko image naming (e.g., `abc12345`).
     pub session_short_id: Option<&'a str>,
+    /// Default runner image from config (A4: pinned, no `:latest`).
+    pub default_runner_image: &'a str,
+    /// Git clone init container image from config (A4: pinned, no `:latest`).
+    pub git_clone_image: &'a str,
 }
 
 /// Resolves the container image for an agent pod.
@@ -86,13 +90,14 @@ fn resolve_image(
     config: &ProviderConfig,
     project_image: Option<&str>,
     registry_url: Option<&str>,
+    default_runner_image: &str,
 ) -> String {
     if let Some(image) = config.image.as_deref().or(project_image) {
         return image.to_string();
     }
     match registry_url {
-        Some(reg) => format!("{reg}/platform-runner:latest"),
-        None => "platform-runner:latest".to_string(),
+        Some(reg) => format!("{reg}/{default_runner_image}"),
+        None => default_runner_image.to_string(),
     }
 }
 
@@ -163,6 +168,7 @@ pub fn build_agent_pod(params: &PodBuildParams<'_>) -> Pod {
         params.config,
         params.project_agent_image,
         params.registry_url,
+        params.default_runner_image,
     );
     let pull_policy = image_pull_policy(&resolved_image);
     let mut main_container =
@@ -714,6 +720,7 @@ fn build_init_containers(params: &PodBuildParams<'_>, branch: &str) -> Vec<Conta
         params.config,
         params.project_agent_image,
         params.registry_url,
+        params.default_runner_image,
     );
     let pull_policy = image_pull_policy(&resolved_image);
 
@@ -724,6 +731,7 @@ fn build_init_containers(params: &PodBuildParams<'_>, branch: &str) -> Vec<Conta
             params.agent_api_token,
             params.session.project_id,
             params.session.id,
+            params.git_clone_image,
         ),
         build_setup_tools_container(params, &resolved_image, &pull_policy),
     ];
@@ -736,6 +744,7 @@ fn build_init_containers(params: &PodBuildParams<'_>, branch: &str) -> Vec<Conta
             params.config,
             params.project_agent_image,
             params.registry_url,
+            params.default_runner_image,
         );
         let joined = commands.join(" && ");
         containers.push(Container {
@@ -769,23 +778,25 @@ fn build_git_clone_container(
     api_token: &str,
     project_id: Option<Uuid>,
     session_id: Uuid,
+    git_clone_image: &str,
 ) -> Container {
     // Use GIT_ASKPASS to provide the API token for HTTP auth.
     // The askpass script echoes the token when git prompts for a password.
     // This avoids embedding tokens in clone URLs (which leak to logs/proc/pod spec).
     Container {
         name: "git-clone".into(),
-        image: Some("alpine/git:latest".into()),
+        image: Some(git_clone_image.to_string()),
         command: Some(vec!["sh".into(), "-c".into()]),
-        args: Some(vec![format!(
+        // A17: Pass repo_clone_url as env var to avoid shell interpolation
+        args: Some(vec![
             "set -eu; export HOME=/tmp; \
              printf '#!/bin/sh\\necho \"$GIT_AUTH_TOKEN\"\\n' > /tmp/git-askpass.sh; \
              chmod +x /tmp/git-askpass.sh; \
              git config --global --add safe.directory /workspace; \
-             if ! GIT_ASKPASS=/tmp/git-askpass.sh git clone {repo_clone_url} /workspace 2>/dev/null; then \
+             if ! GIT_ASKPASS=/tmp/git-askpass.sh git clone \"$GIT_CLONE_URL\" /workspace 2>/dev/null; then \
                git init /workspace; \
                cd /workspace; \
-               GIT_ASKPASS=/tmp/git-askpass.sh git remote add origin {repo_clone_url}; \
+               GIT_ASKPASS=/tmp/git-askpass.sh git remote add origin \"$GIT_CLONE_URL\"; \
              else \
                cd /workspace; \
              fi; \
@@ -797,10 +808,12 @@ fn build_git_clone_container(
              chmod +x /workspace/.platform/bin/git-askpass.sh; \
              printf 'PROJECT_ID=%s\\nBRANCH=%s\\nSESSION_ID=%s\\n' \
                \"$INIT_PROJECT_ID\" \"$GIT_BRANCH\" \"$INIT_SESSION_ID\" \
-               > /workspace/.platform/.env",
-        )]),
+               > /workspace/.platform/.env"
+                .into(),
+        ]),
         env: Some(vec![
             env_var("GIT_AUTH_TOKEN", api_token),
+            env_var("GIT_CLONE_URL", repo_clone_url),
             env_var("GIT_BRANCH", branch),
             env_var(
                 "INIT_PROJECT_ID",
@@ -981,6 +994,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         assert_eq!(pod.metadata.name.as_deref(), Some("agent-12345678"));
         assert_eq!(pod.metadata.namespace.as_deref(), Some("platform-agents"));
@@ -1011,6 +1026,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let labels = pod.metadata.labels.unwrap();
         assert_eq!(labels["platform.io/component"], "agent-session");
@@ -1046,6 +1063,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let claude_container = &spec.containers[0];
@@ -1079,6 +1098,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1114,6 +1135,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1148,6 +1171,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1196,6 +1221,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -1233,6 +1260,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let args = spec.containers[0].args.as_ref().unwrap();
@@ -1269,6 +1298,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let args = spec.containers[0].args.as_ref().unwrap();
@@ -1303,14 +1334,17 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
         assert_eq!(init.name, "git-clone");
         let args = init.args.as_ref().unwrap();
+        // A17: URL is now passed via $GIT_CLONE_URL env var, not interpolated in shell
         assert!(
-            args[0].contains("git clone http://platform:8080/owner/myproject.git /workspace"),
-            "should clone via HTTP, got: {}",
+            args[0].contains("git clone \"$GIT_CLONE_URL\" /workspace"),
+            "should clone via $GIT_CLONE_URL env var, got: {}",
             args[0]
         );
         assert!(
@@ -1330,6 +1364,11 @@ mod tests {
         let env = init.env.as_ref().unwrap();
         let token_env = env.iter().find(|e| e.name == "GIT_AUTH_TOKEN").unwrap();
         assert_eq!(token_env.value.as_deref(), Some("plat_api_test"));
+        let clone_url_env = env.iter().find(|e| e.name == "GIT_CLONE_URL").unwrap();
+        assert_eq!(
+            clone_url_env.value.as_deref(),
+            Some("http://platform:8080/owner/myproject.git")
+        );
         let branch_env = env.iter().find(|e| e.name == "GIT_BRANCH").unwrap();
         assert_eq!(branch_env.value.as_deref(), Some("agent/12345678"));
     }
@@ -1359,6 +1398,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -1395,6 +1436,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -1442,6 +1485,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let resources = spec.containers[0].resources.as_ref().unwrap();
@@ -1475,6 +1520,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.restart_policy.as_deref(), Some("Never"));
@@ -1489,7 +1536,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            resolve_image(&config, Some("rust:1.80"), None),
+            resolve_image(&config, Some("rust:1.80"), None, "platform-runner:v1"),
             "golang:1.23"
         );
     }
@@ -1497,21 +1544,27 @@ mod tests {
     #[test]
     fn resolve_image_project_default() {
         let config = ProviderConfig::default();
-        assert_eq!(resolve_image(&config, Some("rust:1.80"), None), "rust:1.80");
+        assert_eq!(
+            resolve_image(&config, Some("rust:1.80"), None, "platform-runner:v1"),
+            "rust:1.80"
+        );
     }
 
     #[test]
     fn resolve_image_platform_fallback() {
         let config = ProviderConfig::default();
-        assert_eq!(resolve_image(&config, None, None), "platform-runner:latest");
+        assert_eq!(
+            resolve_image(&config, None, None, "platform-runner:v1"),
+            "platform-runner:v1"
+        );
     }
 
     #[test]
     fn resolve_image_registry_prefix() {
         let config = ProviderConfig::default();
         assert_eq!(
-            resolve_image(&config, None, Some("localhost:5001")),
-            "localhost:5001/platform-runner:latest"
+            resolve_image(&config, None, Some("localhost:5001"), "platform-runner:v1"),
+            "localhost:5001/platform-runner:v1"
         );
     }
 
@@ -1522,7 +1575,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            resolve_image(&config, None, Some("localhost:5001")),
+            resolve_image(&config, None, Some("localhost:5001"), "platform-runner:v1"),
             "custom:v1"
         );
     }
@@ -1573,6 +1626,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let main = &spec.containers[0];
@@ -1605,6 +1660,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let main = &spec.containers[0];
@@ -1641,6 +1698,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1681,6 +1740,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1712,6 +1773,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1745,6 +1808,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1782,6 +1847,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1827,6 +1894,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1861,6 +1930,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let init = spec.init_containers.unwrap();
@@ -1893,6 +1964,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let pod_spec = pod.spec.unwrap();
         let init = pod_spec.init_containers.unwrap();
@@ -1939,6 +2012,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.containers.len(), 2, "should have claude + browser");
@@ -1971,6 +2046,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.containers.len(), 1, "should have only claude");
@@ -2002,6 +2079,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let volumes = spec.volumes.unwrap();
@@ -2041,6 +2120,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let volumes = spec.volumes.unwrap();
@@ -2073,6 +2154,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2113,6 +2196,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2152,6 +2237,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let browser = &spec.containers[1];
@@ -2187,6 +2274,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let browser = &spec.containers[1];
@@ -2224,6 +2313,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let psc = spec.security_context.unwrap();
@@ -2258,6 +2349,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let container = &spec.containers[0];
@@ -2293,6 +2386,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
@@ -2333,6 +2428,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2370,6 +2467,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod_without.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2411,6 +2510,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2462,6 +2563,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let secrets = spec.image_pull_secrets.unwrap();
@@ -2494,6 +2597,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         assert!(
@@ -2529,6 +2634,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2564,6 +2671,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2598,6 +2707,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2653,6 +2764,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2694,6 +2807,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2732,6 +2847,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         assert_eq!(spec.service_account_name.as_deref(), Some("agent-sa"));
@@ -2762,6 +2879,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         assert!(spec.service_account_name.is_none());
@@ -2793,6 +2912,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2828,6 +2949,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2862,6 +2985,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -2914,6 +3039,8 @@ mod tests {
             registry_push_url: Some("host.docker.internal:55534"),
             project_name: Some("myproject"),
             session_short_id: Some("abc12345"),
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
 
@@ -2964,6 +3091,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let volumes = spec.volumes.unwrap();
@@ -2998,6 +3127,8 @@ mod tests {
             registry_push_url: Some("host.docker.internal:55534"),
             project_name: Some("myproject"),
             session_short_id: Some("abc12345"),
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -3037,6 +3168,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();
@@ -3085,6 +3218,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let ports = spec.containers[0].ports.as_ref().unwrap();
@@ -3121,6 +3256,8 @@ mod tests {
             registry_push_url: None,
             project_name: None,
             session_short_id: None,
+            default_runner_image: "platform-runner:v1",
+            git_clone_image: "alpine/git:2.47.2",
         });
         let spec = pod.spec.unwrap();
         let env = spec.containers[0].env.as_ref().unwrap();

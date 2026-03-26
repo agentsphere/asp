@@ -371,6 +371,7 @@ fn spawn_background_tasks(
     tokio::spawn(run_session_cleanup(
         pool.clone(),
         state.secret_requests.clone(),
+        shutdown_tx.subscribe(),
     ));
     tokio::spawn(health::checks::run(state.clone(), shutdown_tx.subscribe()));
     (shutdown_tx, observe_channels)
@@ -379,46 +380,54 @@ fn spawn_background_tasks(
 async fn run_session_cleanup(
     pool: sqlx::PgPool,
     secret_requests: crate::secrets::request::SecretRequests,
+    mut shutdown: tokio::sync::watch::Receiver<()>,
 ) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
     loop {
-        interval.tick().await;
-        let iter_trace_id = uuid::Uuid::new_v4().to_string().replace('-', "");
-        let span = tracing::info_span!(
-            "task_iteration",
-            task_name = "session_cleanup",
-            trace_id = %iter_trace_id,
-            source = "system",
-        );
-        async {
-            if let Err(e) = sqlx::query("DELETE FROM auth_sessions WHERE expires_at < now()")
-                .execute(&pool)
-                .await
-            {
-                tracing::warn!(error = %e, "expired sessions cleanup failed");
-            }
-            if let Err(e) = sqlx::query(
-                "DELETE FROM api_tokens WHERE expires_at IS NOT NULL AND expires_at < now()",
-            )
-            .execute(&pool)
-            .await
-            {
-                tracing::warn!(error = %e, "expired tokens cleanup failed");
-            }
-            // Evict stale secret requests (completed/timed-out older than 10 minutes)
-            let evict_threshold = std::time::Duration::from_secs(600);
-            if let Ok(mut map) = secret_requests.write() {
-                let before = map.len();
-                map.retain(|_, r| r.created_at.elapsed() < evict_threshold);
-                let evicted = before - map.len();
-                if evicted > 0 {
-                    tracing::debug!(evicted, "evicted stale secret requests");
+        tokio::select! {
+            _ = interval.tick() => {
+                let iter_trace_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+                let span = tracing::info_span!(
+                    "task_iteration",
+                    task_name = "session_cleanup",
+                    trace_id = %iter_trace_id,
+                    source = "system",
+                );
+                async {
+                    if let Err(e) = sqlx::query("DELETE FROM auth_sessions WHERE expires_at < now()")
+                        .execute(&pool)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "expired sessions cleanup failed");
+                    }
+                    if let Err(e) = sqlx::query(
+                        "DELETE FROM api_tokens WHERE expires_at IS NOT NULL AND expires_at < now()",
+                    )
+                    .execute(&pool)
+                    .await
+                    {
+                        tracing::warn!(error = %e, "expired tokens cleanup failed");
+                    }
+                    // Evict stale secret requests (completed/timed-out older than 10 minutes)
+                    let evict_threshold = std::time::Duration::from_secs(600);
+                    if let Ok(mut map) = secret_requests.write() {
+                        let before = map.len();
+                        map.retain(|_, r| r.created_at.elapsed() < evict_threshold);
+                        let evicted = before - map.len();
+                        if evicted > 0 {
+                            tracing::debug!(evicted, "evicted stale secret requests");
+                        }
+                    }
+                    tracing::debug!("expired sessions/tokens cleanup complete");
                 }
+                .instrument(span)
+                .await;
             }
-            tracing::debug!("expired sessions/tokens cleanup complete");
+            _ = shutdown.changed() => {
+                tracing::info!("session cleanup shutting down");
+                break;
+            }
         }
-        .instrument(span)
-        .await;
     }
 }
 

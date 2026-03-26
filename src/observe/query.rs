@@ -8,8 +8,11 @@ use fred::interfaces::EventInterface;
 use fred::interfaces::PubsubInterface;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
+use tokio::time::{Duration, timeout};
 use tokio_stream::StreamExt;
 use uuid::Uuid;
+
+const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 
 use ts_rs::TS;
 
@@ -346,11 +349,17 @@ async fn search_logs_inner(
 
     let limit = params.limit.unwrap_or(50).min(100);
     let offset = params.offset.unwrap_or(0);
-    let search_pattern = params.q.as_deref().map(|s| format!("%{s}%"));
+    // A21: Escape ILIKE metacharacters to prevent wildcard injection
+    let search_pattern = params.q.as_deref().map(|s| {
+        let escaped = s.replace('%', "\\%").replace('_', "\\_");
+        format!("%{escaped}%")
+    });
     let from = resolve_range(params.from, params.range.as_deref());
 
-    let total: i64 = sqlx::query_scalar(
-        r"
+    let total: i64 = timeout(
+        QUERY_TIMEOUT,
+        sqlx::query_scalar(
+            r"
         SELECT COUNT(*)
         FROM log_entries
         WHERE ($1::uuid IS NULL OR project_id = $1)
@@ -364,22 +373,26 @@ async fn search_logs_inner(
           AND ($9::text IS NULL OR source = $9)
           AND ($10::text IS NULL OR attributes->>'task_name' = $10)
         ",
+        )
+        .bind(params.project_id)
+        .bind(params.session_id)
+        .bind(params.trace_id.as_deref())
+        .bind(params.level.as_deref())
+        .bind(params.service.as_deref())
+        .bind(search_pattern.as_deref())
+        .bind(from)
+        .bind(params.to)
+        .bind(params.source.as_deref())
+        .bind(params.task_name.as_deref())
+        .fetch_one(&state.pool),
     )
-    .bind(params.project_id)
-    .bind(params.session_id)
-    .bind(params.trace_id.as_deref())
-    .bind(params.level.as_deref())
-    .bind(params.service.as_deref())
-    .bind(search_pattern.as_deref())
-    .bind(from)
-    .bind(params.to)
-    .bind(params.source.as_deref())
-    .bind(params.task_name.as_deref())
-    .fetch_one(&state.pool)
-    .await?;
+    .await
+    .map_err(|_| ApiError::BadRequest("query timed out".into()))??;
 
-    let rows = sqlx::query(
-        r"
+    let rows = timeout(
+        QUERY_TIMEOUT,
+        sqlx::query(
+            r"
         SELECT id, timestamp, trace_id, span_id, project_id, session_id,
                service, level, source, message, attributes
         FROM log_entries
@@ -396,21 +409,23 @@ async fn search_logs_inner(
         ORDER BY timestamp DESC
         LIMIT $11 OFFSET $12
         ",
+        )
+        .bind(params.project_id)
+        .bind(params.session_id)
+        .bind(params.trace_id.as_deref())
+        .bind(params.level.as_deref())
+        .bind(params.service.as_deref())
+        .bind(search_pattern.as_deref())
+        .bind(from)
+        .bind(params.to)
+        .bind(params.source.as_deref())
+        .bind(params.task_name.as_deref())
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.pool),
     )
-    .bind(params.project_id)
-    .bind(params.session_id)
-    .bind(params.trace_id.as_deref())
-    .bind(params.level.as_deref())
-    .bind(params.service.as_deref())
-    .bind(search_pattern.as_deref())
-    .bind(from)
-    .bind(params.to)
-    .bind(params.source.as_deref())
-    .bind(params.task_name.as_deref())
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&state.pool)
-    .await?;
+    .await
+    .map_err(|_| ApiError::BadRequest("query timed out".into()))??;
 
     let items = rows
         .into_iter()
@@ -447,8 +462,10 @@ async fn list_traces(
     let limit = params.limit.unwrap_or(50).min(100);
     let offset = params.offset.unwrap_or(0);
 
-    let total: i64 = sqlx::query_scalar(
-        r"
+    let total: i64 = timeout(
+        QUERY_TIMEOUT,
+        sqlx::query_scalar(
+            r"
         SELECT COUNT(*)
         FROM traces
         WHERE ($1::uuid IS NULL OR project_id = $1)
@@ -458,18 +475,22 @@ async fn list_traces(
           AND ($5::timestamptz IS NULL OR started_at >= $5)
           AND ($6::timestamptz IS NULL OR started_at <= $6)
         ",
+        )
+        .bind(params.project_id)
+        .bind(params.session_id)
+        .bind(params.service.as_deref())
+        .bind(params.status.as_deref())
+        .bind(params.from)
+        .bind(params.to)
+        .fetch_one(&state.pool),
     )
-    .bind(params.project_id)
-    .bind(params.session_id)
-    .bind(params.service.as_deref())
-    .bind(params.status.as_deref())
-    .bind(params.from)
-    .bind(params.to)
-    .fetch_one(&state.pool)
-    .await?;
+    .await
+    .map_err(|_| ApiError::BadRequest("query timed out".into()))??;
 
-    let rows = sqlx::query(
-        r"
+    let rows = timeout(
+        QUERY_TIMEOUT,
+        sqlx::query(
+            r"
         SELECT trace_id, root_span, service, status, duration_ms, started_at, project_id
         FROM traces
         WHERE ($1::uuid IS NULL OR project_id = $1)
@@ -481,17 +502,19 @@ async fn list_traces(
         ORDER BY started_at DESC
         LIMIT $7 OFFSET $8
         ",
+        )
+        .bind(params.project_id)
+        .bind(params.session_id)
+        .bind(params.service.as_deref())
+        .bind(params.status.as_deref())
+        .bind(params.from)
+        .bind(params.to)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.pool),
     )
-    .bind(params.project_id)
-    .bind(params.session_id)
-    .bind(params.service.as_deref())
-    .bind(params.status.as_deref())
-    .bind(params.from)
-    .bind(params.to)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&state.pool)
-    .await?;
+    .await
+    .map_err(|_| ApiError::BadRequest("query timed out".into()))??;
 
     let items = rows
         .into_iter()
@@ -515,31 +538,41 @@ async fn get_trace(
     auth: AuthUser,
     Path(trace_id): Path<String>,
 ) -> Result<Json<TraceDetailResponse>, ApiError> {
-    let trace = sqlx::query(
-        r"
+    let trace = timeout(
+        QUERY_TIMEOUT,
+        sqlx::query(
+            r"
         SELECT trace_id, root_span, service, status, duration_ms, started_at, project_id
         FROM traces WHERE trace_id = $1
         ",
+        )
+        .bind(&trace_id)
+        .fetch_optional(&state.pool),
     )
-    .bind(&trace_id)
-    .fetch_optional(&state.pool)
-    .await?
+    .await
+    .map_err(|_| ApiError::BadRequest("query timed out".into()))??
     .ok_or_else(|| ApiError::NotFound("trace".into()))?;
 
     let trace_project_id: Option<Uuid> = trace.get("project_id");
     require_observe_read(&state, &auth, trace_project_id).await?;
 
-    let spans = sqlx::query(
-        r"
+    // A20: Limit span count to prevent unbounded memory usage
+    let spans = timeout(
+        QUERY_TIMEOUT,
+        sqlx::query(
+            r"
         SELECT span_id, parent_span_id, name, service, kind, status,
                duration_ms, started_at, finished_at, attributes, events
         FROM spans WHERE trace_id = $1
         ORDER BY started_at ASC
+        LIMIT 10000
         ",
+        )
+        .bind(&trace_id)
+        .fetch_all(&state.pool),
     )
-    .bind(&trace_id)
-    .fetch_all(&state.pool)
-    .await?;
+    .await
+    .map_err(|_| ApiError::BadRequest("query timed out".into()))??;
 
     let span_responses = spans
         .into_iter()
@@ -598,8 +631,10 @@ async fn query_metrics(
 
     let from = resolve_range(params.from, params.range.as_deref());
 
-    let rows = sqlx::query(
-        r"
+    let rows = timeout(
+        QUERY_TIMEOUT,
+        sqlx::query(
+            r"
         SELECT ser.id as series_id, ser.labels, ms.timestamp, ms.value
         FROM metric_samples ms
         JOIN metric_series ser ON ser.id = ms.series_id
@@ -611,15 +646,17 @@ async fn query_metrics(
         ORDER BY ser.id, ms.timestamp ASC
         LIMIT $6
         ",
+        )
+        .bind(name)
+        .bind(&labels_filter)
+        .bind(params.project_id)
+        .bind(from)
+        .bind(params.to)
+        .bind(limit)
+        .fetch_all(&state.pool),
     )
-    .bind(name)
-    .bind(&labels_filter)
-    .bind(params.project_id)
-    .bind(from)
-    .bind(params.to)
-    .bind(limit)
-    .fetch_all(&state.pool)
-    .await?;
+    .await
+    .map_err(|_| ApiError::BadRequest("query timed out".into()))??;
 
     // Group by series_id
     let mut series_map: std::collections::HashMap<Uuid, (serde_json::Value, Vec<MetricDataPoint>)> =

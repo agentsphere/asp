@@ -321,7 +321,7 @@ pub async fn run(
             let mut bytes = [0u8; 12];
             rand::fill(&mut bytes);
             generated = hex::encode(bytes);
-            tracing::warn!("dev admin password (auto-generated): {generated}");
+            eprintln!("dev admin password (auto-generated): {generated}");
             &generated
         };
         create_admin_user(pool, pw).await?;

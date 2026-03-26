@@ -670,3 +670,187 @@ async fn merge_squash_strategy(pool: PgPool) {
         .unwrap();
     assert_eq!(row.0, "merged");
 }
+
+// ---------------------------------------------------------------------------
+// Comment CRUD
+// ---------------------------------------------------------------------------
+
+/// Update a comment on a merge request.
+#[sqlx::test(migrations = "./migrations")]
+async fn update_mr_comment(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+    let project_id = helpers::create_project(&app, &admin_token, "commentup", "private").await;
+    let admin_id = helpers::admin_user_id(&pool).await;
+    let mr_id = helpers::insert_mr(&pool, project_id, admin_id, "feat", "main", 1).await;
+
+    // Insert comment directly
+    let comment_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO comments (id, project_id, mr_id, author_id, body) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(comment_id)
+    .bind(project_id)
+    .bind(mr_id)
+    .bind(admin_id)
+    .bind("original body")
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, body) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/merge-requests/1/comments/{comment_id}"),
+        serde_json::json!({ "body": "updated body" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "update comment failed: {body}");
+    assert_eq!(body["body"], "updated body");
+    assert_eq!(body["id"], comment_id.to_string());
+}
+
+/// Delete a comment on a merge request.
+#[sqlx::test(migrations = "./migrations")]
+async fn delete_mr_comment(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+    let project_id = helpers::create_project(&app, &admin_token, "commentdel", "private").await;
+    let admin_id = helpers::admin_user_id(&pool).await;
+    let mr_id = helpers::insert_mr(&pool, project_id, admin_id, "feat", "main", 1).await;
+
+    let comment_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO comments (id, project_id, mr_id, author_id, body) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(comment_id)
+    .bind(project_id)
+    .bind(mr_id)
+    .bind(admin_id)
+    .bind("to be deleted")
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, _) = helpers::delete_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/merge-requests/1/comments/{comment_id}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Verify deletion
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM comments WHERE id = $1")
+        .bind(comment_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Single review retrieval
+// ---------------------------------------------------------------------------
+
+/// Get a single review by ID.
+#[sqlx::test(migrations = "./migrations")]
+async fn get_single_review(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+    let project_id = helpers::create_project(&app, &admin_token, "reviewget", "private").await;
+    let admin_id = helpers::admin_user_id(&pool).await;
+    let mr_id = helpers::insert_mr(&pool, project_id, admin_id, "feat", "main", 1).await;
+
+    // Insert review directly
+    let review_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO mr_reviews (id, project_id, mr_id, reviewer_id, verdict, body) VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(review_id)
+    .bind(project_id)
+    .bind(mr_id)
+    .bind(admin_id)
+    .bind("approve")
+    .bind("looks good")
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/merge-requests/1/reviews/{review_id}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "get review failed: {body}");
+    assert_eq!(body["id"], review_id.to_string());
+    assert_eq!(body["verdict"], "approve");
+    assert_eq!(body["body"], "looks good");
+}
+
+// ---------------------------------------------------------------------------
+// Close / Reopen MR
+// ---------------------------------------------------------------------------
+
+/// Close an MR then reopen it.
+#[sqlx::test(migrations = "./migrations")]
+async fn close_and_reopen_mr(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+    let project_id = helpers::create_project(&app, &admin_token, "closereopen", "private").await;
+    let admin_id = helpers::admin_user_id(&pool).await;
+    let _mr_id = helpers::insert_mr(&pool, project_id, admin_id, "feat", "main", 1).await;
+
+    // Close it
+    let (status, body) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/merge-requests/1"),
+        serde_json::json!({ "status": "closed" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "close MR failed: {body}");
+    assert_eq!(body["status"], "closed");
+
+    // Reopen it
+    let (status, body) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/merge-requests/1"),
+        serde_json::json!({ "status": "open" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "reopen MR failed: {body}");
+    assert_eq!(body["status"], "open");
+}
+
+// ---------------------------------------------------------------------------
+// Merge already-merged MR
+// ---------------------------------------------------------------------------
+
+/// Attempting to merge an already-merged MR returns 400.
+#[sqlx::test(migrations = "./migrations")]
+async fn merge_already_merged_mr_returns_400(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+    let project_id = helpers::create_project(&app, &admin_token, "alreadymerged", "private").await;
+    let admin_id = helpers::admin_user_id(&pool).await;
+    let _mr_id = helpers::insert_mr(&pool, project_id, admin_id, "feat", "main", 1).await;
+
+    // Set MR status to merged directly in DB
+    sqlx::query("UPDATE merge_requests SET status = 'merged' WHERE project_id = $1 AND number = 1")
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/merge-requests/1/merge"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "expected 400: {body}");
+}

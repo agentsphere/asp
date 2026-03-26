@@ -923,6 +923,7 @@ async fn execute_single_step(
         registry_secret,
         git_secret_name: Some(&pipeline.git_secret_name),
         step_type: &step.step_type,
+        git_clone_image: &state.config.git_clone_image,
     });
 
     let step_svc = format!("pipeline/{}/{}", pipeline.project_name, step.name);
@@ -1413,6 +1414,8 @@ struct PodSpecParams<'a> {
     git_secret_name: Option<&'a str>,
     /// Step type — `imagebuild` steps need root (kaniko), others get hardened context.
     step_type: &'a str,
+    /// Git clone init container image from config (A4: pinned, no `:latest`).
+    git_clone_image: &'a str,
 }
 
 /// Build the volumes and step container mounts for a pipeline pod.
@@ -1519,17 +1522,21 @@ fn build_pod_spec(p: &PodSpecParams<'_>) -> Pod {
             }),
             init_containers: Some(vec![Container {
                 name: "clone".into(),
-                image: Some("alpine/git:latest".into()),
+                image: Some(p.git_clone_image.to_string()),
                 command: Some(vec!["sh".into(), "-c".into()]),
                 // S31: Read git token from mounted secret file instead of env var
-                args: Some(vec![format!(
+                // A17: Pass repo_clone_url as env var to avoid shell interpolation
+                args: Some(vec![
                     "printf '#!/bin/sh\\ncat /git-auth/token\\n' > /tmp/git-askpass.sh && \
                      chmod +x /tmp/git-askpass.sh && \
                      GIT_ASKPASS=/tmp/git-askpass.sh \
-                     git clone --depth 1 --branch \"$GIT_BRANCH\" {} /workspace 2>&1",
-                    p.repo_clone_url,
-                )]),
-                env: Some(vec![env_var("GIT_BRANCH", branch)]),
+                     git clone --depth 1 --branch \"$GIT_BRANCH\" \"$GIT_CLONE_URL\" /workspace 2>&1"
+                        .into(),
+                ]),
+                env: Some(vec![
+                    env_var("GIT_BRANCH", branch),
+                    env_var("GIT_CLONE_URL", p.repo_clone_url),
+                ]),
                 volume_mounts: Some(init_mounts),
                 security_context: Some(container_security()),
                 ..Default::default()
@@ -2883,385 +2890,10 @@ async fn mark_pipeline_failed(pool: &PgPool, pipeline_id: Uuid) -> Result<(), Pi
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Deployment handoff (removed — now handled by explicit gitops_sync step)
-// ---------------------------------------------------------------------------
-// detect_and_write_deployment, gitops_handoff, write_file_to_ops_repo,
-// detect_and_publish_dev_image, upsert_preview_deployment removed.
-// Preview deployments for non-main branches are still handled by the
-// reconciler when an OpsRepoUpdated event arrives for a preview environment.
-
-// NOTE: The functions below were part of the old "magic" finalize flow.
-// They have been replaced by:
-//   - `type: imagebuild` steps for dev image publication
-//   - `type: gitops_sync` steps for ops repo handoff
-// The old functions are preserved in git history (commit before this change).
-
-// (end of removed deployment handoff section)
-
-// detect_and_write_deployment, gitops_handoff, write_file_to_ops_repo,
-// detect_and_publish_dev_image, upsert_preview_deployment — no longer called
-// from finalize_pipeline. Replaced by explicit gitops_sync and imagebuild steps.
-// Kept temporarily for reference; will be removed in cleanup pass.
-#[allow(dead_code)]
-async fn detect_and_write_deployment(state: &AppState, pipeline_id: Uuid, project_id: Uuid) {
-    let dev_step_name = super::trigger::DEV_IMAGE_STEP_NAME;
-    let image_steps = sqlx::query!(
-        r#"
-        SELECT name, image FROM pipeline_steps
-        WHERE pipeline_id = $1 AND status = 'success'
-          AND image ILIKE '%kaniko%' AND name != $2
-        "#,
-        pipeline_id,
-        dev_step_name,
-    )
-    .fetch_all(&state.pool)
-    .await;
-
-    let Ok(image_steps) = image_steps else {
-        return;
-    };
-
-    if image_steps.is_empty() {
-        return;
-    }
-
-    // Get the git_ref, commit SHA, and triggered_by for the pipeline
-    let pipeline_meta = sqlx::query!(
-        "SELECT git_ref, commit_sha, triggered_by FROM pipelines WHERE id = $1",
-        pipeline_id,
-    )
-    .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten();
-
-    let Some(pipeline_meta) = pipeline_meta else {
-        return;
-    };
-
-    // Project info (name + repo_path)
-    let project = sqlx::query!(
-        "SELECT name, repo_path FROM projects WHERE id = $1 AND is_active = true",
-        project_id,
-    )
-    .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten();
-
-    let Some(project) = project else {
-        return;
-    };
-
-    // Use node_registry_url for image refs (containerd pulls from this URL)
-    let registry = node_registry_url(&state.config).unwrap_or("localhost:5000");
-    let name = &project.name;
-    let tag = pipeline_meta.commit_sha.as_deref().unwrap_or("latest");
-    let image_ref = format!("{registry}/{name}/app:{tag}");
-
-    // Extract branch from git_ref
-    let branch = pipeline_meta
-        .git_ref
-        .strip_prefix("refs/heads/")
-        .unwrap_or(&pipeline_meta.git_ref);
-
-    let is_main = matches!(branch, "main" | "master");
-
-    if !is_main {
-        // Preview deployments bypass the ops repo
-        if let Err(e) = upsert_preview_deployment(
-            state,
-            pipeline_id,
-            project_id,
-            branch,
-            &image_ref,
-            pipeline_meta.triggered_by,
-        )
-        .await
-        {
-            tracing::error!(error = %e, %project_id, %branch, "failed to upsert preview deployment");
-        }
-        return;
-    }
-
-    // --- GitOps flow for main branch ---
-    let step_names: Vec<String> = image_steps.iter().map(|s| s.name.clone()).collect();
-    gitops_handoff(
-        state,
-        project_id,
-        &project.name,
-        project.repo_path.as_deref(),
-        pipeline_meta.commit_sha.as_deref(),
-        &step_names,
-        &image_ref,
-        tag,
-    )
-    .await;
-}
-
-/// `GitOps` hand-off: sync `deploy/`, write values + `platform.yaml` to ops repo,
-/// then publish `OpsRepoUpdated`.
-#[allow(clippy::too_many_arguments, dead_code)]
-async fn gitops_handoff(
-    state: &AppState,
-    project_id: Uuid,
-    project_name: &str,
-    project_repo_path: Option<&str>,
-    commit_sha: Option<&str>,
-    step_names: &[String],
-    image_ref: &str,
-    tag: &str,
-) {
-    // Look up ops repo for this project
-    let ops_repo = sqlx::query!(
-        "SELECT id, repo_path, branch FROM ops_repos WHERE project_id = $1",
-        project_id,
-    )
-    .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten();
-
-    let Some(ops_repo) = ops_repo else {
-        tracing::warn!(%project_id, "no ops repo found, skipping deployment hand-off");
-        return;
-    };
-
-    // Read .platform.yaml from project repo at this commit
-    let sha = commit_sha.unwrap_or("HEAD");
-    let platform_yaml = if let Some(repo_path) = project_repo_path {
-        crate::deployer::ops_repo::read_file_at_ref(
-            std::path::Path::new(repo_path),
-            sha,
-            ".platform.yaml",
-        )
-        .await
-        .ok()
-    } else {
-        None
-    };
-
-    // Parse for deploy config (enable_staging, etc.)
-    let platform_file: Option<crate::pipeline::definition::PlatformFile> = platform_yaml
-        .as_ref()
-        .and_then(|y| serde_yaml::from_str(y).ok());
-
-    let enable_staging = platform_file
-        .as_ref()
-        .and_then(|pf| pf.deploy.as_ref())
-        .is_some_and(|d| d.enable_staging);
-
-    // Check for canary image step
-    let registry = node_registry_url(&state.config).unwrap_or("localhost:5000");
-    let has_canary_step = step_names
-        .iter()
-        .any(|s| s.to_lowercase().contains("canary"));
-    let canary_image_ref = format!("{registry}/{project_name}/canary:{tag}");
-
-    let ops_path = std::path::PathBuf::from(&ops_repo.repo_path);
-
-    // 1. Sync deploy/ from project repo to ops repo
-    if let Some(repo_path) = project_repo_path
-        && let Err(e) = crate::deployer::ops_repo::sync_from_project_repo(
-            std::path::Path::new(repo_path),
-            &ops_path,
-            &ops_repo.branch,
-            sha,
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "failed to sync deploy/ to ops repo");
-    }
-
-    // 2. Write platform.yaml to ops repo root
-    if let Some(ref yaml_content) = platform_yaml {
-        write_file_to_ops_repo(&ops_path, &ops_repo.branch, "platform.yaml", yaml_content).await;
-    }
-
-    // 3. Determine target branch and environment
-    let (target_branch, environment) = if enable_staging {
-        ("staging", "staging")
-    } else {
-        (ops_repo.branch.as_str(), "production")
-    };
-
-    // 4. Build values and commit to ops repo
-    let mut values = serde_json::json!({
-        "image_ref": image_ref,
-        "project_name": project_name,
-        "environment": environment,
-    });
-    if has_canary_step {
-        values["canary_image_ref"] = serde_json::Value::String(canary_image_ref);
-    }
-
-    let ops_commit_sha = match crate::deployer::ops_repo::commit_values(
-        &ops_path,
-        target_branch,
-        environment,
-        &values,
-    )
-    .await
-    {
-        Ok(sha) => sha,
-        Err(e) => {
-            tracing::error!(error = %e, %project_id, "failed to commit values to ops repo");
-            return;
-        }
-    };
-
-    // 5. Publish OpsRepoUpdated event
-    let event = crate::store::eventbus::PlatformEvent::OpsRepoUpdated {
-        project_id,
-        ops_repo_id: ops_repo.id,
-        environment: environment.into(),
-        commit_sha: ops_commit_sha,
-        image_ref: image_ref.to_owned(),
-    };
-    if let Err(e) = crate::store::eventbus::publish(&state.valkey, &event).await {
-        tracing::error!(error = %e, %project_id, "failed to publish OpsRepoUpdated event");
-    }
-
-    tracing::info!(%project_id, %image_ref, %environment, "deployment handed off to ops repo");
-}
-
-/// Best-effort write of a single file to the ops repo.
-#[allow(dead_code)]
-async fn write_file_to_ops_repo(
-    ops_path: &std::path::Path,
-    branch: &str,
-    file_path: &str,
-    content: &str,
-) {
-    if let Err(e) =
-        crate::deployer::ops_repo::write_file_to_repo(ops_path, branch, file_path, content).await
-    {
-        tracing::warn!(error = %e, %file_path, "failed to write file to ops repo");
-    }
-}
-
-/// If a `build-dev-image` step succeeded, publish a `DevImageBuilt` event so
-/// the project's `agent_image` is updated.
-#[allow(dead_code)]
-#[tracing::instrument(skip(state), fields(%pipeline_id, %project_id))]
-async fn detect_and_publish_dev_image(state: &AppState, pipeline_id: Uuid, project_id: Uuid) {
-    let dev_step_name = super::trigger::DEV_IMAGE_STEP_NAME;
-    let dev_step = sqlx::query_scalar!(
-        r#"SELECT id FROM pipeline_steps
-           WHERE pipeline_id = $1 AND status = 'success' AND name = $2"#,
-        pipeline_id,
-        dev_step_name,
-    )
-    .fetch_optional(&state.pool)
-    .await;
-
-    let Ok(Some(_)) = dev_step else { return };
-
-    let commit_sha = sqlx::query_scalar!(
-        "SELECT commit_sha FROM pipelines WHERE id = $1",
-        pipeline_id,
-    )
-    .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten()
-    .flatten();
-
-    let project_name = sqlx::query_scalar!("SELECT name FROM projects WHERE id = $1", project_id)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
-
-    // Use node_registry_url for image refs (containerd pulls from this URL)
-    let registry = node_registry_url(&state.config).unwrap_or("localhost:5000");
-    let name = project_name.as_deref().unwrap_or("unknown");
-    let tag = commit_sha.as_deref().unwrap_or("latest");
-    let dev_image_ref = format!("{registry}/{name}/dev:{tag}");
-
-    let event = crate::store::eventbus::PlatformEvent::DevImageBuilt {
-        project_id,
-        image_ref: dev_image_ref.clone(),
-        pipeline_id,
-    };
-    if let Err(e) = crate::store::eventbus::publish(&state.valkey, &event).await {
-        tracing::error!(error = %e, %project_id, "failed to publish DevImageBuilt event");
-    }
-
-    tracing::info!(%project_id, %dev_image_ref, "DevImageBuilt event published from pipeline");
-}
-
-/// Create or update a preview deployment for a non-main branch.
-#[allow(dead_code)]
-#[tracing::instrument(skip(state), fields(%pipeline_id, %project_id, %branch), err)]
-async fn upsert_preview_deployment(
-    state: &AppState,
-    pipeline_id: Uuid,
-    project_id: Uuid,
-    branch: &str,
-    image_ref: &str,
-    triggered_by: Option<Uuid>,
-) -> Result<(), anyhow::Error> {
-    let branch_slug = crate::pipeline::slugify_branch(branch);
-
-    // Upsert preview deploy target + create release
-    let target_id = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO deploy_targets (project_id, name, environment, branch, branch_slug, ttl_hours, expires_at, created_by)
-         VALUES ($1, $2, 'preview', $3, $4, 24, now() + interval '24 hours', $5)
-         ON CONFLICT (project_id, environment, branch_slug) DO UPDATE SET
-             expires_at = now() + interval '24 hours',
-             is_active = true
-         RETURNING id",
-    )
-    .bind(project_id)
-    .bind(format!("preview-{branch_slug}"))
-    .bind(branch)
-    .bind(&branch_slug)
-    .bind(triggered_by)
-    .fetch_one(&state.pool)
-    .await?;
-
-    sqlx::query(
-        "INSERT INTO deploy_releases (target_id, project_id, image_ref, pipeline_id, strategy)
-         VALUES ($1, $2, $3, $4, 'rolling')",
-    )
-    .bind(target_id)
-    .bind(project_id)
-    .bind(image_ref)
-    .bind(pipeline_id)
-    .execute(&state.pool)
-    .await?;
-
-    tracing::info!(
-        %project_id,
-        %branch,
-        slug = %branch_slug,
-        image = %image_ref,
-        "preview deployment upserted"
-    );
-
-    // Wake reconciler to process the preview release
-    state.deploy_notify.notify_one();
-
-    // Fire webhook for preview event
-    crate::api::webhooks::fire_webhooks(
-        &state.pool,
-        project_id,
-        "deploy",
-        &serde_json::json!({
-            "action": "preview_created",
-            "branch": branch,
-            "branch_slug": branch_slug,
-            "image_ref": image_ref,
-            "pipeline_id": pipeline_id,
-        }),
-        &state.webhook_semaphore,
-    )
-    .await;
-
-    Ok(())
-}
+// Legacy deployment handoff functions (detect_and_write_deployment, gitops_handoff,
+// write_file_to_ops_repo, detect_and_publish_dev_image, upsert_preview_deployment)
+// have been removed. They were replaced by explicit `gitops_sync` and `imagebuild`
+// pipeline step types. See git history for the original implementations.
 
 // ---------------------------------------------------------------------------
 // Webhook
@@ -3524,6 +3156,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         assert_eq!(pod.metadata.name.as_deref(), Some("pl-test-build"));
@@ -3535,7 +3168,7 @@ mod tests {
         assert_eq!(spec.restart_policy.as_deref(), Some("Never"));
 
         let init = &spec.init_containers.as_ref().unwrap()[0];
-        assert_eq!(init.image.as_deref(), Some("alpine/git:latest"));
+        assert_eq!(init.image.as_deref(), Some("alpine/git:2.47.2"));
 
         let container = &spec.containers[0];
         assert_eq!(container.image.as_deref(), Some("rust:latest"));
@@ -3574,6 +3207,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let spec = pod.spec.unwrap();
@@ -3609,6 +3243,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let spec = pod.spec.unwrap();
@@ -3637,6 +3272,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let spec = pod.spec.unwrap();
@@ -3665,6 +3301,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let container = &pod.spec.unwrap().containers[0];
@@ -3690,6 +3327,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let container = &pod.spec.unwrap().containers[0];
@@ -3719,6 +3357,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let container = &pod.spec.unwrap().containers[0];
@@ -3742,6 +3381,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let labels = pod.metadata.labels.as_ref().unwrap();
@@ -4058,6 +3698,7 @@ mod tests {
             registry_secret: Some("pl-registry-00000000"),
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let spec = pod.spec.unwrap();
@@ -4081,6 +3722,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let spec = pod.spec.unwrap();
@@ -4105,6 +3747,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let spec = pod.spec.unwrap();
@@ -4129,6 +3772,7 @@ mod tests {
             registry_secret: Some("pl-registry-00000000"),
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let spec = pod.spec.unwrap();
@@ -4352,6 +3996,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let container = &pod.spec.unwrap().containers[0];
@@ -4374,6 +4019,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let container = &pod.spec.unwrap().containers[0];
@@ -4396,6 +4042,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let init = &pod.spec.unwrap().init_containers.unwrap()[0];
@@ -4404,11 +4051,11 @@ mod tests {
         assert_eq!(mounts.len(), 1);
         assert_eq!(mounts[0].name, "workspace");
 
-        // Clone command uses HTTP URL with GIT_ASKPASS
+        // A17: Clone command uses $GIT_CLONE_URL env var (not interpolated URL)
         let clone_cmd = &init.args.as_ref().unwrap()[0];
         assert!(
-            clone_cmd.contains("http://platform:8080/owner/repo.git"),
-            "should use HTTP clone URL, got: {clone_cmd}"
+            clone_cmd.contains("\"$GIT_CLONE_URL\""),
+            "should use $GIT_CLONE_URL env var, got: {clone_cmd}"
         );
         assert!(
             clone_cmd.contains("GIT_ASKPASS"),
@@ -4425,6 +4072,15 @@ mod tests {
         assert!(
             token_env.is_none(),
             "should NOT have GIT_AUTH_TOKEN env var (S31: use secret volume)"
+        );
+
+        // A17: GIT_CLONE_URL env var should be set
+        let clone_url_env = env.iter().find(|e| e.name == "GIT_CLONE_URL");
+        assert!(clone_url_env.is_some(), "should have GIT_CLONE_URL env var");
+        assert_eq!(
+            clone_url_env.unwrap().value.as_deref(),
+            Some("http://platform:8080/owner/repo.git"),
+            "GIT_CLONE_URL should match the repo clone URL"
         );
 
         // GIT_BRANCH env var should be set
@@ -4452,6 +4108,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let container = &pod.spec.unwrap().containers[0];
@@ -4540,6 +4197,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let init = &pod.spec.unwrap().init_containers.unwrap()[0];
@@ -4565,6 +4223,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let init = &pod.spec.unwrap().init_containers.unwrap()[0];
@@ -4602,6 +4261,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let spec = pod.spec.unwrap();
@@ -4629,6 +4289,7 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "imagebuild",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let spec = pod.spec.unwrap();
@@ -4654,11 +4315,41 @@ mod tests {
             registry_secret: None,
             git_secret_name: None,
             step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
         });
 
         let spec = pod.spec.unwrap();
         let init = &spec.init_containers.unwrap()[0];
         let sc = init.security_context.as_ref().unwrap();
+        assert_eq!(sc.allow_privilege_escalation, Some(false));
+        let caps = sc.capabilities.as_ref().unwrap();
+        assert_eq!(caps.drop.as_ref().unwrap(), &vec!["ALL".to_string()]);
+    }
+
+    #[test]
+    fn pipeline_command_step_container_has_hardened_security_context() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["echo hi".into()],
+            env_vars: &[],
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            git_ref: "main",
+            registry_secret: None,
+            git_secret_name: None,
+            step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
+        });
+
+        let spec = pod.spec.unwrap();
+        let container = &spec.containers[0];
+        let sc = container
+            .security_context
+            .as_ref()
+            .expect("non-imagebuild step container should have hardened security context");
         assert_eq!(sc.allow_privilege_escalation, Some(false));
         let caps = sc.capabilities.as_ref().unwrap();
         assert_eq!(caps.drop.as_ref().unwrap(), &vec!["ALL".to_string()]);
@@ -4697,5 +4388,626 @@ mod tests {
     #[test]
     fn extract_branch_bare_ref() {
         assert_eq!(extract_branch("main"), "main");
+    }
+
+    // -- check_container_statuses --
+
+    fn make_waiting_status(name: &str, reason: &str, message: Option<&str>) -> ContainerStatus {
+        ContainerStatus {
+            name: name.into(),
+            state: Some(ContainerState {
+                waiting: Some(ContainerStateWaiting {
+                    reason: Some(reason.into()),
+                    message: message.map(Into::into),
+                }),
+                ..Default::default()
+            }),
+            restart_count: 0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn check_container_statuses_image_pull_back_off() {
+        let statuses = vec![make_waiting_status(
+            "app",
+            "ImagePullBackOff",
+            Some("pull failed"),
+        )];
+        let result = check_container_statuses(&statuses, "");
+        assert_eq!(result, Some("ImagePullBackOff: pull failed".into()));
+    }
+
+    #[test]
+    fn check_container_statuses_err_image_pull() {
+        let statuses = vec![make_waiting_status(
+            "app",
+            "ErrImagePull",
+            Some("not found"),
+        )];
+        let result = check_container_statuses(&statuses, "");
+        assert_eq!(result, Some("ErrImagePull: not found".into()));
+    }
+
+    #[test]
+    fn check_container_statuses_invalid_image_name() {
+        let statuses = vec![make_waiting_status("app", "InvalidImageName", None)];
+        let result = check_container_statuses(&statuses, "");
+        assert_eq!(result, Some("InvalidImageName: image pull failed".into()));
+    }
+
+    #[test]
+    fn check_container_statuses_create_container_config_error() {
+        let statuses = vec![make_waiting_status(
+            "app",
+            "CreateContainerConfigError",
+            Some("bad config"),
+        )];
+        let result = check_container_statuses(&statuses, "init ");
+        assert_eq!(
+            result,
+            Some("init CreateContainerConfigError: bad config".into())
+        );
+    }
+
+    #[test]
+    fn check_container_statuses_crash_loop_back_off() {
+        let statuses = vec![ContainerStatus {
+            name: "app".into(),
+            state: Some(ContainerState {
+                waiting: Some(ContainerStateWaiting {
+                    reason: Some("CrashLoopBackOff".into()),
+                    message: None,
+                }),
+                ..Default::default()
+            }),
+            restart_count: 5,
+            ..Default::default()
+        }];
+        let result = check_container_statuses(&statuses, "");
+        assert_eq!(result, Some("CrashLoopBackOff after 5 restarts".into()));
+    }
+
+    #[test]
+    fn check_container_statuses_crash_loop_below_threshold() {
+        let statuses = vec![ContainerStatus {
+            name: "app".into(),
+            state: Some(ContainerState {
+                waiting: Some(ContainerStateWaiting {
+                    reason: Some("CrashLoopBackOff".into()),
+                    message: None,
+                }),
+                ..Default::default()
+            }),
+            restart_count: 2,
+            ..Default::default()
+        }];
+        let result = check_container_statuses(&statuses, "");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn check_container_statuses_running_is_ok() {
+        let statuses = vec![ContainerStatus {
+            name: "app".into(),
+            state: Some(ContainerState {
+                running: Some(ContainerStateRunning { started_at: None }),
+                ..Default::default()
+            }),
+            restart_count: 0,
+            ..Default::default()
+        }];
+        assert!(check_container_statuses(&statuses, "").is_none());
+    }
+
+    #[test]
+    fn check_container_statuses_empty_list() {
+        let statuses: Vec<ContainerStatus> = vec![];
+        assert!(check_container_statuses(&statuses, "").is_none());
+    }
+
+    // -- detect_unrecoverable_container --
+
+    #[test]
+    fn detect_unrecoverable_regular_container() {
+        let status = PodStatus {
+            container_statuses: Some(vec![make_waiting_status(
+                "app",
+                "ImagePullBackOff",
+                Some("pull err"),
+            )]),
+            init_container_statuses: Some(vec![]),
+            ..Default::default()
+        };
+        let result = detect_unrecoverable_container(&status);
+        assert_eq!(result, Some("ImagePullBackOff: pull err".into()));
+    }
+
+    #[test]
+    fn detect_unrecoverable_init_container() {
+        let status = PodStatus {
+            container_statuses: Some(vec![]),
+            init_container_statuses: Some(vec![make_waiting_status(
+                "init",
+                "ErrImagePull",
+                Some("init fail"),
+            )]),
+            ..Default::default()
+        };
+        let result = detect_unrecoverable_container(&status);
+        assert_eq!(
+            result,
+            Some("init container ErrImagePull: init fail".into())
+        );
+    }
+
+    #[test]
+    fn detect_unrecoverable_none_when_no_statuses() {
+        let status = PodStatus {
+            container_statuses: None,
+            init_container_statuses: None,
+            ..Default::default()
+        };
+        assert!(detect_unrecoverable_container(&status).is_none());
+    }
+
+    // -- build_volumes_and_mounts --
+
+    #[test]
+    fn build_volumes_and_mounts_workspace_only() {
+        let (volumes, mounts) = build_volumes_and_mounts(None, None);
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].name, "workspace");
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].mount_path, "/workspace");
+    }
+
+    #[test]
+    fn build_volumes_and_mounts_registry_secret() {
+        let (volumes, mounts) = build_volumes_and_mounts(Some("my-registry-secret"), None);
+        assert_eq!(volumes.len(), 2);
+        assert_eq!(volumes[1].name, "docker-config");
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[1].mount_path, "/kaniko/.docker");
+        assert_eq!(mounts[1].read_only, Some(true));
+    }
+
+    #[test]
+    fn build_volumes_and_mounts_git_secret() {
+        let (volumes, mounts) = build_volumes_and_mounts(None, Some("git-token-secret"));
+        assert_eq!(volumes.len(), 2);
+        assert_eq!(volumes[1].name, "git-auth");
+        // git-auth is a volume only — no corresponding mount in step_mounts
+        assert_eq!(mounts.len(), 1);
+    }
+
+    #[test]
+    fn build_volumes_and_mounts_both() {
+        let (volumes, mounts) = build_volumes_and_mounts(Some("reg-secret"), Some("git-secret"));
+        assert_eq!(volumes.len(), 3);
+        assert_eq!(mounts.len(), 2);
+    }
+
+    // -- container_security --
+
+    #[test]
+    fn container_security_drops_all_caps() {
+        let sec = container_security();
+        assert_eq!(sec.allow_privilege_escalation, Some(false));
+        let caps = sec.capabilities.unwrap();
+        assert_eq!(caps.drop, Some(vec!["ALL".into()]));
+        assert!(caps.add.is_none());
+    }
+
+    // -- node_registry_url --
+
+    #[test]
+    fn node_registry_url_prefers_node_url() {
+        let config = crate::config::Config {
+            registry_url: Some("push.example.com:5000".into()),
+            registry_node_url: Some("node.example.com:5000".into()),
+            ..crate::config::Config::test_default()
+        };
+        assert_eq!(node_registry_url(&config), Some("node.example.com:5000"));
+    }
+
+    #[test]
+    fn node_registry_url_falls_back_to_registry_url() {
+        let config = crate::config::Config {
+            registry_url: Some("push.example.com:5000".into()),
+            registry_node_url: None,
+            ..crate::config::Config::test_default()
+        };
+        assert_eq!(node_registry_url(&config), Some("push.example.com:5000"));
+    }
+
+    #[test]
+    fn node_registry_url_returns_none() {
+        let config = crate::config::Config {
+            registry_url: None,
+            registry_node_url: None,
+            ..crate::config::Config::test_default()
+        };
+        assert!(node_registry_url(&config).is_none());
+    }
+
+    // -- mark_transitive_dependents_skipped --
+
+    #[test]
+    fn mark_transitive_dependents_linear_chain() {
+        // 0 → 1 → 2
+        let dependents = vec![vec![1], vec![2], vec![]];
+        let mut skipped = std::collections::HashSet::new();
+        let completed = std::collections::HashSet::new();
+        mark_transitive_dependents_skipped(0, &dependents, &mut skipped, &completed);
+        assert!(skipped.contains(&1));
+        assert!(skipped.contains(&2));
+        assert_eq!(skipped.len(), 2);
+    }
+
+    #[test]
+    fn mark_transitive_dependents_diamond() {
+        // 0 → 1, 0 → 2, 1 → 3, 2 → 3
+        let dependents = vec![vec![1, 2], vec![3], vec![3], vec![]];
+        let mut skipped = std::collections::HashSet::new();
+        let completed = std::collections::HashSet::new();
+        mark_transitive_dependents_skipped(0, &dependents, &mut skipped, &completed);
+        assert!(skipped.contains(&1));
+        assert!(skipped.contains(&2));
+        assert!(skipped.contains(&3));
+        assert_eq!(skipped.len(), 3);
+    }
+
+    #[test]
+    fn mark_transitive_dependents_skips_completed() {
+        // 0 → 1 → 2, but 1 is already completed
+        let dependents = vec![vec![1], vec![2], vec![]];
+        let mut skipped = std::collections::HashSet::new();
+        let mut completed = std::collections::HashSet::new();
+        completed.insert(1);
+        mark_transitive_dependents_skipped(0, &dependents, &mut skipped, &completed);
+        // 1 is completed so not skipped, but 2 depends on 1 (not on 0 directly),
+        // and since 1 is completed it won't be pushed to stack, so 2 is also not reached
+        assert!(!skipped.contains(&1));
+    }
+
+    // -- SHORT_SHA and IMAGE_TAG --
+
+    #[test]
+    fn env_vars_short_sha_and_image_tag_from_commit() {
+        let vars = test_env_vars(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "refs/heads/main",
+            Some("abcdef1234567890"),
+            "test",
+            None,
+            None,
+        );
+        assert_eq!(find_env(&vars, "SHORT_SHA"), Some("abcdef1".into()));
+        assert_eq!(find_env(&vars, "IMAGE_TAG"), Some("sha-abcdef1".into()));
+    }
+
+    #[test]
+    fn env_vars_short_sha_caps_at_seven_chars() {
+        let vars = test_env_vars(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "main",
+            Some("abc"),
+            "test",
+            None,
+            None,
+        );
+        // SHA shorter than 7 chars → use full value
+        assert_eq!(find_env(&vars, "SHORT_SHA"), Some("abc".into()));
+        assert_eq!(find_env(&vars, "IMAGE_TAG"), Some("sha-abc".into()));
+    }
+
+    #[test]
+    fn env_vars_short_sha_absent_without_commit() {
+        let vars = test_env_vars(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "main",
+            None,
+            "test",
+            None,
+            None,
+        );
+        assert!(find_env(&vars, "SHORT_SHA").is_none());
+        assert!(find_env(&vars, "IMAGE_TAG").is_none());
+    }
+
+    // -- VERSION env var --
+
+    #[test]
+    fn env_vars_version_present_when_set() {
+        let vars = build_env_vars_core(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "main",
+            None,
+            "test",
+            None,
+            Some("1.2.3"),
+            "push",
+        );
+        assert_eq!(find_env(&vars, "VERSION"), Some("1.2.3".into()));
+    }
+
+    #[test]
+    fn env_vars_version_empty_when_none() {
+        let vars = test_env_vars(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "main",
+            None,
+            "test",
+            None,
+            None,
+        );
+        assert_eq!(find_env(&vars, "VERSION"), Some(String::new()));
+    }
+
+    // -- git_secret_name in pod spec --
+
+    #[test]
+    fn build_pod_spec_with_git_secret_mounts_to_init_container() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "build",
+            image: "alpine:3.19",
+            commands: &["true".into()],
+            env_vars: &[],
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            git_ref: "main",
+            registry_secret: None,
+            git_secret_name: Some("pl-git-12345678"),
+            step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
+        });
+
+        let spec = pod.spec.unwrap();
+
+        // Should have 2 volumes: workspace + git-auth
+        let volumes = spec.volumes.as_ref().unwrap();
+        assert_eq!(volumes.len(), 2);
+        assert_eq!(volumes[1].name, "git-auth");
+        let secret_vol = volumes[1].secret.as_ref().unwrap();
+        assert_eq!(secret_vol.secret_name.as_deref(), Some("pl-git-12345678"));
+
+        // Init container should have 2 mounts: workspace + git-auth
+        let init = &spec.init_containers.as_ref().unwrap()[0];
+        let init_mounts = init.volume_mounts.as_ref().unwrap();
+        assert_eq!(init_mounts.len(), 2);
+        assert_eq!(init_mounts[1].name, "git-auth");
+        assert_eq!(init_mounts[1].mount_path, "/git-auth");
+        assert_eq!(init_mounts[1].read_only, Some(true));
+
+        // Step container should NOT have git-auth mount (only workspace)
+        let step_mounts = spec.containers[0].volume_mounts.as_ref().unwrap();
+        assert_eq!(step_mounts.len(), 1);
+        assert_eq!(step_mounts[0].name, "workspace");
+    }
+
+    #[test]
+    fn build_pod_spec_with_both_secrets() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "build",
+            image: "gcr.io/kaniko-project/executor:latest",
+            commands: &["true".into()],
+            env_vars: &[],
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            git_ref: "main",
+            registry_secret: Some("pl-registry-12345678"),
+            git_secret_name: Some("pl-git-12345678"),
+            step_type: "imagebuild",
+            git_clone_image: "alpine/git:2.47.2",
+        });
+
+        let spec = pod.spec.unwrap();
+
+        // Should have 3 volumes: workspace + docker-config + git-auth
+        let volumes = spec.volumes.as_ref().unwrap();
+        assert_eq!(volumes.len(), 3);
+        assert_eq!(volumes[0].name, "workspace");
+        assert_eq!(volumes[1].name, "docker-config");
+        assert_eq!(volumes[2].name, "git-auth");
+
+        // Init container should have 2 mounts: workspace + git-auth
+        let init = &spec.init_containers.as_ref().unwrap()[0];
+        let init_mounts = init.volume_mounts.as_ref().unwrap();
+        assert_eq!(init_mounts.len(), 2);
+
+        // Step container should have 2 mounts: workspace + docker-config
+        let step_mounts = spec.containers[0].volume_mounts.as_ref().unwrap();
+        assert_eq!(step_mounts.len(), 2);
+        assert_eq!(step_mounts[1].name, "docker-config");
+
+        // Imagebuild step should have no security context
+        assert!(spec.containers[0].security_context.is_none());
+
+        // Image pull secrets should be set
+        let pull_secrets = spec.image_pull_secrets.unwrap();
+        assert_eq!(pull_secrets.len(), 1);
+        assert_eq!(pull_secrets[0].name, "pl-registry-12345678");
+    }
+
+    // -- mark_transitive_dependents_skipped additional cases --
+
+    #[test]
+    fn mark_transitive_dependents_no_dependents() {
+        let dependents = vec![vec![], vec![], vec![]];
+        let mut skipped = std::collections::HashSet::new();
+        let completed = std::collections::HashSet::new();
+        mark_transitive_dependents_skipped(0, &dependents, &mut skipped, &completed);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn mark_transitive_dependents_wide_fan_out() {
+        // 0 → 1, 2, 3, 4
+        let dependents = vec![vec![1, 2, 3, 4], vec![], vec![], vec![], vec![]];
+        let mut skipped = std::collections::HashSet::new();
+        let completed = std::collections::HashSet::new();
+        mark_transitive_dependents_skipped(0, &dependents, &mut skipped, &completed);
+        assert_eq!(skipped.len(), 4);
+        assert!(skipped.contains(&1));
+        assert!(skipped.contains(&4));
+    }
+
+    // -- detect_unrecoverable_container additional cases --
+
+    #[test]
+    fn detect_unrecoverable_container_running_is_ok() {
+        let status = PodStatus {
+            container_statuses: Some(vec![ContainerStatus {
+                name: "step".into(),
+                state: Some(ContainerState {
+                    running: Some(ContainerStateRunning { started_at: None }),
+                    ..Default::default()
+                }),
+                restart_count: 0,
+                ..Default::default()
+            }]),
+            init_container_statuses: Some(vec![]),
+            ..Default::default()
+        };
+        assert!(detect_unrecoverable_container(&status).is_none());
+    }
+
+    #[test]
+    fn detect_unrecoverable_container_only_init_statuses() {
+        // Regular container statuses are None, only init has error
+        let status = PodStatus {
+            container_statuses: None,
+            init_container_statuses: Some(vec![make_waiting_status(
+                "clone",
+                "ImagePullBackOff",
+                Some("image not found"),
+            )]),
+            ..Default::default()
+        };
+        // container_statuses is None → returns None before checking init
+        // (detect_unrecoverable_container returns on first ? from container_statuses)
+        let result = detect_unrecoverable_container(&status);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn detect_unrecoverable_regular_ok_init_bad() {
+        // Regular containers are fine, but init container is stuck
+        let status = PodStatus {
+            container_statuses: Some(vec![ContainerStatus {
+                name: "step".into(),
+                state: Some(ContainerState {
+                    waiting: Some(ContainerStateWaiting {
+                        reason: Some("ContainerCreating".into()),
+                        message: None,
+                    }),
+                    ..Default::default()
+                }),
+                restart_count: 0,
+                ..Default::default()
+            }]),
+            init_container_statuses: Some(vec![make_waiting_status(
+                "clone",
+                "ImagePullBackOff",
+                Some("init image not found"),
+            )]),
+            ..Default::default()
+        };
+        let result = detect_unrecoverable_container(&status);
+        assert_eq!(
+            result,
+            Some("init container ImagePullBackOff: init image not found".into())
+        );
+    }
+
+    // -- check_container_statuses with no waiting state --
+
+    #[test]
+    fn check_container_statuses_terminated_is_ok() {
+        let statuses = vec![ContainerStatus {
+            name: "step".into(),
+            state: Some(ContainerState {
+                terminated: Some(ContainerStateTerminated {
+                    exit_code: 0,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            restart_count: 0,
+            ..Default::default()
+        }];
+        assert!(check_container_statuses(&statuses, "").is_none());
+    }
+
+    #[test]
+    fn check_container_statuses_no_state() {
+        let statuses = vec![ContainerStatus {
+            name: "step".into(),
+            state: None,
+            restart_count: 0,
+            ..Default::default()
+        }];
+        assert!(check_container_statuses(&statuses, "").is_none());
+    }
+
+    // -- step_condition_from_row with both events and branches --
+
+    #[test]
+    fn step_condition_from_row_with_branches() {
+        let row = StepRow {
+            id: Uuid::nil(),
+            step_order: 0,
+            name: "deploy".into(),
+            image: "alpine".into(),
+            commands: vec![],
+            condition_events: vec![],
+            condition_branches: vec!["main".into(), "release/*".into()],
+            deploy_test: None,
+            depends_on: vec![],
+            environment: None,
+            gate: false,
+            step_type: "command".into(),
+            step_config: None,
+        };
+        let cond = step_condition_from_row(&row).unwrap();
+        assert!(cond.events.is_empty());
+        assert_eq!(cond.branches, vec!["main", "release/*"]);
+    }
+
+    #[test]
+    fn step_condition_from_row_with_both() {
+        let row = StepRow {
+            id: Uuid::nil(),
+            step_order: 0,
+            name: "deploy".into(),
+            image: "alpine".into(),
+            commands: vec![],
+            condition_events: vec!["push".into()],
+            condition_branches: vec!["main".into()],
+            deploy_test: None,
+            depends_on: vec![],
+            environment: None,
+            gate: false,
+            step_type: "command".into(),
+            step_config: None,
+        };
+        let cond = step_condition_from_row(&row).unwrap();
+        assert_eq!(cond.events, vec!["push"]);
+        assert_eq!(cond.branches, vec!["main"]);
     }
 }

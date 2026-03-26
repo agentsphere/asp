@@ -185,6 +185,10 @@ pub struct BuildPodParams<'a> {
     pub project_name: Option<&'a str>,
     /// Session short ID for kaniko image naming (e.g., `abc12345`).
     pub session_short_id: Option<&'a str>,
+    /// Default runner image from config (A4: pinned, no `:latest`).
+    pub default_runner_image: &'a str,
+    /// Git clone init container image from config (A4: pinned, no `:latest`).
+    pub git_clone_image: &'a str,
 }
 
 /// Trait for agent provider implementations.

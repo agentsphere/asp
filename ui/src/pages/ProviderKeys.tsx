@@ -73,6 +73,15 @@ export function ProviderKeys() {
   const [oauthError, setOauthError] = useState('');
   const [oauthSuccess, setOauthSuccess] = useState('');
 
+  // CLI OAuth flow state
+  const [authSessionId, setAuthSessionId] = useState<string | null>(null);
+  const [authUrl, setAuthUrl] = useState<string | null>(null);
+  const [cliStarting, setCliStarting] = useState(false);
+  const [cliError, setCliError] = useState(false);
+  const [authCode, setAuthCode] = useState('');
+  const [codeVerifying, setCodeVerifying] = useState(false);
+  const [codeResult, setCodeResult] = useState<'success' | 'error' | null>(null);
+
   // Active provider + custom configs
   const [activeInfo, setActiveInfo] = useState<ActiveProviderInfo | null>(null);
   const [switching, setSwitching] = useState(false);
@@ -92,8 +101,8 @@ export function ProviderKeys() {
   const [validationDone, setValidationDone] = useState(false);
 
   const load = () => {
-    api.get<ProviderKeyMeta[]>('/api/users/me/provider-keys')
-      .then(setKeys).catch(e => console.warn(e));
+    api.get<{ items: ProviderKeyMeta[] }>('/api/users/me/provider-keys')
+      .then(r => setKeys(r.items)).catch(e => console.warn(e));
   };
 
   const loadCliCreds = () => {
@@ -170,6 +179,63 @@ export function ProviderKeys() {
     } catch (err: any) {
       setOauthError(err.message);
     }
+  };
+
+  const startOAuthFlow = async () => {
+    if (cliStarting || authUrl) return;
+    setCliStarting(true);
+    setCliError(false);
+    setOauthError('');
+    try {
+      const resp = await api.post<{ session_id: string; auth_url: string }>(
+        '/api/onboarding/claude-auth/start',
+      );
+      setAuthSessionId(resp.session_id);
+      setAuthUrl(resp.auth_url);
+    } catch {
+      setCliError(true);
+    } finally {
+      setCliStarting(false);
+    }
+  };
+
+  const submitAuthCode = async (code: string) => {
+    if (!authSessionId || codeVerifying || code.trim().length < 5) return;
+    setCodeVerifying(true);
+    setCodeResult(null);
+    try {
+      await api.post(`/api/onboarding/claude-auth/${authSessionId}/code`, { code });
+      setCodeResult('success');
+      setAuthUrl(null);
+      setAuthSessionId(null);
+      setAuthCode('');
+      setOauthSuccess('OAuth token saved via CLI flow');
+      loadCliCreds();
+      loadActive();
+    } catch {
+      setCodeResult('error');
+    } finally {
+      setCodeVerifying(false);
+    }
+  };
+
+  const handleCodeInput = (value: string) => {
+    setAuthCode(value);
+    setCodeResult(null);
+    if (value.trim().length > 10) {
+      submitAuthCode(value);
+    }
+  };
+
+  const cancelOAuthFlow = () => {
+    if (authSessionId) {
+      api.del(`/api/onboarding/claude-auth/${authSessionId}`).catch(() => {});
+    }
+    setAuthUrl(null);
+    setAuthSessionId(null);
+    setAuthCode('');
+    setCodeResult(null);
+    setCliError(false);
   };
 
   const switchProvider = async (value: string) => {
@@ -297,41 +363,94 @@ export function ProviderKeys() {
       {/* OAuth Token Card */}
       <div class="card" style="margin-bottom:1rem">
         <div class="card-header">
-          <span class="card-title">Claude CLI OAuth Token</span>
+          <span class="card-title">Claude Subscription (OAuth)</span>
         </div>
         <div style="padding:1rem">
           {cliCreds.exists ? (
             <div class="flex-between mb-md">
               <div>
-                <span class="badge">{cliCreds.auth_type}</span>
+                <span class="badge badge-success">Connected</span>
                 <span class="text-muted text-sm" style="margin-left:0.5rem">
-                  Updated {timeAgo(cliCreds.updated_at!)}
+                  {cliCreds.auth_type} &middot; updated {timeAgo(cliCreds.updated_at!)}
                 </span>
               </div>
               <button class="btn btn-danger btn-sm" onClick={removeOauth}>Remove</button>
             </div>
           ) : (
-            <div class="text-muted text-sm mb-md">No token configured</div>
+            <div class="text-muted text-sm mb-md">
+              Connect your Claude subscription to use your own quota for agent sessions.
+            </div>
           )}
 
-          <form onSubmit={saveOauth}>
-            <div class="form-group">
-              <label>{cliCreds.exists ? 'Replace token' : 'Set token'}</label>
-              <input
-                class="input"
-                type="password"
-                placeholder="Paste OAuth token..."
-                value={oauthToken}
-                onInput={(e) => setOauthToken((e.target as HTMLInputElement).value)}
-                minLength={10}
-              />
+          {oauthError && <div class="error-msg">{oauthError}</div>}
+          {oauthSuccess && <div class="success-msg">{oauthSuccess}</div>}
+
+          {/* CLI OAuth flow — interactive */}
+          {!authUrl && !cliCreds.exists && (
+            <div style="margin-bottom:1rem">
+              <button
+                class="btn btn-primary btn-sm"
+                disabled={cliStarting}
+                onClick={startOAuthFlow}
+              >
+                {cliStarting ? 'Starting...' : 'Sign in with Claude'}
+              </button>
+              {cliError && (
+                <div class="text-muted text-sm" style="margin-top:0.5rem;color:var(--danger)">
+                  Could not start OAuth flow. Is the Claude CLI installed on the server?
+                </div>
+              )}
             </div>
-            {oauthError && <div class="error-msg">{oauthError}</div>}
-            {oauthSuccess && <div class="success-msg">{oauthSuccess}</div>}
-            <button type="submit" class="btn btn-primary btn-sm" disabled={oauthSaving || oauthToken.length < 10}>
-              {oauthSaving ? 'Saving...' : 'Save Token'}
-            </button>
-          </form>
+          )}
+
+          {/* OAuth flow in progress — show URL + code input */}
+          {authUrl && (
+            <div style="padding:0.75rem;background:var(--bg-secondary);border-radius:6px;margin-bottom:1rem">
+              <div style="font-size:13px;font-weight:600;margin-bottom:0.5rem">
+                1. Open this link and sign in:
+              </div>
+              <a href={authUrl} target="_blank" rel="noopener noreferrer"
+                style="font-size:12px;word-break:break-all">{authUrl}</a>
+              <div style="font-size:13px;font-weight:600;margin-top:0.75rem;margin-bottom:0.5rem">
+                2. Paste the code you receive:
+              </div>
+              <input
+                class="input mono"
+                placeholder="Paste code here..."
+                value={authCode}
+                onInput={(e) => handleCodeInput((e.target as HTMLInputElement).value)}
+                style="font-size:12px"
+              />
+              {codeVerifying && <div class="text-muted text-sm" style="margin-top:0.25rem">Verifying...</div>}
+              {codeResult === 'success' && <div class="success-msg" style="margin-top:0.25rem">Connected!</div>}
+              {codeResult === 'error' && <div class="error-msg" style="margin-top:0.25rem">Invalid code. Try again.</div>}
+              <div style="margin-top:0.5rem">
+                <button class="btn btn-ghost btn-sm" onClick={cancelOAuthFlow}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {/* Manual token paste — always available as fallback */}
+          <details style="margin-top:0.5rem">
+            <summary class="text-muted text-sm" style="cursor:pointer">
+              {cliCreds.exists ? 'Replace token manually' : 'Or paste a token manually'}
+            </summary>
+            <form onSubmit={saveOauth} style="margin-top:0.5rem">
+              <div class="form-group">
+                <input
+                  class="input"
+                  type="password"
+                  placeholder="Paste OAuth token..."
+                  value={oauthToken}
+                  onInput={(e) => setOauthToken((e.target as HTMLInputElement).value)}
+                  minLength={10}
+                />
+              </div>
+              <button type="submit" class="btn btn-sm" disabled={oauthSaving || oauthToken.length < 10}>
+                {oauthSaving ? 'Saving...' : 'Save Token'}
+              </button>
+            </form>
+          </details>
         </div>
       </div>
 

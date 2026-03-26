@@ -154,7 +154,7 @@ pub async fn seed_all(
             .await?
         };
 
-        match seed_image_cached(pool, minio, repo_id, &path, "latest").await {
+        match seed_image_cached(pool, minio, repo_id, &path, "v1").await {
             Ok(SeedResult::AlreadyExists) => {
                 tracing::debug!(repo = %repo_name, "seed image already exists");
             }

@@ -1161,16 +1161,20 @@ pipeline:
     }
 
     #[test]
-    fn match_pattern_multi_wildcard_falls_to_exact() {
+    fn match_pattern_multi_wildcard() {
         use crate::validation::match_glob_pattern;
-        // Complex patterns with 2+ wildcards fall to exact match
+        // Multi-wildcard patterns are fully supported
         assert!(
-            !match_glob_pattern("a/*/b/*", "a/x/b/y"),
-            "multi-wildcard falls to exact match"
+            match_glob_pattern("a/*/b/*", "a/x/b/y"),
+            "multi-wildcard matches segments"
         );
         assert!(
             match_glob_pattern("a/*/b/*", "a/*/b/*"),
             "multi-wildcard matches itself exactly"
+        );
+        assert!(
+            !match_glob_pattern("a/*/b/*", "c/x/b/y"),
+            "prefix mismatch fails"
         );
     }
 

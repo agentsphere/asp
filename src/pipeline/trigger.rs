@@ -7,12 +7,6 @@ use uuid::Uuid;
 use super::definition::{self, PipelineDefinition};
 use super::error::PipelineError;
 
-/// Name of the auto-generated dev image build step.
-pub const DEV_IMAGE_STEP_NAME: &str = "build-dev-image";
-
-/// Kaniko image with shell support (debug variant includes busybox).
-const DEV_IMAGE_KANIKO: &str = "gcr.io/kaniko-project/executor:debug";
-
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -102,11 +96,16 @@ pub fn increment_patch(version: &str) -> Result<String, PipelineError> {
 /// Handle a push event: read `.platform.yaml`, check trigger match, create pipeline + steps.
 ///
 /// Returns the pipeline ID if a pipeline was created.
-#[tracing::instrument(skip(pool, params), fields(project_id = %params.project_id, branch = %params.branch), err)]
+#[tracing::instrument(skip(pool, params, kaniko_image), fields(project_id = %params.project_id, branch = %params.branch), err)]
 pub async fn on_push(
     pool: &PgPool,
     params: &PushTriggerParams,
+    kaniko_image: &str,
 ) -> Result<Option<Uuid>, PipelineError> {
+    // A18: Validate branch name to prevent ref injection
+    crate::validation::check_branch_name(&params.branch)
+        .map_err(|e| PipelineError::InvalidDefinition(e.to_string()))?;
+
     let Some(yaml) = read_file_at_ref(&params.repo_path, &params.branch, ".platform.yaml").await
     else {
         tracing::debug!("no .platform.yaml at ref, skipping pipeline trigger");
@@ -141,6 +140,7 @@ pub async fn on_push(
         &def,
         dev_dockerfile,
         version.as_ref(),
+        kaniko_image,
     )
     .await?;
 
@@ -173,8 +173,16 @@ pub async fn on_push(
 /// Safety-net: if the VERSION file on the source branch is identical to the target branch,
 /// auto-increment the patch version and commit to the source branch so the developer
 /// doesn't forget to bump.
-#[tracing::instrument(skip(pool, params), fields(project_id = %params.project_id, source_branch = %params.source_branch), err)]
-pub async fn on_mr(pool: &PgPool, params: &MrTriggerParams) -> Result<Option<Uuid>, PipelineError> {
+#[tracing::instrument(skip(pool, params, kaniko_image), fields(project_id = %params.project_id, source_branch = %params.source_branch), err)]
+pub async fn on_mr(
+    pool: &PgPool,
+    params: &MrTriggerParams,
+    kaniko_image: &str,
+) -> Result<Option<Uuid>, PipelineError> {
+    // A18: Validate source branch name to prevent ref injection
+    crate::validation::check_branch_name(&params.source_branch)
+        .map_err(|e| PipelineError::InvalidDefinition(e.to_string()))?;
+
     let Some(yaml) =
         read_file_at_ref(&params.repo_path, &params.source_branch, ".platform.yaml").await
     else {
@@ -235,6 +243,7 @@ pub async fn on_mr(pool: &PgPool, params: &MrTriggerParams) -> Result<Option<Uui
         &def,
         None,
         version.as_ref(),
+        kaniko_image,
     )
     .await?;
 
@@ -255,11 +264,16 @@ pub struct TagTriggerParams {
 }
 
 /// Handle a tag push event: read `.platform.yaml`, check trigger match, create pipeline + steps.
-#[tracing::instrument(skip(pool, params), fields(project_id = %params.project_id, tag_name = %params.tag_name), err)]
+#[tracing::instrument(skip(pool, params, kaniko_image), fields(project_id = %params.project_id, tag_name = %params.tag_name), err)]
 pub async fn on_tag(
     pool: &PgPool,
     params: &TagTriggerParams,
+    kaniko_image: &str,
 ) -> Result<Option<Uuid>, PipelineError> {
+    // A18: Validate tag name to prevent ref injection
+    crate::validation::check_branch_name(&params.tag_name)
+        .map_err(|e| PipelineError::InvalidDefinition(e.to_string()))?;
+
     // Read .platform.yaml from the tagged commit
     let git_ref = params.commit_sha.as_deref().unwrap_or("HEAD");
     let Some(yaml) = read_file_at_ref(&params.repo_path, git_ref, ".platform.yaml").await else {
@@ -285,6 +299,7 @@ pub async fn on_tag(
         &def,
         None,
         version.as_ref(),
+        kaniko_image,
     )
     .await?;
 
@@ -297,13 +312,14 @@ pub async fn on_tag(
 // ---------------------------------------------------------------------------
 
 /// Manually trigger a pipeline for a given git ref.
-#[tracing::instrument(skip(pool), fields(%project_id, %git_ref), err)]
+#[tracing::instrument(skip(pool, kaniko_image), fields(%project_id, %git_ref), err)]
 pub async fn on_api(
     pool: &PgPool,
     repo_path: &Path,
     project_id: Uuid,
     git_ref: &str,
     user_id: Uuid,
+    kaniko_image: &str,
 ) -> Result<Uuid, PipelineError> {
     // Resolve branch name from ref
     let branch = git_ref.strip_prefix("refs/heads/").unwrap_or(git_ref);
@@ -329,6 +345,7 @@ pub async fn on_api(
         &def,
         None,
         version.as_ref(),
+        kaniko_image,
     )
     .await
 }
@@ -352,6 +369,7 @@ async fn create_pipeline_with_steps(
     def: &PipelineDefinition,
     dev_image_dockerfile: Option<&str>,
     version: Option<&VersionInfo>,
+    kaniko_image: &str,
 ) -> Result<Uuid, PipelineError> {
     let mut tx = pool.begin().await?;
 
@@ -432,7 +450,7 @@ async fn create_pipeline_with_steps(
                 });
                 (
                     "imagebuild",
-                    DEV_IMAGE_KANIKO.to_string(),
+                    kaniko_image.to_string(),
                     vec![kaniko_cmd],
                     None,
                     Some(config),
@@ -994,5 +1012,69 @@ mod tests {
     #[test]
     fn increment_patch_rejects_non_numeric() {
         assert!(increment_patch("1.2.abc").is_err());
+    }
+
+    // -- is_valid_semver --
+
+    #[test]
+    fn is_valid_semver_valid() {
+        assert!(is_valid_semver("1.2.3"));
+        assert!(is_valid_semver("0.0.0"));
+        assert!(is_valid_semver("10.20.30"));
+    }
+
+    #[test]
+    fn is_valid_semver_missing_part() {
+        assert!(!is_valid_semver("1.2"));
+        assert!(!is_valid_semver("1"));
+    }
+
+    #[test]
+    fn is_valid_semver_non_numeric() {
+        assert!(!is_valid_semver("1.2.a"));
+        assert!(!is_valid_semver("a.b.c"));
+        assert!(!is_valid_semver("1.2.3-beta"));
+    }
+
+    #[test]
+    fn is_valid_semver_empty_parts() {
+        assert!(!is_valid_semver(".."));
+        assert!(!is_valid_semver("1..3"));
+        assert!(!is_valid_semver(""));
+    }
+
+    #[test]
+    fn is_valid_semver_too_many_parts() {
+        assert!(!is_valid_semver("1.2.3.4"));
+    }
+
+    // -- increment_patch additional --
+
+    #[test]
+    fn increment_patch_from_zero() {
+        assert_eq!(increment_patch("0.0.0").unwrap(), "0.0.1");
+    }
+
+    // -- parse_version_file additional edge cases --
+
+    #[test]
+    fn parse_version_file_empty_input() {
+        let result = parse_version_file("");
+        // Empty input → empty map (no lines to parse)
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_version_file_only_comments() {
+        let result = parse_version_file("# comment\n# another").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_version_file_preserves_order() {
+        let result = parse_version_file("worker=1.0.0\napp=2.0.0").unwrap();
+        let keys: Vec<&String> = result.keys().collect();
+        // BTreeMap sorts alphabetically
+        assert_eq!(keys, vec!["app", "worker"]);
     }
 }

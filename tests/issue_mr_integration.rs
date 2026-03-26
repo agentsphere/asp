@@ -1440,3 +1440,153 @@ async fn comment_list_on_nonexistent_mr(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ---------------------------------------------------------------------------
+// Issue edge cases
+// ---------------------------------------------------------------------------
+
+/// Update issue with maximum labels (50) succeeds.
+#[sqlx::test(migrations = "./migrations")]
+async fn update_issue_max_labels(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+    let project_id = helpers::create_project(&app, &admin_token, "maxlabels", "public").await;
+
+    // Create issue
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/issues"),
+        serde_json::json!({ "title": "label test" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let number = body["number"].as_i64().unwrap();
+
+    // Update with 50 labels (max allowed)
+    let labels: Vec<String> = (0..50).map(|i| format!("label-{i}")).collect();
+    let (status, body) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/issues/{number}"),
+        serde_json::json!({ "labels": labels }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "50 labels should be allowed: {body}"
+    );
+}
+
+/// Update issue with 51 labels is rejected.
+#[sqlx::test(migrations = "./migrations")]
+async fn update_issue_too_many_labels_rejected(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool).await;
+    let app = helpers::test_router(state);
+    let project_id = helpers::create_project(&app, &admin_token, "overlabels", "public").await;
+
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/issues"),
+        serde_json::json!({ "title": "label overflow" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let labels: Vec<String> = (0..51).map(|i| format!("label-{i}")).collect();
+    let (status, _) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/issues/1"),
+        serde_json::json!({ "labels": labels }),
+    )
+    .await;
+    assert!(
+        status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY,
+        "51 labels should be rejected, got {status}"
+    );
+}
+
+/// Delete an issue comment by non-author non-admin is forbidden.
+#[sqlx::test(migrations = "./migrations")]
+async fn issue_delete_comment_non_author_forbidden(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+    let project_id = helpers::create_project(&app, &admin_token, "cmt-del-auth", "public").await;
+
+    // Create issue and comment as admin
+    let (status, _) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/issues"),
+        serde_json::json!({ "title": "comment auth test" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/issues/1/comments"),
+        serde_json::json!({ "body": "admin comment" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let comment_id = body["id"].as_str().unwrap();
+
+    // Create a non-admin user with project write access
+    let (user_id, user_token) =
+        helpers::create_user(&app, &admin_token, "cmt-deleter", "cmt-deleter@test.com").await;
+    helpers::assign_role(
+        &app,
+        &admin_token,
+        user_id,
+        "developer",
+        Some(project_id),
+        &pool,
+    )
+    .await;
+
+    // Try to delete admin's comment — should be forbidden
+    let (status, _) = helpers::delete_json(
+        &app,
+        &user_token,
+        &format!("/api/projects/{project_id}/issues/1/comments/{comment_id}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+// ---------------------------------------------------------------------------
+// MR delete + additional coverage
+// ---------------------------------------------------------------------------
+
+/// Delete an MR.
+#[sqlx::test(migrations = "./migrations")]
+async fn delete_mr(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+    let project_id = helpers::create_project(&app, &admin_token, "mr-delete", "private").await;
+    let admin_id = helpers::admin_user_id(&pool).await;
+    let _mr_id = helpers::insert_mr(&pool, project_id, admin_id, "feat", "main", 1).await;
+
+    let (status, _) = helpers::delete_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/merge-requests/1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Verify it's closed (DELETE closes the MR, doesn't hard-delete it)
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/projects/{project_id}/merge-requests/1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "closed", "MR should be closed after delete");
+}

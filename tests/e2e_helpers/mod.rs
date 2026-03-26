@@ -261,6 +261,9 @@ pub async fn e2e_state_with_api_url(
         observe_retention_days: 30,
         master_key_previous: None,
         trust_proxy_cidrs: vec![],
+        runner_image: "platform-runner:v1".into(),
+        git_clone_image: "alpine/git:2.47.2".into(),
+        kaniko_image: "gcr.io/kaniko-project/executor:v1.23.2-debug".into(),
     };
 
     // Seed registry images from OCI tarballs (idempotent, uses file-based cache)

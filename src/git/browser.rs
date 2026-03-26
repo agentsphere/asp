@@ -294,6 +294,15 @@ async fn blob(
         )));
     }
 
+    // A15: Reject oversized blobs before converting to string/base64
+    const MAX_BLOB_SIZE: usize = 50 * 1024 * 1024; // 50 MB
+    if output.stdout.len() > MAX_BLOB_SIZE {
+        return Err(ApiError::BadRequest(format!(
+            "file too large: {} bytes (max {MAX_BLOB_SIZE})",
+            output.stdout.len()
+        )));
+    }
+
     #[allow(clippy::cast_possible_wrap)]
     let size = output.stdout.len() as i64;
 

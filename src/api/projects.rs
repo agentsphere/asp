@@ -19,6 +19,8 @@ use crate::rbac::{Permission, resolver};
 use crate::store::AppState;
 use crate::validation;
 
+use super::helpers::{require_admin, require_project_write};
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -206,12 +208,18 @@ pub async fn setup_project_infrastructure(
     let prod_ns = state.config.project_namespace(namespace_slug, "prod");
 
     // 1. Create dev namespace
-    if let Err(e) = crate::deployer::namespace::ensure_namespace(
+    let svc_ns = state
+        .config
+        .ns_prefix
+        .as_deref()
+        .unwrap_or(&state.config.platform_namespace);
+    if let Err(e) = crate::deployer::namespace::ensure_namespace_with_services_ns(
         &state.kube,
         &dev_ns,
         "dev",
         &project_id_str,
         &state.config.platform_namespace,
+        svc_ns,
         false,
     )
     .await
@@ -220,12 +228,13 @@ pub async fn setup_project_infrastructure(
     }
 
     // 2. Create prod namespace
-    if let Err(e) = crate::deployer::namespace::ensure_namespace(
+    if let Err(e) = crate::deployer::namespace::ensure_namespace_with_services_ns(
         &state.kube,
         &prod_ns,
         "prod",
         &project_id_str,
         &state.config.platform_namespace,
+        svc_ns,
         false,
     )
     .await
@@ -509,6 +518,7 @@ async fn list_projects(
 
     // Count matching projects visible to the user
     // A30: include RBAC-granted and workspace-member visibility for private projects
+    // A10: enforce token boundary_project_id and boundary_workspace_id
     let total = sqlx::query_scalar!(
         r#"
         SELECT COUNT(*) as "count!: i64"
@@ -517,6 +527,8 @@ async fn list_projects(
           AND ($1::uuid IS NULL OR owner_id = $1)
           AND ($2::text IS NULL OR visibility = $2)
           AND ($3::text IS NULL OR name ILIKE $3)
+          AND ($5::uuid IS NULL OR id = $5)
+          AND ($6::uuid IS NULL OR workspace_id = $6)
           AND (
               visibility = 'public'
               OR visibility = 'internal'
@@ -539,6 +551,8 @@ async fn list_projects(
         params.visibility,
         search_pattern,
         auth.user_id,
+        auth.boundary_project_id,
+        auth.boundary_workspace_id,
     )
     .fetch_one(&state.pool)
     .await?;
@@ -553,6 +567,8 @@ async fn list_projects(
           AND ($1::uuid IS NULL OR owner_id = $1)
           AND ($2::text IS NULL OR visibility = $2)
           AND ($3::text IS NULL OR name ILIKE $3)
+          AND ($5::uuid IS NULL OR id = $5)
+          AND ($6::uuid IS NULL OR workspace_id = $6)
           AND (
               visibility = 'public'
               OR visibility = 'internal'
@@ -571,12 +587,14 @@ async fn list_projects(
               )
           )
         ORDER BY created_at DESC
-        LIMIT $5 OFFSET $6
+        LIMIT $7 OFFSET $8
         "#,
         params.owner_id,
         params.visibility,
         search_pattern,
         auth.user_id,
+        auth.boundary_project_id,
+        auth.boundary_workspace_id,
         limit,
         offset,
     )
@@ -647,31 +665,8 @@ async fn update_project(
     // Enforce hard project scope from API token
     auth.check_project_scope(id)?;
 
-    // Owner or project:write
-    let project_owner = sqlx::query_scalar!(
-        "SELECT owner_id FROM projects WHERE id = $1 AND is_active = true",
-        id,
-    )
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| ApiError::NotFound("project".into()))?;
-
-    if project_owner != auth.user_id {
-        let allowed = resolver::has_permission_scoped(
-            &state.pool,
-            &state.valkey,
-            auth.user_id,
-            Some(id),
-            Permission::ProjectWrite,
-            auth.token_scopes.as_deref(),
-        )
-        .await
-        .map_err(ApiError::Internal)?;
-
-        if !allowed {
-            return Err(ApiError::Forbidden);
-        }
-    }
+    // A1: Always check RBAC — owner gets implicit write via workspace-derived permissions
+    require_project_write(&state, &auth, id).await?;
 
     // Validate inputs
     if let Some(ref dn) = body.display_name {
@@ -746,31 +741,17 @@ async fn delete_project(
     // Enforce hard project scope from API token
     auth.check_project_scope(id)?;
 
-    // Owner or admin
-    let project_owner = sqlx::query_scalar!(
-        "SELECT owner_id FROM projects WHERE id = $1 AND is_active = true",
+    // A1: Only admins can delete projects — no owner bypass
+    require_admin(&state, &auth).await?;
+
+    // Verify project exists
+    let _exists = sqlx::query_scalar!(
+        "SELECT id FROM projects WHERE id = $1 AND is_active = true",
         id,
     )
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| ApiError::NotFound("project".into()))?;
-
-    if project_owner != auth.user_id {
-        let is_admin = resolver::has_permission_scoped(
-            &state.pool,
-            &state.valkey,
-            auth.user_id,
-            None,
-            Permission::AdminUsers,
-            auth.token_scopes.as_deref(),
-        )
-        .await
-        .map_err(ApiError::Internal)?;
-
-        if !is_admin {
-            return Err(ApiError::Forbidden);
-        }
-    }
 
     // Soft-delete
     sqlx::query!("UPDATE projects SET is_active = false WHERE id = $1", id)

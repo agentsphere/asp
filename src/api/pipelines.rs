@@ -146,10 +146,16 @@ async fn trigger_pipeline(
             .repo_path
             .ok_or_else(|| ApiError::BadRequest("project has no repo path".into()))?,
     );
-    let pipeline_id =
-        crate::pipeline::trigger::on_api(&state.pool, &repo_path, id, &body.git_ref, auth.user_id)
-            .await
-            .map_err(ApiError::from)?;
+    let pipeline_id = crate::pipeline::trigger::on_api(
+        &state.pool,
+        &repo_path,
+        id,
+        &body.git_ref,
+        auth.user_id,
+        &state.config.kaniko_image,
+    )
+    .await
+    .map_err(ApiError::from)?;
 
     // Notify executor
     crate::pipeline::trigger::notify_executor(&state, pipeline_id).await;

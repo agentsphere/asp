@@ -48,7 +48,7 @@ export function WorkspaceDetail({ id }: Props) {
 
   const loadMembers = () => {
     if (!id) return;
-    api.get<WorkspaceMember[]>(`/api/workspaces/${id}/members`).then(setMembers).catch(e => console.warn(e));
+    api.get<{ items: WorkspaceMember[] }>(`/api/workspaces/${id}/members`).then(r => setMembers(r.items)).catch(e => console.warn(e));
   };
 
   const loadProjects = () => {

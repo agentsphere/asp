@@ -752,3 +752,134 @@ async fn admin_remove_role_not_found(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ---------------------------------------------------------------------------
+// Single resource retrieval + update
+// ---------------------------------------------------------------------------
+
+/// Get a single role by ID.
+#[sqlx::test(migrations = "./migrations")]
+async fn admin_get_role_by_id(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+
+    // Create a custom role
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/admin/roles",
+        serde_json::json!({ "name": "get-test-role", "description": "A test role" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let role_id = body["id"].as_str().unwrap();
+
+    // Get it by ID
+    let (status, body) =
+        helpers::get_json(&app, &admin_token, &format!("/api/admin/roles/{role_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"], "get-test-role");
+    assert_eq!(body["description"], "A test role");
+}
+
+/// Update a custom role's name and description.
+#[sqlx::test(migrations = "./migrations")]
+async fn admin_update_role(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/admin/roles",
+        serde_json::json!({ "name": "upd-role", "description": "original" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let role_id = body["id"].as_str().unwrap();
+
+    let (status, body) = helpers::patch_json(
+        &app,
+        &admin_token,
+        &format!("/api/admin/roles/{role_id}"),
+        serde_json::json!({ "name": "upd-role-v2", "description": "updated desc" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "update role failed: {body}");
+    assert_eq!(body["name"], "upd-role-v2");
+    assert_eq!(body["description"], "updated desc");
+}
+
+/// Get a single delegation by ID.
+#[sqlx::test(migrations = "./migrations")]
+async fn admin_get_delegation_by_id(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+
+    let (user_id, _) =
+        helpers::create_user(&app, &admin_token, "deleg-get", "deleg-get@test.com").await;
+
+    // Create a delegation
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/admin/delegations",
+        serde_json::json!({
+            "delegate_id": user_id.to_string(),
+            "permission": "admin:users",
+            "expires_in_hours": 24
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "create delegation failed: {body}"
+    );
+    let delegation_id = body["id"].as_str().unwrap();
+
+    // Get it by ID
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/admin/delegations/{delegation_id}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "get delegation failed: {body}");
+    assert_eq!(body["id"], delegation_id);
+}
+
+/// Get a single service account by ID.
+#[sqlx::test(migrations = "./migrations")]
+async fn admin_get_service_account_by_id(pool: PgPool) {
+    let (state, admin_token) = helpers::test_state(pool.clone()).await;
+    let app = helpers::test_router(state);
+
+    // Create a service account
+    let (status, body) = helpers::post_json(
+        &app,
+        &admin_token,
+        "/api/admin/service-accounts",
+        serde_json::json!({
+            "name": "sa-get-test",
+            "email": "sa-get-test@test.local",
+            "display_name": "SA Get Test"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "create SA failed: {body}");
+    // Response wraps user in ServiceAccountResponse { user: {...}, token: ... }
+    let sa_id = body["user"]["id"]
+        .as_str()
+        .expect("SA response should have user.id");
+
+    // Get it by ID
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/admin/service-accounts/{sa_id}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "get SA failed: {body}");
+    assert_eq!(body["name"], "sa-get-test");
+}

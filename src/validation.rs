@@ -300,19 +300,36 @@ pub fn match_glob_pattern(pattern: &str, value: &str) -> bool {
         return pattern == value;
     }
 
-    let parts: Vec<&str> = pattern.split('*').collect();
+    let segments: Vec<&str> = pattern.split('*').collect();
 
-    // Single wildcard: "feature/*" or "*-release"
-    if parts.len() == 2 {
-        let prefix = parts[0];
-        let suffix = parts[1];
-        return value.starts_with(prefix)
-            && value.ends_with(suffix)
-            && value.len() >= prefix.len() + suffix.len();
+    // First segment must be a prefix of value
+    let prefix = segments[0];
+    if !value.starts_with(prefix) {
+        return false;
     }
 
-    // Fallback: exact match for complex patterns
-    pattern == value
+    // Last segment must be a suffix of the remaining string
+    let suffix = segments[segments.len() - 1];
+    // Check that there's enough room for prefix + suffix (handles overlap edge case)
+    if value.len() < prefix.len() + suffix.len() {
+        return false;
+    }
+    if !value.ends_with(suffix) {
+        return false;
+    }
+
+    // Walk middle segments in order, each must be found after the previous match
+    let mut cursor = prefix.len();
+    let end = value.len() - suffix.len();
+    for &seg in &segments[1..segments.len() - 1] {
+        if let Some(pos) = value[cursor..end].find(seg) {
+            cursor += pos + seg.len();
+        } else {
+            return false;
+        }
+    }
+
+    true
 }
 
 #[cfg(test)]
@@ -1054,6 +1071,46 @@ mod tests {
             allowed_origins: (0..20).map(|i| format!("http://host{i}:3000")).collect(),
         };
         assert!(check_browser_config(&config).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // match_glob_pattern — multi-wildcard tests (A24)
+    // -----------------------------------------------------------------------
+
+    #[rstest]
+    #[case("*mid*", "abcmidxyz", true)]
+    #[case("*mid*", "mid", true)]
+    #[case("*mid*", "midxyz", true)]
+    #[case("*mid*", "abcmid", true)]
+    #[case("*mid*", "abcxyz", false)]
+    #[case("a/*/b/*", "a/foo/b/bar", true)]
+    #[case("a/*/b/*", "a//b/", true)]
+    #[case("a/*/b/*", "a/foo/c/bar", false)]
+    #[case("*", "anything", true)]
+    #[case("*", "", true)]
+    #[case("exact", "exact", true)]
+    #[case("exact", "other", false)]
+    #[case("pre*", "prefix", true)]
+    #[case("pre*", "pre", true)]
+    #[case("pre*", "other", false)]
+    #[case("*suf", "endsuf", true)]
+    #[case("*suf", "suf", true)]
+    #[case("*suf", "other", false)]
+    #[case("a*b*c", "abc", true)]
+    #[case("a*b*c", "aXXbYYc", true)]
+    #[case("a*b*c", "aXXYYc", false)]
+    #[case("*a*b*", "XaYbZ", true)]
+    #[case("*a*b*", "XYZ", false)]
+    fn match_glob_multi_wildcard(
+        #[case] pattern: &str,
+        #[case] value: &str,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(
+            match_glob_pattern(pattern, value),
+            expected,
+            "match_glob_pattern({pattern:?}, {value:?}) should be {expected}"
+        );
     }
 
     // -----------------------------------------------------------------------

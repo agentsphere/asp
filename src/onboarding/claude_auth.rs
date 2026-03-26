@@ -426,63 +426,84 @@ async fn run_cli_validation(
         "claude oauth validation result"
     );
 
-    // Log first 500 chars of stdout/stderr for debugging
+    // Log stdout/stderr for debugging
     if !stdout.is_empty() {
-        let preview: String = stdout.chars().take(500).collect();
+        let preview: String = stdout.chars().take(2000).collect();
         tracing::debug!(stdout = %preview, "claude validation stdout");
     }
     if !stderr.is_empty() {
-        let preview: String = stderr.chars().take(500).collect();
+        let preview: String = stderr.chars().take(2000).collect();
         tracing::warn!(stderr = %preview, "claude validation stderr");
     }
 
+    Ok(parse_validation_ndjson(&stdout))
+}
+
+/// Parse the NDJSON output from `claude --print` to determine if auth succeeded.
+fn parse_validation_ndjson(stdout: &str) -> bool {
     let mut saw_init = false;
+    let mut line_count = 0;
+    let mut json_count = 0;
 
     for line in stdout.lines() {
+        line_count += 1;
         let v: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => continue,
         };
+        json_count += 1;
 
-        // Check assistant message for authentication_failed error
-        if v.get("error").and_then(|e| e.as_str()) == Some("authentication_failed") {
-            return Ok(false);
+        let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let msg_subtype = v.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+        let msg_error = v.get("error").and_then(|e| e.as_str()).unwrap_or("");
+
+        tracing::debug!(
+            line_count,
+            json_count,
+            msg_type,
+            msg_subtype,
+            msg_error,
+            "validation: parsed NDJSON line"
+        );
+
+        if msg_error == "authentication_failed" {
+            tracing::warn!("validation: found authentication_failed error");
+            return false;
         }
 
-        // The CLI emits a {"type":"system","subtype":"init"} message after
-        // successful authentication.  If we see it, the token is valid even
-        // if the subsequent prompt execution fails (rate-limit, network, etc.).
-        if v.get("type").and_then(|t| t.as_str()) == Some("system")
-            && v.get("subtype").and_then(|s| s.as_str()) == Some("init")
-        {
+        if msg_type == "system" && msg_subtype == "init" {
             saw_init = true;
+            tracing::info!("validation: saw system.init — auth succeeded");
         }
 
-        // Check the result line
-        if v.get("type").and_then(|t| t.as_str()) == Some("result") {
-            if v.get("is_error").and_then(serde_json::Value::as_bool) == Some(false) {
-                return Ok(true);
+        if msg_type == "result" {
+            let is_error = v.get("is_error").and_then(serde_json::Value::as_bool);
+            tracing::info!(is_error = ?is_error, saw_init, "validation: got result line");
+            if is_error == Some(false) || saw_init {
+                return true;
             }
-            // is_error but we already authenticated (init appeared) — the
-            // prompt failed for a non-auth reason (rate-limit, network, etc.).
-            if saw_init {
-                tracing::warn!(
-                    "CLI result has is_error=true but init was seen — treating as valid auth"
-                );
-                return Ok(true);
-            }
-            return Ok(false);
+            return false;
         }
     }
 
-    // No result line but init appeared — token authenticated successfully
+    tracing::info!(
+        line_count,
+        json_count,
+        saw_init,
+        "validation: finished parsing all lines"
+    );
+
     if saw_init {
         tracing::info!("no result line but init was seen — treating as valid auth");
-        return Ok(true);
+        return true;
     }
 
-    // No clear signal — treat as failure
-    Ok(false)
+    tracing::warn!(
+        stdout_len = stdout.len(),
+        stdout_preview = %stdout.chars().take(1000).collect::<String>(),
+        "validation: no init and no result found — returning false"
+    );
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -557,7 +578,11 @@ async fn extract_token_from_stdout(
         );
 
         if let Some(token) = find_oauth_token(&clean) {
-            tracing::info!("extracted OAuth token from CLI stdout");
+            tracing::info!(
+                token_len = token.len(),
+                token_prefix = %&token[..token.len().min(20)],
+                "extracted OAuth token from CLI stdout"
+            );
             return Ok(token);
         }
     }
@@ -608,8 +633,14 @@ fn strip_ansi_escapes(s: &str) -> String {
 /// wrap artifact and skipped; a blank line (`\n\n`) or a non-URL character
 /// terminates the URL.
 fn find_oauth_url(text: &str) -> Option<String> {
-    let marker = "https://claude.ai/oauth/authorize?";
-    let start = text.find(marker)?;
+    // Try multiple known URL patterns (claude.com/cai/oauth for v2.1+, claude.ai/oauth for older)
+    let markers = [
+        "https://claude.com/cai/oauth/authorize?",
+        "https://claude.ai/oauth/authorize?",
+    ];
+    let (marker_len, start) = markers
+        .iter()
+        .find_map(|m| text.find(m).map(|pos| (m.len(), pos)))?;
     let rest = &text[start..];
     let bytes = rest.as_bytes();
 
@@ -649,7 +680,7 @@ fn find_oauth_url(text: &str) -> Option<String> {
         }
     }
 
-    if url.len() > marker.len() {
+    if url.len() > marker_len {
         Some(url)
     } else {
         None
@@ -730,6 +761,14 @@ mod tests {
     }
 
     #[test]
+    fn find_oauth_url_extracts_claude_com_url() {
+        let text = "Browser didn't open? Use the url below to sign in (c to copy)\nhttps://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a&state=xyz\n\nPaste code here";
+        let url = find_oauth_url(text).unwrap();
+        assert!(url.starts_with("https://claude.com/cai/oauth/authorize?"));
+        assert!(url.contains("client_id=9d1c250a"));
+    }
+
+    #[test]
     fn find_oauth_url_returns_none_for_no_url() {
         let text = "No URL here, just some text";
         assert!(find_oauth_url(text).is_none());
@@ -740,6 +779,13 @@ mod tests {
         let text = "Visit: https://claude.ai/oauth/authorize?code=true";
         let url = find_oauth_url(text).unwrap();
         assert_eq!(url, "https://claude.ai/oauth/authorize?code=true");
+    }
+
+    #[test]
+    fn find_oauth_url_handles_claude_com_at_end() {
+        let text = "Visit: https://claude.com/cai/oauth/authorize?code=true";
+        let url = find_oauth_url(text).unwrap();
+        assert_eq!(url, "https://claude.com/cai/oauth/authorize?code=true");
     }
 
     #[test]
@@ -754,6 +800,20 @@ mod tests {
         let url = find_oauth_url(text).unwrap();
         assert!(url.contains("9d1c250a-e61b-44d9-88ed-5944d1962f5e"));
         assert!(url.contains("&state=abc123"));
+        assert!(!url.contains("Paste"));
+    }
+
+    #[test]
+    fn find_oauth_url_handles_claude_com_pty_wrapped() {
+        let text = "Browser didn't open? Use the url below to sign in (c to copy)\n\
+            https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-59\r\n\
+            44d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com\r\n\
+            %2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&state=abc123\r\n\
+            \r\n\
+            Paste code here if prompted >";
+        let url = find_oauth_url(text).unwrap();
+        assert!(url.starts_with("https://claude.com/cai/oauth/authorize?"));
+        assert!(url.contains("9d1c250a-e61b-44d9-88ed-5944d1962f5e"));
         assert!(!url.contains("Paste"));
     }
 

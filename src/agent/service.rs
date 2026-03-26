@@ -117,6 +117,7 @@ pub async fn create_session(
         &session_id.to_string(),
         &project_id.to_string(),
         &state.config.platform_namespace,
+        state.config.ns_prefix.as_deref(),
         state.config.dev_mode,
     )
     .await
@@ -306,6 +307,8 @@ pub async fn create_session(
         registry_push_url: state.config.registry_url.as_deref(),
         project_name: project_name.as_deref(),
         session_short_id: Some(short_id),
+        default_runner_image: &state.config.runner_image,
+        git_clone_image: &state.config.git_clone_image,
     })?;
 
     tracing::info!(

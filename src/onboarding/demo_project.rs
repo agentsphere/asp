@@ -484,6 +484,7 @@ async fn trigger_mr_pipeline(
             commit_sha,
             action: "opened".into(),
         },
+        &state.config.kaniko_image,
     )
     .await
     {

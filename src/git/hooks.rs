@@ -201,7 +201,13 @@ pub async fn post_receive(state: &AppState, params: &PostReceiveParams) -> Resul
             commit_sha,
         };
 
-        match crate::pipeline::trigger::on_push(&state.pool, &trigger_params).await {
+        match crate::pipeline::trigger::on_push(
+            &state.pool,
+            &trigger_params,
+            &state.config.kaniko_image,
+        )
+        .await
+        {
             Ok(Some(pipeline_id)) => {
                 tracing::info!(%pipeline_id, branch, "pipeline created, notifying executor");
                 crate::pipeline::trigger::notify_executor(state, pipeline_id).await;
@@ -254,7 +260,9 @@ pub async fn post_receive(state: &AppState, params: &PostReceiveParams) -> Resul
             commit_sha: commit_sha.clone(),
         };
 
-        match crate::pipeline::trigger::on_tag(&state.pool, &tag_params).await {
+        match crate::pipeline::trigger::on_tag(&state.pool, &tag_params, &state.config.kaniko_image)
+            .await
+        {
             Ok(Some(pipeline_id)) => {
                 crate::pipeline::trigger::notify_executor(state, pipeline_id).await;
             }
@@ -341,7 +349,9 @@ async fn handle_mr_sync_on_push(state: &AppState, params: &PostReceiveParams, br
             action: "synchronized".into(),
         };
 
-        match crate::pipeline::trigger::on_mr(&state.pool, &mr_params).await {
+        match crate::pipeline::trigger::on_mr(&state.pool, &mr_params, &state.config.kaniko_image)
+            .await
+        {
             Ok(Some(pipeline_id)) => {
                 crate::pipeline::trigger::notify_executor(state, pipeline_id).await;
             }

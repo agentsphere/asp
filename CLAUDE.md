@@ -625,7 +625,7 @@ just test-e2e         # after multi-step workflow changes (~2.5 min)
 
 ### MANDATORY: Read test report after in-cluster tests
 
-`just test-integration`, `just test-e2e`, and `just cov-total` run tests inside the dev cluster via `hack/test-in-cluster.sh`. Each run has a unique `RUN_ID` (8-char hex) and writes a JUnit-based test report to **`test-report-{RUN_ID}.txt`** in the project root. **Always read the matching `test-report-*.txt` file after any in-cluster test run** to check the pass/fail summary and identify any failures — do not rely solely on the exit code or terminal tail output. The RUN_ID is printed early in the test output (look for `platform-test-{RUN_ID}` namespace lines).
+`just test-integration`, `just test-e2e`, and `just cov-total` run tests inside the dev cluster via `hack/test-in-cluster.sh`. Each run has a unique `RUN_ID` (8-char hex) and writes artefacts to the project root, grouped by run: **`test-{RUN_ID}-report.txt`** (pass/fail summary), **`test-{RUN_ID}-output.txt`** (full console), **`test-{RUN_ID}-logs.jsonl`** (structured per-test logs), and for coverage runs **`test-{RUN_ID}-coverage.txt`**. **Always read the matching `test-{RUN_ID}-report.txt` file after any in-cluster test run** to check the pass/fail summary — do not rely solely on the exit code or terminal tail output. The RUN_ID is printed early in the test output (look for `platform-test-{RUN_ID}` namespace lines).
 
 ### Test Tier Boundary: Endpoint Scope vs User Journey
 

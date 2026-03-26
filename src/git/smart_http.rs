@@ -36,6 +36,8 @@ pub struct GitUser {
     pub boundary_project_id: Option<Uuid>,
     /// Hard workspace boundary from API token (if token-authenticated).
     pub boundary_workspace_id: Option<Uuid>,
+    /// Token permission scopes (None = password/SSH auth, Some = API token auth).
+    pub token_scopes: Option<Vec<String>>,
 }
 
 /// Resolved project from /:owner/:repo path.
@@ -132,7 +134,7 @@ pub async fn authenticate_basic(headers: &HeaderMap, pool: &PgPool) -> Result<Gi
     let token_row = if let Some(ref user) = user_row {
         sqlx::query!(
             r#"
-        SELECT project_id, scope_workspace_id
+        SELECT project_id, scope_workspace_id, scopes
         FROM api_tokens
         WHERE token_hash = $1
           AND user_id = $2
@@ -148,7 +150,8 @@ pub async fn authenticate_basic(headers: &HeaderMap, pool: &PgPool) -> Result<Gi
     };
 
     if let Some(token_row) = token_row {
-        let user = user_row.expect("token match implies user exists");
+        // A25: Replace .expect() with proper error handling
+        let user = user_row.ok_or(ApiError::Unauthorized)?;
         if !user.is_active {
             return Err(ApiError::Unauthorized);
         }
@@ -158,6 +161,7 @@ pub async fn authenticate_basic(headers: &HeaderMap, pool: &PgPool) -> Result<Gi
             ip_addr: None,
             boundary_project_id: token_row.project_id,
             boundary_workspace_id: token_row.scope_workspace_id,
+            token_scopes: Some(token_row.scopes), // A8: enforce token scopes
         });
     }
 
@@ -166,7 +170,7 @@ pub async fn authenticate_basic(headers: &HeaderMap, pool: &PgPool) -> Result<Gi
     if user_row.is_none() {
         let token_with_user = sqlx::query!(
             r#"
-            SELECT t.project_id, t.scope_workspace_id,
+            SELECT t.project_id, t.scope_workspace_id, t.scopes,
                    u.id as "user_id!: Uuid", u.name as "user_name!: String",
                    u.is_active as "is_active!: bool"
             FROM api_tokens t
@@ -190,6 +194,7 @@ pub async fn authenticate_basic(headers: &HeaderMap, pool: &PgPool) -> Result<Gi
                 ip_addr: None,
                 boundary_project_id: row.project_id,
                 boundary_workspace_id: row.scope_workspace_id,
+                token_scopes: Some(row.scopes), // A8: enforce token scopes
             });
         }
     }
@@ -214,6 +219,7 @@ pub async fn authenticate_basic(headers: &HeaderMap, pool: &PgPool) -> Result<Gi
         ip_addr: None,
         boundary_project_id: None,
         boundary_workspace_id: None,
+        token_scopes: None, // Password auth — no token scopes
     })
 }
 
@@ -629,12 +635,14 @@ pub async fn check_access_for_user(
         Permission::ProjectWrite
     };
 
-    let allowed = resolver::has_permission(
+    // A8: Use has_permission_scoped to enforce API token scopes
+    let allowed = resolver::has_permission_scoped(
         &state.pool,
         &state.valkey,
         git_user.user_id,
         Some(project.project_id),
         perm,
+        git_user.token_scopes.as_deref(),
     )
     .await
     .map_err(ApiError::Internal)?;

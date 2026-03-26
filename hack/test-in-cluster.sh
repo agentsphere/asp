@@ -238,10 +238,10 @@ export CLAUDE_CLI_PATH="/tmp/platform-e2e/mock-claude-cli.sh"
 # breaks without the offline cache.
 export SQLX_OFFLINE=true
 
-# Test output files — RUN_ID-suffixed for parallel safety
-REPORT_FILE="${PROJECT_DIR}/test-report-${RUN_ID}.txt"
-OUTPUT_FILE="${PROJECT_DIR}/test-output-${RUN_ID}.txt"
-LOG_FILE="${PROJECT_DIR}/test-logs-${RUN_ID}.jsonl"
+# Test output files — grouped by RUN_ID prefix for easy discovery
+REPORT_FILE="${PROJECT_DIR}/test-${RUN_ID}-report.txt"
+OUTPUT_FILE="${PROJECT_DIR}/test-${RUN_ID}-output.txt"
+LOG_FILE="${PROJECT_DIR}/test-${RUN_ID}-logs.jsonl"
 JUNIT_FILE="${PROJECT_DIR}/target/nextest/ci/junit.xml"
 
 # Structured JSON logs with threadName per line (consumed by helpers::init_test_tracing)
@@ -267,6 +267,7 @@ if [[ "$TEST_TYPE" == "total" ]]; then
   echo "==> Running unit tests (coverage, no report)"
   cargo llvm-cov nextest --no-report --lib \
     --ignore-filename-regex "${COV_IGNORE_REGEX}" \
+    2>&1 | tee -a "${OUTPUT_FILE}" \
     || TIER_FAILURES=$((TIER_FAILURES + 1))
 
   echo ""
@@ -274,12 +275,16 @@ if [[ "$TEST_TYPE" == "total" ]]; then
   cargo llvm-cov nextest --no-report --test '*_integration' \
     --profile ci --test-threads 32 \
     --ignore-filename-regex "${COV_IGNORE_REGEX}" --no-fail-fast \
+    2>&1 | tee -a "${OUTPUT_FILE}" \
     || TIER_FAILURES=$((TIER_FAILURES + 1))
+
+  COV_REPORT_FILE="${PROJECT_DIR}/test-${RUN_ID}-coverage.txt"
 
   echo ""
   echo "==> Generating combined coverage report"
   echo "────────────────────────────────────────────────────────────────"
-  cargo llvm-cov report --ignore-filename-regex "${COV_REPORT_IGNORE_REGEX}"
+  cargo llvm-cov report --ignore-filename-regex "${COV_REPORT_IGNORE_REGEX}" \
+    2>&1 | tee "${COV_REPORT_FILE}"
 
   if [[ -n "$LCOV_PATH" ]]; then
     echo ""
@@ -342,4 +347,5 @@ echo "==> Test outputs (RUN_ID=${RUN_ID}):"
 echo "    Report: ${REPORT_FILE}"
 [[ -f "${OUTPUT_FILE}" ]] && echo "    Output: ${OUTPUT_FILE}"
 [[ -f "${LOG_FILE}" ]] && echo "    Logs:   ${LOG_FILE}"
+[[ -n "${COV_REPORT_FILE:-}" && -f "${COV_REPORT_FILE}" ]] && echo "    Coverage: ${COV_REPORT_FILE}"
 exit "${TEST_EXIT:-0}"

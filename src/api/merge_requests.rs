@@ -405,7 +405,11 @@ async fn update_mr(
         validation::check_length("body", b, 0, 100_000)?;
     }
 
-    let mr_author = sqlx::query_scalar!(
+    // A2: Even the author needs current project-write permission (may have been revoked)
+    require_project_write(&state, &auth, id).await?;
+
+    // Verify MR exists
+    let _mr_exists = sqlx::query_scalar!(
         "SELECT author_id FROM merge_requests WHERE project_id = $1 AND number = $2",
         id,
         number,
@@ -413,23 +417,6 @@ async fn update_mr(
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| ApiError::NotFound("merge request".into()))?;
-
-    if mr_author != auth.user_id {
-        let allowed = crate::rbac::resolver::has_permission_scoped(
-            &state.pool,
-            &state.valkey,
-            auth.user_id,
-            Some(id),
-            Permission::ProjectWrite,
-            auth.token_scopes.as_deref(),
-        )
-        .await
-        .map_err(ApiError::Internal)?;
-
-        if !allowed {
-            return Err(ApiError::Forbidden);
-        }
-    }
 
     // Only allow closing via update, not merging
     if let Some(ref status) = body.status
@@ -1818,7 +1805,13 @@ async fn run_post_merge_side_effects(
                 branch: trigger_branch,
                 commit_sha: merge_sha,
             };
-            match crate::pipeline::trigger::on_push(&trigger_state.pool, &params).await {
+            match crate::pipeline::trigger::on_push(
+                &trigger_state.pool,
+                &params,
+                &trigger_state.config.kaniko_image,
+            )
+            .await
+            {
                 Ok(Some(pipeline_id)) => {
                     crate::pipeline::trigger::notify_executor(&trigger_state, pipeline_id).await;
                     tracing::info!(%project_id, %pipeline_id, "post-merge push pipeline triggered");
@@ -1861,7 +1854,9 @@ fn spawn_mr_pipeline_trigger(
             commit_sha: sha,
             action,
         };
-        match crate::pipeline::trigger::on_mr(&pool, &mr_params).await {
+        match crate::pipeline::trigger::on_mr(&pool, &mr_params, &trigger_state.config.kaniko_image)
+            .await
+        {
             Ok(Some(pipeline_id)) => {
                 crate::pipeline::trigger::notify_executor(&trigger_state, pipeline_id).await;
             }
@@ -1905,7 +1900,7 @@ async fn post_merge_deploy(
         .unwrap_or_default();
 
     // Build image_ref using node_registry_url (DaemonSet proxy — what containerd pulls from).
-    // Must match the format used by detect_and_write_deployment in the pipeline executor.
+    // Must match the format used by gitops_sync step in the pipeline executor.
     let registry = state
         .config
         .registry_node_url

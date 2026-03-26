@@ -1251,15 +1251,19 @@ async fn render_manifests(
         let rendered = renderer::render(&template_content, &vars)?;
         Ok((rendered, Some(sha)))
     } else {
-        let manifest = generate_basic_manifest(release);
+        let manifest = generate_basic_manifest(release)?;
         Ok((manifest, None))
     }
 }
 
 /// Generate a minimal K8s Deployment manifest when no ops repo is configured.
-fn generate_basic_manifest(release: &PendingRelease) -> String {
+fn generate_basic_manifest(release: &PendingRelease) -> Result<String, DeployerError> {
+    // A16: Validate image_ref before interpolating into YAML to prevent injection
+    crate::validation::check_container_image(&release.image_ref)
+        .map_err(|e| DeployerError::InvalidManifest(e.to_string()))?;
+
     let name = format!("{}-{}", release.project_name, release.environment);
-    format!(
+    Ok(format!(
         "apiVersion: apps/v1\n\
          kind: Deployment\n\
          metadata:\n\
@@ -1283,7 +1287,7 @@ fn generate_basic_manifest(release: &PendingRelease) -> String {
          \x20       - containerPort: 8080\n",
         secret = REGISTRY_PULL_SECRET_NAME,
         image = release.image_ref,
-    )
+    ))
 }
 
 /// Store tracked resource inventory.
@@ -1359,21 +1363,21 @@ mod tests {
     #[test]
     fn basic_manifest_has_correct_name() {
         let r = sample_release();
-        let manifest = generate_basic_manifest(&r);
+        let manifest = generate_basic_manifest(&r).unwrap();
         assert!(manifest.contains("name: my-app-production"));
     }
 
     #[test]
     fn basic_manifest_has_correct_image() {
         let r = sample_release();
-        let manifest = generate_basic_manifest(&r);
+        let manifest = generate_basic_manifest(&r).unwrap();
         assert!(manifest.contains("image: registry.example.com/myapp:v1.2.3"));
     }
 
     #[test]
     fn basic_manifest_is_valid_yaml() {
         let r = sample_release();
-        let manifest = generate_basic_manifest(&r);
+        let manifest = generate_basic_manifest(&r).unwrap();
         let parsed: serde_yaml::Value =
             serde_yaml::from_str(&manifest).expect("manifest should be valid YAML");
         assert_eq!(parsed["kind"], "Deployment");
@@ -1384,14 +1388,14 @@ mod tests {
     #[test]
     fn basic_manifest_container_port_8080() {
         let r = sample_release();
-        let manifest = generate_basic_manifest(&r);
+        let manifest = generate_basic_manifest(&r).unwrap();
         assert!(manifest.contains("containerPort: 8080"));
     }
 
     #[test]
     fn basic_manifest_selector_matches_labels() {
         let r = sample_release();
-        let manifest = generate_basic_manifest(&r);
+        let manifest = generate_basic_manifest(&r).unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&manifest).unwrap();
         let selector_label = &parsed["spec"]["selector"]["matchLabels"]["app"];
         let template_label = &parsed["spec"]["template"]["metadata"]["labels"]["app"];
@@ -1403,7 +1407,7 @@ mod tests {
         for env in &["production", "staging", "development", "preview-feat-123"] {
             let mut r = sample_release();
             r.environment = (*env).to_string();
-            let manifest = generate_basic_manifest(&r);
+            let manifest = generate_basic_manifest(&r).unwrap();
             let expected_name = format!("name: my-app-{env}");
             assert!(
                 manifest.contains(&expected_name),
@@ -1422,7 +1426,7 @@ mod tests {
         ] {
             let mut r = sample_release();
             r.image_ref = (*image).to_string();
-            let manifest = generate_basic_manifest(&r);
+            let manifest = generate_basic_manifest(&r).unwrap();
             assert!(manifest.contains(&format!("image: {image}")));
         }
     }
@@ -1430,7 +1434,7 @@ mod tests {
     #[test]
     fn basic_manifest_container_name_is_app() {
         let r = sample_release();
-        let manifest = generate_basic_manifest(&r);
+        let manifest = generate_basic_manifest(&r).unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&manifest).unwrap();
         let container_name = &parsed["spec"]["template"]["spec"]["containers"][0]["name"];
         assert_eq!(container_name, "app");
@@ -1439,7 +1443,7 @@ mod tests {
     #[test]
     fn basic_manifest_labels_consistent() {
         let r = sample_release();
-        let manifest = generate_basic_manifest(&r);
+        let manifest = generate_basic_manifest(&r).unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&manifest).unwrap();
         let selector = &parsed["spec"]["selector"]["matchLabels"]["app"];
         let template = &parsed["spec"]["template"]["metadata"]["labels"]["app"];
@@ -1516,5 +1520,22 @@ mod tests {
             build_deploy_docker_config("registry:5000", Some("registry:5000"), "admin", "tok");
         let auths = config["auths"].as_object().unwrap();
         assert_eq!(auths.len(), 1);
+    }
+
+    // -- env_suffix --
+
+    #[test]
+    fn env_suffix_production_to_prod() {
+        assert_eq!(env_suffix("production"), "prod");
+    }
+
+    #[test]
+    fn env_suffix_staging_unchanged() {
+        assert_eq!(env_suffix("staging"), "staging");
+    }
+
+    #[test]
+    fn env_suffix_custom_unchanged() {
+        assert_eq!(env_suffix("preview-feat-123"), "preview-feat-123");
     }
 }

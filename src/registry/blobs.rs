@@ -256,6 +256,15 @@ pub async fn complete_upload(
         return Err(RegistryError::BlobUploadUnknown);
     }
 
+    // A14: Enforce maximum blob size limit
+    let max_blob_size: u64 = 5_368_709_120; // 5 GB
+    let total_size = u64::try_from(session.offset).unwrap_or(0) + body.len() as u64;
+    if total_size > max_blob_size {
+        return Err(RegistryError::BlobUploadInvalid(format!(
+            "blob size {total_size} exceeds maximum {max_blob_size}"
+        )));
+    }
+
     let repo_id: Uuid = session
         .repository_id
         .parse()

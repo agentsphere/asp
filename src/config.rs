@@ -102,6 +102,12 @@ pub struct Config {
     pub master_key_previous: Option<String>,
     /// Trusted proxy CIDRs (S59). When non-empty, X-Forwarded-For only trusted from these IPs.
     pub trust_proxy_cidrs: Vec<String>,
+    /// Default runner image for agent pods (A4). Pinned to avoid `:latest`.
+    pub runner_image: String,
+    /// Git clone init container image (A4). Pinned to avoid `:latest`.
+    pub git_clone_image: String,
+    /// Kaniko image for imagebuild pipeline steps (A4). Pinned to avoid `:latest`.
+    pub kaniko_image: String,
 }
 
 fn parse_cors_origins(s: &str) -> Vec<String> {
@@ -121,7 +127,7 @@ impl std::fmt::Debug for Config {
             .field("database_url", &"[REDACTED]")
             .field("valkey_url", &"[REDACTED]")
             .field("minio_endpoint", &self.minio_endpoint)
-            .field("minio_access_key", &self.minio_access_key)
+            .field("minio_access_key", &"[REDACTED]")
             .field("minio_secret_key", &"[REDACTED]")
             .field(
                 "master_key",
@@ -140,6 +146,9 @@ impl std::fmt::Debug for Config {
             .field("pipeline_namespace", &self.pipeline_namespace)
             .field("agent_namespace", &self.agent_namespace)
             .field("platform_namespace", &self.platform_namespace)
+            .field("runner_image", &self.runner_image)
+            .field("git_clone_image", &self.git_clone_image)
+            .field("kaniko_image", &self.kaniko_image)
             .finish_non_exhaustive()
     }
 }
@@ -265,6 +274,12 @@ impl Config {
                 .ok()
                 .map(|v| v.split(',').map(|s| s.trim().to_owned()).collect())
                 .unwrap_or_default(),
+            runner_image: env::var("PLATFORM_RUNNER_IMAGE")
+                .unwrap_or_else(|_| "platform-runner:v1".into()),
+            git_clone_image: env::var("PLATFORM_GIT_CLONE_IMAGE")
+                .unwrap_or_else(|_| "alpine/git:2.47.2".into()),
+            kaniko_image: env::var("PLATFORM_KANIKO_IMAGE")
+                .unwrap_or_else(|_| "gcr.io/kaniko-project/executor:v1.23.2-debug".into()),
         }
     }
 
@@ -349,6 +364,9 @@ impl Config {
             observe_retention_days: 30,
             master_key_previous: None,
             trust_proxy_cidrs: vec![],
+            runner_image: "platform-runner:v1".into(),
+            git_clone_image: "alpine/git:2.47.2".into(),
+            kaniko_image: "gcr.io/kaniko-project/executor:v1.23.2-debug".into(),
         }
     }
 }
@@ -596,6 +614,7 @@ mod tests {
         let config = Config {
             database_url: "postgres://secret:password@db:5432/prod".into(),
             valkey_url: "redis://:hunter2@valkey:6379".into(),
+            minio_access_key: "super-secret-minio-access".into(),
             minio_secret_key: "super-secret-minio-key".into(),
             master_key: Some("0123456789abcdef".into()),
             smtp_password: Some("smtp-secret".into()),
@@ -606,6 +625,10 @@ mod tests {
         // Sensitive values must NOT appear
         assert!(!debug.contains("secret:password"), "database_url leaked");
         assert!(!debug.contains("hunter2"), "valkey_url leaked");
+        assert!(
+            !debug.contains("super-secret-minio-access"),
+            "minio_access_key leaked"
+        );
         assert!(
             !debug.contains("super-secret-minio-key"),
             "minio_secret_key leaked"

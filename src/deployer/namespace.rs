@@ -97,15 +97,17 @@ pub async fn ensure_session_namespace(
     session_id: &str,
     project_id: &str,
     platform_namespace: &str,
+    services_namespace: Option<&str>,
     dev_mode: bool,
 ) -> Result<(), super::error::DeployerError> {
-    // 1. Namespace
-    ensure_namespace(
+    // 1. Namespace (pass services_namespace for correct NetworkPolicy)
+    ensure_namespace_with_services_ns(
         kube_client,
         ns_name,
         "session",
         project_id,
         platform_namespace,
+        services_namespace.unwrap_or(platform_namespace),
         dev_mode,
     )
     .await?;
@@ -113,7 +115,9 @@ pub async fn ensure_session_namespace(
     // 2. NetworkPolicy (unless dev mode) — session namespaces use a variant that
     //    allows ingress from the platform namespace on port 8000 for preview proxying.
     if !dev_mode {
-        let _ = ensure_session_network_policy(kube_client, ns_name, platform_namespace).await;
+        let svc_ns = services_namespace.unwrap_or(platform_namespace);
+        let _ =
+            ensure_session_network_policy(kube_client, ns_name, platform_namespace, svc_ns).await;
     }
 
     // 3. RBAC objects
@@ -406,7 +410,64 @@ pub fn build_namespace_object(
 /// Same egress rules as `build_network_policy()` (platform API, DNS, internet) but
 /// additionally allows ingress from the platform namespace on port 8000 TCP for
 /// iframe preview proxying.
-pub fn build_session_network_policy(ns_name: &str, platform_namespace: &str) -> serde_json::Value {
+/// Build a namespace-level `NetworkPolicy` allowing egress to platform API (8080),
+/// Valkey (6379), DNS, and public internet.
+fn build_namespace_network_policy(
+    ns_name: &str,
+    platform_namespace: &str,
+    services_namespace: &str,
+) -> serde_json::Value {
+    let mut egress_namespaces = vec![platform_namespace.to_owned()];
+    if services_namespace != platform_namespace {
+        egress_namespaces.push(services_namespace.to_owned());
+    }
+    let mut egress: Vec<serde_json::Value> = egress_namespaces
+        .iter()
+        .map(|ns| {
+            json!({
+                "to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": ns}}}],
+                "ports": [{"port": 8080, "protocol": "TCP"}, {"port": 6379, "protocol": "TCP"}]
+            })
+        })
+        .collect();
+    egress.push(json!({
+        "to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+                "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}],
+        "ports": [{"port": 53, "protocol": "UDP"}, {"port": 53, "protocol": "TCP"}]
+    }));
+    egress.push(json!({
+        "to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": ["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16","100.64.0.0/10","169.254.0.0/16"]}}]
+    }));
+    json!({
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {"name": "platform-managed", "namespace": ns_name},
+        "spec": {"podSelector": {}, "policyTypes": ["Egress"], "egress": egress}
+    })
+}
+
+pub fn build_session_network_policy(
+    ns_name: &str,
+    platform_namespace: &str,
+    services_namespace: &str,
+) -> serde_json::Value {
+    let mut egress_ns_selectors = vec![json!({
+        "namespaceSelector": {
+            "matchLabels": {
+                "kubernetes.io/metadata.name": platform_namespace
+            }
+        }
+    })];
+    if services_namespace != platform_namespace {
+        egress_ns_selectors.push(json!({
+            "namespaceSelector": {
+                "matchLabels": {
+                    "kubernetes.io/metadata.name": services_namespace
+                }
+            }
+        }));
+    }
+
     json!({
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
@@ -433,14 +494,11 @@ pub fn build_session_network_policy(ns_name: &str, platform_namespace: &str) -> 
             }],
             "egress": [
                 {
-                    "to": [{
-                        "namespaceSelector": {
-                            "matchLabels": {
-                                "kubernetes.io/metadata.name": platform_namespace
-                            }
-                        }
-                    }],
-                    "ports": [{"port": 8080, "protocol": "TCP"}]
+                    "to": egress_ns_selectors,
+                    "ports": [
+                        {"port": 8080, "protocol": "TCP"},
+                        {"port": 6379, "protocol": "TCP"}
+                    ]
                 },
                 {
                     "to": [{
@@ -565,6 +623,52 @@ pub async fn ensure_namespace(
     platform_namespace: &str,
     dev_mode: bool,
 ) -> Result<(), super::error::DeployerError> {
+    ensure_namespace_inner(
+        kube_client,
+        ns_name,
+        env,
+        project_id,
+        platform_namespace,
+        None,
+        dev_mode,
+    )
+    .await
+}
+
+/// Like `ensure_namespace` but allows specifying the services namespace
+/// (where Valkey/Postgres/MinIO live) explicitly. In dev mode this differs
+/// from `platform_namespace` because services run in `{ns_prefix}` not in
+/// the platform's own namespace.
+pub async fn ensure_namespace_with_services_ns(
+    kube_client: &kube::Client,
+    ns_name: &str,
+    env: &str,
+    project_id: &str,
+    platform_namespace: &str,
+    services_namespace: &str,
+    dev_mode: bool,
+) -> Result<(), super::error::DeployerError> {
+    ensure_namespace_inner(
+        kube_client,
+        ns_name,
+        env,
+        project_id,
+        platform_namespace,
+        Some(services_namespace),
+        dev_mode,
+    )
+    .await
+}
+
+async fn ensure_namespace_inner(
+    kube_client: &kube::Client,
+    ns_name: &str,
+    env: &str,
+    project_id: &str,
+    platform_namespace: &str,
+    services_namespace: Option<&str>,
+    dev_mode: bool,
+) -> Result<(), super::error::DeployerError> {
     let ns_json = build_namespace_object(ns_name, env, project_id, dev_mode);
 
     let ar = kube::discovery::ApiResource {
@@ -615,64 +719,9 @@ pub async fn ensure_namespace(
     )
     .await?;
 
-    // S23/S24: NetworkPolicy — allow DNS + platform API + internet, block cross-namespace access.
-    // Applied in all modes (unlike PSA which is dev-mode-gated for hostPath compatibility).
-    let netpol = json!({
-        "apiVersion": "networking.k8s.io/v1",
-        "kind": "NetworkPolicy",
-        "metadata": {
-            "name": "platform-managed",
-            "namespace": ns_name
-        },
-        "spec": {
-            "podSelector": {},
-            "policyTypes": ["Egress"],
-            "egress": [
-                {
-                    "to": [{
-                        "namespaceSelector": {
-                            "matchLabels": {
-                                "kubernetes.io/metadata.name": platform_namespace
-                            }
-                        }
-                    }],
-                    "ports": [{"port": 8080, "protocol": "TCP"}]
-                },
-                {
-                    "to": [{
-                        "namespaceSelector": {
-                            "matchLabels": {
-                                "kubernetes.io/metadata.name": "kube-system"
-                            }
-                        },
-                        "podSelector": {
-                            "matchLabels": {
-                                "k8s-app": "kube-dns"
-                            }
-                        }
-                    }],
-                    "ports": [
-                        {"port": 53, "protocol": "UDP"},
-                        {"port": 53, "protocol": "TCP"}
-                    ]
-                },
-                {
-                    "to": [{
-                        "ipBlock": {
-                            "cidr": "0.0.0.0/0",
-                            "except": [
-                                "10.0.0.0/8",
-                                "172.16.0.0/12",
-                                "192.168.0.0/16",
-                                "100.64.0.0/10",
-                                "169.254.0.0/16"
-                            ]
-                        }
-                    }]
-                }
-            ]
-        }
-    });
+    // S23/S24: NetworkPolicy — allow DNS + platform API + Valkey + internet.
+    let svc_ns = services_namespace.unwrap_or(platform_namespace);
+    let netpol = build_namespace_network_policy(ns_name, platform_namespace, svc_ns);
 
     apply_namespaced_object(
         kube_client,
@@ -696,8 +745,9 @@ pub async fn ensure_session_network_policy(
     kube_client: &kube::Client,
     ns_name: &str,
     platform_namespace: &str,
+    services_namespace: &str,
 ) -> Result<(), super::error::DeployerError> {
-    let np_json = build_session_network_policy(ns_name, platform_namespace);
+    let np_json = build_session_network_policy(ns_name, platform_namespace, services_namespace);
 
     let ar = kube::discovery::ApiResource {
         group: "networking.k8s.io".into(),
@@ -968,10 +1018,15 @@ mod tests {
     }
 
     #[test]
-    fn session_network_policy_egress_unchanged() {
+    fn session_network_policy_egress_includes_valkey() {
         let session_np = build_session_network_policy("my-app", "platform");
-        let project_np = build_network_policy("my-app", "platform");
-        assert_eq!(session_np["spec"]["egress"], project_np["spec"]["egress"]);
+        let egress = session_np["spec"]["egress"].as_array().unwrap();
+        // First rule: platform API (8080) + Valkey (6379)
+        let platform_rule = &egress[0];
+        let ports = platform_rule["ports"].as_array().unwrap();
+        assert_eq!(ports.len(), 2);
+        assert_eq!(ports[0]["port"], 8080);
+        assert_eq!(ports[1]["port"], 6379);
     }
 
     #[test]

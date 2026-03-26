@@ -624,9 +624,12 @@ async fn get_delegation(
     require_delegate(&state, &auth).await?;
 
     let row = sqlx::query(
-        "SELECT id, delegator_id, delegate_id, permission, project_id, \
-                expires_at, reason, is_active, created_at \
-         FROM delegations WHERE id = $1",
+        "SELECT d.id, d.delegator_id, d.delegate_id, d.permission_id, \
+                p.name as permission_name, d.project_id, \
+                d.expires_at, d.reason, d.revoked_at, d.created_at \
+         FROM delegations d \
+         JOIN permissions p ON p.id = d.permission_id \
+         WHERE d.id = $1",
     )
     .bind(id)
     .fetch_optional(&state.pool)
@@ -636,22 +639,24 @@ async fn get_delegation(
     let delegation_id: Uuid = row.get("id");
     let delegator_id: Uuid = row.get("delegator_id");
     let delegate_id: Uuid = row.get("delegate_id");
-    let permission: String = row.get("permission");
+    let permission_id: Uuid = row.get("permission_id");
+    let permission_name: String = row.get("permission_name");
     let project_id: Option<Uuid> = row.get("project_id");
     let expires_at: Option<DateTime<Utc>> = row.get("expires_at");
     let reason: Option<String> = row.get("reason");
-    let is_active: bool = row.get("is_active");
+    let revoked_at: Option<DateTime<Utc>> = row.get("revoked_at");
     let created_at: DateTime<Utc> = row.get("created_at");
 
     Ok(Json(serde_json::json!({
         "id": delegation_id,
         "delegator_id": delegator_id,
         "delegate_id": delegate_id,
-        "permission": permission,
+        "permission_id": permission_id,
+        "permission": permission_name,
         "project_id": project_id,
         "expires_at": expires_at,
         "reason": reason,
-        "is_active": is_active,
+        "revoked_at": revoked_at,
         "created_at": created_at,
     })))
 }

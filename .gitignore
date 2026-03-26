@@ -26,10 +26,11 @@ ui/test-results/
 *.lcov
 coverage-html/
 
-# Test reports
-test-report-*.txt
-test-logs-*.jsonl
-test-output-*.txt
+# Test artefacts (test-{RUN_ID}-{type})
+test-*-report.txt
+test-*-output.txt
+test-*-logs.jsonl
+test-*-coverage.txt
 
 # Kind kubeconfig
 kind-platform.kubeconfig

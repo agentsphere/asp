@@ -159,8 +159,8 @@ export function SessionDetail({ id: projectId, sessionId }: Props) {
   // Fetch iframe panels
   const refreshIframes = () => {
     if (!projectId || !sessionId) return;
-    api.get<IframePanel[]>(`/api/projects/${projectId}/sessions/${sessionId}/iframes`)
-      .then(setIframes)
+    api.get<{ items: IframePanel[] }>(`/api/projects/${projectId}/sessions/${sessionId}/iframes`)
+      .then(r => setIframes(r.items))
       .catch(e => console.warn(e));
   };
 

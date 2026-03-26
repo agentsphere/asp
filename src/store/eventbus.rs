@@ -1343,6 +1343,105 @@ mod tests {
         }
     }
 
+    // -- resolve_deploy_config_from_specs --
+
+    fn minimal_platform_file() -> crate::pipeline::definition::PlatformFile {
+        crate::pipeline::definition::PlatformFile {
+            pipeline: serde_json::from_value(serde_json::json!({
+                "steps": []
+            }))
+            .unwrap(),
+            flags: vec![],
+            deploy: None,
+        }
+    }
+
+    #[test]
+    fn resolve_deploy_no_deploy_section() {
+        let pf = minimal_platform_file();
+        let (config, strategy) = resolve_deploy_config_from_specs(&pf, "production");
+        assert_eq!(config, serde_json::json!({}));
+        assert!(strategy.is_none());
+    }
+
+    #[test]
+    fn resolve_deploy_empty_specs() {
+        let mut pf = minimal_platform_file();
+        pf.deploy = Some(
+            serde_json::from_value(serde_json::json!({
+                "specs": []
+            }))
+            .unwrap(),
+        );
+        let (config, strategy) = resolve_deploy_config_from_specs(&pf, "staging");
+        assert_eq!(config, serde_json::json!({}));
+        assert!(strategy.is_none());
+    }
+
+    #[test]
+    fn resolve_deploy_canary_on_staging() {
+        let mut pf = minimal_platform_file();
+        pf.deploy = Some(
+            serde_json::from_value(serde_json::json!({
+                "specs": [{
+                    "name": "web",
+                    "type": "canary",
+                    "canary": {
+                        "stable_service": "web-stable",
+                        "canary_service": "web-canary",
+                        "steps": [10, 50, 100]
+                    }
+                }]
+            }))
+            .unwrap(),
+        );
+        let (config, strategy) = resolve_deploy_config_from_specs(&pf, "staging");
+        assert_eq!(strategy, Some("canary".into()));
+        assert!(config.get("stable_service").is_some());
+    }
+
+    #[test]
+    fn resolve_deploy_canary_not_on_production() {
+        // canary default stages = ["staging"] only
+        let mut pf = minimal_platform_file();
+        pf.deploy = Some(
+            serde_json::from_value(serde_json::json!({
+                "specs": [{
+                    "name": "web",
+                    "type": "canary",
+                    "canary": {
+                        "stable_service": "web-stable",
+                        "canary_service": "web-canary",
+                        "steps": [10, 50, 100]
+                    }
+                }]
+            }))
+            .unwrap(),
+        );
+        let (config, strategy) = resolve_deploy_config_from_specs(&pf, "production");
+        // production not in default canary stages → falls back to rolling
+        assert_eq!(config, serde_json::json!({}));
+        assert_eq!(strategy, Some("rolling".into()));
+    }
+
+    #[test]
+    fn resolve_deploy_rolling_defaults() {
+        let mut pf = minimal_platform_file();
+        pf.deploy = Some(
+            serde_json::from_value(serde_json::json!({
+                "specs": [{
+                    "name": "web",
+                    "type": "rolling"
+                }]
+            }))
+            .unwrap(),
+        );
+        let (config, strategy) = resolve_deploy_config_from_specs(&pf, "production");
+        // rolling default stages = ["staging", "production"]
+        assert_eq!(strategy, Some("rolling".into()));
+        assert_eq!(config, serde_json::json!({}));
+    }
+
     #[test]
     fn deploy_requested_roundtrip() {
         let event = PlatformEvent::DeployRequested {

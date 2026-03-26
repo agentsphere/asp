@@ -1,304 +1,280 @@
-# Plan: Improve Unit + Integration Test Coverage
+# Plan: Improve Test Coverage (79.67% → 85%+)
 
-## Current State
-- **Overall coverage**: 77.65% line coverage across unit + integration tiers
-- **Total missed lines in scope**: ~5,800 lines across all targeted modules
-- **Target**: 85%+ after Phases 1+2, stretch 87%+ after Phase 3
+## Current State (2026-03-26)
+- **Overall coverage**: 79.67% line coverage (32,349 / 40,603 lines)
+- **Target**: 85% = cover ~2,200 more lines
+- **Stretch**: 87% = cover ~3,000 more lines
+- **2 pre-existing test failures**: `auto_setup_downloads_agent_runner`, `pull_platform_runner_bare_image` (registry seed issues, unrelated)
+
+## Progress Log
+
+| Module | Action | Tests Added | Lines Impact | Date |
+|--------|--------|-------------|-------------|------|
+| `pipeline/executor.rs` | Deleted ~300 lines of dead code (`detect_and_write_deployment`, `gitops_handoff`, `write_file_to_ops_repo`, `detect_and_publish_dev_image`, `upsert_preview_deployment`) + removed unused `DEV_IMAGE_STEP_NAME` constant | 0 | ~300 lines removed from denominator | 2026-03-26 |
+| `pipeline/executor.rs` | Added 20 new unit tests: `SHORT_SHA`/`IMAGE_TAG`/`VERSION` env vars, `git_secret_name` pod spec mount, combined secrets pod spec, `mark_transitive_dependents` edge cases, `detect_unrecoverable_container` edge cases, `step_condition_from_row` branches | 20 | ~50 new lines covered | 2026-03-26 |
+| `pipeline/executor.rs` | **Tier migration**: moved 9 single-endpoint executor tests from `e2e_pipeline.rs` → `executor_integration.rs` (integration tier). Added `poll_pipeline_status` + `start_pipeline_server` (random port, parallel-safe) to `helpers/mod.rs`. Kept only `concurrent_pipeline_limit` (multi-pipeline journey) in E2E. | 9 moved | ~500 lines now in cov-total | 2026-03-26 |
+| `pipeline/trigger.rs` | Added 9 unit tests: `is_valid_semver` (5), `increment_patch_from_zero`, `parse_version_file` edge cases (3). Added 12 integration tests: `on_tag` (3), `read_file_at_ref` direct (3), `read_dir_at_ref` (3), `read_version_at_ref` (2), trigger filter test. | 9 unit + 12 int | ~130 lines covered | 2026-03-26 |
 
 ---
 
-## Phase 1: Unit Tests for Pure Functions (est. +440 lines covered)
+## Top Coverage Gaps (sorted by missed lines)
 
-Fast tests, no cluster required, highest ROI.
+| File | Lines | Missed | Cover | Testability |
+|------|-------|--------|-------|-------------|
+| pipeline/executor.rs | ~2990 | ~900 (est.) | ~70% (est.) | K8s-bound async now covered by integration tests |
+| deployer/reconciler.rs | 1110 | 799 | 28.0% | Phase handlers need K8s; DB-only helpers testable |
+| agent/service.rs | 655 | 388 | 40.8% | Session lifecycle, heavy async |
+| agent/llm_validate.rs | 516 | 381 | 26.2% | **LLM tier only** — real Claude API |
+| agent/create_app.rs | 549 | 287 | 47.7% | **LLM tier only** — mock CLI tool loop |
+| api/merge_requests.rs | 1073 | 272 | 74.7% | Git merge strategies testable with bare repos |
+| deployer/analysis.rs | 267 | 246 | 7.9% | Async tick/analysis, needs K8s state |
+| api/onboarding.rs | 493 | 240 | 51.3% | Claude auth flows need PTY; wizard paths testable |
+| pipeline/trigger.rs | 547 | 216 | 60.5% | Version bump + tag trigger testable |
+| health/checks.rs | 329 | 214 | 35.0% | Async probes testable with real cluster |
+| observe/tracing_layer.rs | 288 | 170 | 41.0% | Layer impl needs subscriber harness |
+| onboarding/claude_auth.rs | 518 | 169 | 67.4% | PTY/process spawning — mostly deferred |
+| api/deployments.rs | 903 | 134 | 85.2% | Close to target already |
+| deployer/ops_repo.rs | 803 | 120 | 85.1% | Close to target already |
+| api/sessions.rs | 663 | 115 | 82.7% | Several untested handlers |
+| api/admin.rs | 302 | 110 | 63.6% | Role/delegation edge cases |
 
-### P1.1 — `pipeline/executor.rs` (1805 missed lines, 40.70% → ~47%)
+---
 
-Existing tests cover `slug()`, `extract_exit_code()`, `build_pod_spec()`. Untested pure functions:
+## Phase 1: Unit Tests for Pure Functions (~180 lines covered)
 
-| Function | What it does | Tests to add |
-|----------|-------------|--------------|
-| `check_container_statuses()` | Detects ImagePullBackOff, CrashLoopBackOff | 8 tests: each error type, running/OK, empty list |
-| `detect_unrecoverable_container()` | Combines init + regular container checks | 2 tests: init container failure, no statuses |
-| `build_volumes_and_mounts()` | Volume/mount construction | 4 tests: no secrets, registry only, git only, both |
-| `build_env_vars_core()` | Core env var builder (no AppState) | 3 tests: all fields, without SHA, with registry |
-| `is_reserved_pipeline_env_var()` | Simple lookup | 2 tests: true/false cases |
-| `container_security()` | Returns hardened SecurityContext | 1 test: drops all caps |
-| `node_registry_url()` | Config lookup | 3 tests: prefers node URL, falls back, returns None |
-| `mark_transitive_dependents_skipped()` | DAG traversal (pure graph) | 3 tests: linear chain, diamond, already-completed |
-| `step_condition_from_row()` | StepRow → StepCondition | 2 tests: empty arrays → None, with events |
-| `extract_branch()` | Strip refs/heads/ prefix | 3 tests: refs/heads/, refs/tags/, bare |
-| `build_pod_spec` extensions | With git secret mount, imagebuild | 2 tests |
+Fast tests, no cluster, `just test-unit`.
 
-**Effort**: Medium (33 tests, ~300 lines of test code)
-**Lines covered**: ~250
-
-### P1.2 — `observe/tracing_layer.rs` (186 missed lines, 0.00% → ~43%)
-
-Entire file untested. Testable pure functions:
-
-| Function | Tests to add |
-|----------|--------------|
-| `SpanFields::merge()` | 3 tests: fills gaps, no overwrite, empty source |
-| `classify_source_from_target()` | 4 tests: api, auth, pipeline, system default |
-| `SpanFieldVisitor::record_str()` | 2 tests: well-known fields, unknown fields |
-| `FieldVisitor::record_str/debug/i64` | 2 tests: message extraction, numeric fields |
-
-**Effort**: Medium (11 tests, ~150 lines)
-**Lines covered**: ~80
-
-### P1.3 — `agent/llm_validate.rs` (381 missed lines, 26.16% → ~32%)
-
-Existing tests cover `build_provider_extra_env()`. Extension:
+### P1.1 — `pipeline/trigger.rs` pure helpers
 
 | Function | Tests to add |
 |----------|--------------|
-| `build_provider_extra_env()` edge cases | 4 tests: custom endpoint, Azure Foundry, Vertex no-dup, Anthropic key |
-| `push_if_missing()` | 2 tests: already present, adds new |
-| Serialization | 2 tests: TestResult, ValidationEvent |
+| `parse_version_file()` | 3 tests: valid VERSION, empty, malformed |
+| `is_valid_semver()` | 3 tests: valid, missing patch, invalid |
+| `increment_patch()` | 2 tests: normal bump, from 0 |
+| `ref_to_branch()` | 2 tests: refs/heads/X → X, bare ref |
+| `should_trigger_push()` | 3 tests: branch match, mismatch, wildcard |
 
-**Effort**: Low (8 tests, ~60 lines)
+**Effort**: Low (13 tests, ~100 lines of test code)
+**Lines covered**: ~50
+
+### P1.2 — `api/sessions.rs` pure helpers
+
+| Function | Tests to add |
+|----------|--------------|
+| `truncate_prompt()` | 2 tests: under limit, over limit |
+| `validate_provider_config()` | 3 tests: valid, missing field, invalid type |
+
+**Effort**: Low (5 tests, ~50 lines)
+**Lines covered**: ~20
+
+### P1.3 — `observe/tracing_layer.rs` visitor methods
+
+Tests for `SpanFieldVisitor` and `FieldVisitor` using tracing's `field::Field` API.
+
+| Function | Tests to add |
+|----------|--------------|
+| `SpanFieldVisitor::record_str()` | 3 tests: UUID fields, string fields, unknown field |
+| `FieldVisitor::record_str()` | 2 tests: message field, other field |
+| `FieldVisitor::record_i64()` | 1 test: numeric field |
+| `FieldVisitor::record_debug()` | 1 test: debug-formatted message |
+| `create_channel()` | 1 test: returns sender/receiver |
+
+**Effort**: Medium (8 tests, ~80 lines)
+**Lines covered**: ~40
+
+### P1.4 — `error.rs` remaining paths
+
+| Function | Tests to add |
+|----------|--------------|
+| `ApiError::Forbidden` body | 1 test |
+| `ApiError::Unauthorized` body | 1 test |
+| `ApiError::TooManyRequests` body | 1 test |
+| `ApiError::Conflict` body | 1 test |
+
+**Effort**: Low (4 tests, ~30 lines)
+**Lines covered**: ~15
+
+### P1.5 — `pipeline/executor.rs` remaining pure functions
+
+| Function | Tests to add |
+|----------|--------------|
+| `build_pod_spec()` with imagebuild | 2 tests: kaniko step, deploy-test step |
+| `build_pod_spec()` with setup_commands | 1 test: init container with setup |
+
+**Effort**: Low (3 tests, ~50 lines)
 **Lines covered**: ~30
 
-### P1.4 — `store/eventbus.rs` (192 missed lines, 77.12% → ~78%)
-
-One pure function testable: `resolve_deploy_config_from_specs()`.
+### P1.6 — `deployer/reconciler.rs` — `lookup_stable_image` pattern
 
 | Function | Tests to add |
 |----------|--------------|
-| `resolve_deploy_config_from_specs()` | 5 tests: no deploy section, canary on staging, canary not on prod, A/B on staging, rolling defaults |
+| `handle_rolling_progress()` | 1 test: returns Ok (trivial) |
 
-**Effort**: Low (5 tests, ~60 lines)
-**Lines covered**: ~30
-
-### P1.5 — `agent/create_app.rs` (399 missed lines, 27.59% → ~30%)
-
-Existing tests cover `parse_create_project_input()`. More edge cases:
-
-| Function | Tests to add |
-|----------|--------------|
-| `parse_create_project_input()` | 3 tests: with display_name+description, missing name, empty name |
-| `LoopOutcome` | 1 test: equality/debug |
-
-**Effort**: Low (4 tests, ~40 lines)
-**Lines covered**: ~15
-
-### P1.6 — `deployer/reconciler.rs` (790 missed lines, 25.89% → ~27%)
-
-Existing tests cover `generate_basic_manifest()`, `target_namespace()`, docker config. Extend:
-
-| Function | Tests to add |
-|----------|--------------|
-| `env_suffix()` | 3 tests: production→prod, staging→stg, custom |
-
-**Effort**: Low (3 tests, ~20 lines)
-**Lines covered**: ~15
-
-### P1.7 — `error.rs` (89 missed lines, 68.55% → ~74%)
-
-Error conversion paths:
-
-| Function | Tests to add |
-|----------|--------------|
-| `From<ValidationError>` | 1 test |
-| `BadGateway` body | 1 test: contains message |
-| `ServiceUnavailable` body | 1 test: contains message |
-
-**Effort**: Low (3 tests, ~30 lines)
-**Lines covered**: ~15
-
-### P1.8 — `deployer/analysis.rs` (246 missed lines, 7.87% → ~9%)
-
-Only `invert_condition()` tested. Add edge cases:
-
-| Function | Tests to add |
-|----------|--------------|
-| `invert_condition()` edge cases | 2 tests: LTE unchanged, empty string |
-
-**Effort**: Minimal (2 tests, ~15 lines)
+**Effort**: Minimal (1 test, ~10 lines)
 **Lines covered**: ~5
 
 ---
 
-## Phase 2: Integration Tests for API Handlers (est. +1,080 lines covered)
+## Phase 2: Integration Tests for API Handlers (~900 lines covered)
 
-Requires dev cluster (Postgres, Valkey, MinIO, K8s).
+Requires dev cluster. Run with `just test-integration`.
 
-### P2.1 — `api/onboarding.rs` (351 missed lines, 30.77% → ~70%)
-
-Major untested paths:
+### P2.1 — `api/sessions.rs` untested handlers (~80 lines)
 
 | Handler | Tests to add |
 |---------|--------------|
-| `complete_wizard` with `startup`/`tech_org` org types | 2 tests: team workspace creation |
-| `complete_wizard` with `passkey_policy`, `cli_token`, `custom_provider` | 3 tests |
-| `update_settings` | 2 tests: change org_type, non-admin forbidden |
-| `get_settings` | 1 test: returns all fields |
-| `create_demo_project` | 2 tests: returns project, non-admin forbidden |
-| `verify_oauth_token` | 1 test: invalid token |
-| Claude OAuth error paths | 2 tests: start_claude_auth error, cancel_not_found |
-| Permission enforcement | 1 test: all endpoints require admin |
+| `list_iframes` | 1 test: returns empty then with data |
+| `get_session_progress` | 1 test: returns messages for session |
+| `replay_stored_events` | 1 test: replays historical messages |
+| `sse_session_events_global` | 1 test: global SSE stream |
 
-**Effort**: High (14 tests, ~400 lines)
-**Lines covered**: ~200
-
-### P2.2 — `api/merge_requests.rs` (409 missed lines, 61.08% → ~80%)
-
-Untested paths:
-
-| Handler | Tests to add |
-|---------|--------------|
-| `create_mr` with `auto_merge` | 1 test |
-| `enable_auto_merge` / `disable_auto_merge` | 2 tests |
-| `update_comment` / `delete_comment` | 2 tests |
-| `get_review` (single) | 1 test |
-| Close and reopen MR | 1 test |
-| `merge_mr` validation (already merged, source branch) | 2 tests |
-| Permission enforcement on write ops | 1 test |
-
-**Effort**: High (10 tests, ~350 lines)
-**Lines covered**: ~200
-
-### P2.3 — `health/checks.rs` (266 missed lines, 5.67% → ~60%)
-
-All probes untested:
-
-**Unit tests** (new `mod tests` in checks.rs):
-| Probe | Tests |
-|-------|-------|
-| `check_git_repos` | 2: exists, missing |
-| `check_secrets_engine` | 3: with key, dev mode, no key |
-| `check_registry` | 2: configured, not configured |
-| `elapsed_ms` | 1: small duration |
-
-**Integration tests** (extend health_integration.rs):
-| Probe | Tests |
-|-------|-------|
-| Health endpoint snapshot | 1 test |
-| Postgres probe | 1 test |
-| Valkey probe | 1 test |
-| MinIO probe | 1 test |
-| K8s probe | 1 test |
-| Pod failure summary | 2 tests: empty, with failures |
-
-**Effort**: Medium (15 tests, ~250 lines)
-**Lines covered**: ~150
-
-### P2.4 — `api/admin.rs` (110 missed lines, 63.58% → ~90%)
-
-Untested handlers:
-
-| Handler | Tests to add |
-|---------|--------------|
-| `update_role` | 1 test: name and description |
-| `delete_role` | 2 tests: custom role, system role forbidden |
-| `set_role_permissions` | 1 test |
-| `create_delegation` | 1 test |
-| `list_delegations` | 1 test |
-| `revoke_delegation` | 1 test |
-| Admin token CRUD for other user | 3 tests: create, list, delete |
-
-**Effort**: Medium (10 tests, ~250 lines)
+**Effort**: Medium (4 tests, ~120 lines)
 **Lines covered**: ~80
 
-### P2.5 — `api/passkeys.rs` (180 missed lines, 44.79% → ~63%)
+### P2.2 — `api/admin.rs` remaining handlers (~70 lines)
 
 | Handler | Tests to add |
 |---------|--------------|
-| `get_passkey` by ID | 1 test |
-| `get_passkey` not found | 1 test |
-| `begin_login` returns challenge | 1 test |
-| `begin_login` no credentials | 1 test |
-| Agent user cannot register | 1 test |
-| `delete_passkey` not found | 1 test |
-| `rename_passkey` validation | 1 test |
-
-**Effort**: Medium (7 tests, ~150 lines)
-**Lines covered**: ~60
-
-### P2.6 — `api/commands.rs` (93 missed lines, 65.56% → ~80%)
-
-| Handler | Tests to add |
-|---------|--------------|
-| Create command validation errors | 1 test |
-| Update command not found | 1 test |
-| Delete command not found | 1 test |
-| Permission enforcement | 1 test |
+| `update_role` (name + description) | 1 test |
+| `get_role` single | 1 test |
+| `get_delegation` single | 1 test |
+| `get_service_account` single | 1 test |
 
 **Effort**: Low (4 tests, ~80 lines)
-**Lines covered**: ~40
+**Lines covered**: ~70
 
-### P2.7 — `pipeline/trigger.rs` (212 missed lines, 60.74% → ~88%)
+### P2.3 — `api/issues.rs` edge cases (~50 lines)
 
 | Handler | Tests to add |
 |---------|--------------|
-| `on_push` creates pipeline with steps | 1 test |
-| `on_push` no platform.yaml → skip | 1 test |
-| `on_push` branch mismatch → skip | 1 test |
-| `on_mr` creates pipeline | 1 test |
-| `on_mr` auto bumps version | 1 test |
-| `on_tag` creates pipeline | 1 test |
-| `on_api` creates pipeline | 1 test |
-| `on_api` no platform.yaml → error | 1 test |
+| `create_issue` validation error (empty title) | 1 test |
+| `update_issue` label edge cases (max labels) | 1 test |
+| `delete_comment` by non-author non-admin | 1 test |
 
-**Effort**: High (8 tests, ~300 lines, requires git repo setup)
+**Effort**: Low (3 tests, ~60 lines)
+**Lines covered**: ~50
+
+### P2.4 — `health/checks.rs` async probes (~100 lines)
+
+Integration tests using real cluster infra.
+
+| Probe | Tests to add |
+|-------|--------------|
+| `build_snapshot()` returns all 7 subsystems | 1 test (via health API detail endpoint) |
+| `query_pod_failures()` with data | 1 test: insert failed pod, verify returned |
+| `is_ready()` true when healthy | 1 test (already partially covered by `readyz_returns_ok`) |
+
+**Effort**: Medium (3 tests, ~80 lines)
+**Lines covered**: ~100
+
+### P2.5 — `pipeline/trigger.rs` — `on_tag` and version bump (~100 lines)
+
+| Handler | Tests to add |
+|---------|--------------|
+| `on_tag` creates pipeline from tag push | 1 test |
+| `auto_bump_version` increments VERSION file | 1 test |
+| `read_file_at_ref` returns file content | 1 test |
+
+**Effort**: High (3 tests, ~120 lines, requires git repo setup)
+**Lines covered**: ~100
+
+### P2.6 — `api/merge_requests.rs` — git merge operations (~150 lines)
+
+Tests that exercise the actual git merge code paths (require bare repo + working copy).
+
+| Handler | Tests to add |
+|---------|--------------|
+| `delete_mr` | 1 test: soft-delete MR |
+| `create_mr` with duplicate source/target branch | 1 test |
+| `list_comments` pagination | 1 test |
+| `create_review` approve/request_changes | 1 test |
+
+**Effort**: Medium (4 tests, ~120 lines)
 **Lines covered**: ~150
+
+### P2.7 — `api/onboarding.rs` — claude auth paths (~100 lines)
+
+| Handler | Tests to add |
+|---------|--------------|
+| `start_claude_auth` returns session | 1 test |
+| `claude_auth_status` polling | 1 test |
+| `submit_auth_code` with invalid code | 1 test |
+| `verify_oauth_token` success | 1 test |
+
+**Effort**: Medium (4 tests, ~120 lines)
+**Lines covered**: ~100
+
+### P2.8 — `api/commands.rs` remaining gaps (~40 lines)
+
+| Handler | Tests to add |
+|---------|--------------|
+| `create_command` with all optional fields | 1 test |
+| `resolve_command` project-scoped fallback chain | 1 test |
+
+**Effort**: Low (2 tests, ~40 lines)
+**Lines covered**: ~40
+
+### P2.9 — `store/eventbus.rs` — event handler paths (~50 lines)
+
+| Handler | Tests to add |
+|---------|--------------|
+| `handle_event` FlagsRegistered creates flags | 1 test |
+| `handle_event` DevImageBuilt updates agent image | 1 test |
+
+**Effort**: Medium (2 tests, ~60 lines)
+**Lines covered**: ~50
 
 ---
 
-## Phase 3: Integration Tests for Background Services (est. +750 lines covered)
+## Phase 3: Background Service Integration Tests (~400 lines covered)
 
-### P3.1 — `deployer/reconciler.rs` phase handlers (790 missed → ~490 missed)
+Complex tests requiring K8s state + background tasks.
 
-| Handler | Tests to add |
-|---------|--------------|
-| `handle_pending` rolling | 1 test: applies and completes |
-| `handle_canary_progress` advance | 1 test: pass → next stage |
-| `handle_canary_progress` hold | 1 test: fail → hold |
-| `handle_canary_progress` rollback | 1 test: max failures → rollback |
-| `handle_ab_test_progress` | 1 test: promotes after duration |
-| `handle_promoting` | 1 test: finalizes release |
-| `handle_rolling_back` | 1 test: reverts traffic |
-| `cleanup_expired_previews` | 1 test: deletes old targets |
+### P3.1 — `pipeline/executor.rs` DB-only helpers (~120 lines)
 
-**Effort**: Very High (8 tests, ~500 lines, complex K8s + DB setup)
-**Lines covered**: ~300
+Test the DB-only helper functions that don't need K8s pods.
 
-### P3.2 — `deployer/analysis.rs` async analysis (246 → ~146 missed)
+| Function | Tests to add |
+|----------|--------------|
+| `create_git_auth_token` + `cleanup_git_auth_token` | 2 tests: create/verify/cleanup token |
+| `create_pipeline_otlp_token` | 1 test: creates OTEL token |
+| `emit_pipeline_log` | 1 test: writes log entry |
+| `is_cancelled` | 1 test: returns false for running pipeline |
+| `skip_remaining_steps` | 1 test: marks pending steps as skipped |
 
-| Handler | Tests to add |
-|---------|--------------|
-| `tick` evaluates progress gates | 1 test |
-| `tick` detects rollback trigger | 1 test |
-| `tick` inconclusive on low traffic | 1 test |
-| `ensure_analysis_record` create/return | 2 tests |
+**Effort**: Medium (6 tests, ~150 lines)
+**Lines covered**: ~120
 
-**Effort**: High (5 tests, ~200 lines)
+### P3.2 — `deployer/reconciler.rs` DB-only helpers (~80 lines)
+
+| Function | Tests to add |
+|----------|--------------|
+| `transition_phase` | 2 tests: valid transition, invalid |
+| `record_history` | 1 test: creates history entry |
+| `cleanup_expired_previews` | 1 test: deletes aged targets |
+
+**Effort**: Medium (4 tests, ~100 lines)
+**Lines covered**: ~80
+
+### P3.3 — `agent/service.rs` session lifecycle (~100 lines)
+
+| Function | Tests to add |
+|----------|--------------|
+| `create_session` with parent | 1 test: spawn depth computed |
+| `cleanup_session` deletes identity | 1 test |
+| `list_active_sessions` | 1 test |
+
+**Effort**: Medium (3 tests, ~80 lines)
 **Lines covered**: ~100
 
-### P3.3 — `store/eventbus.rs` event handlers (192 → ~42 missed)
+### P3.4 — `deployer/namespace.rs` + `deployer/ops_repo.rs` gaps (~100 lines)
 
-| Handler | Tests to add |
-|---------|--------------|
-| `handle_event` OpsRepoUpdated → creates release | 1 test |
-| `handle_event` DeployRequested → commits to ops repo | 1 test |
-| `handle_event` RollbackRequested → reverts commit | 1 test |
-| `handle_event` FlagsRegistered → creates flags | 1 test |
-| `handle_event` AlertFired → dispatches notification | 1 test |
-| `handle_event` DevImageBuilt → updates agent image | 1 test |
+| Function | Tests to add |
+|----------|--------------|
+| `ensure_project_namespace` idempotent | 1 test |
+| `sync_from_project_repo` with env vars | 1 test |
 
-**Effort**: High (6 tests, ~250 lines)
-**Lines covered**: ~150
-
-### P3.4 — `agent/service.rs` session lifecycle (376 → ~276 missed)
-
-| Handler | Tests to add |
-|---------|--------------|
-| `create_session` inserts DB row | 1 test |
-| `create_session` creates ephemeral identity | 1 test |
-| `create_session` computes spawn depth | 1 test |
-| `cleanup_session` deletes identity | 1 test |
-
-**Effort**: High (4 tests, ~200 lines)
+**Effort**: High (2 tests, ~80 lines, complex K8s setup)
 **Lines covered**: ~100
 
 ---
@@ -307,61 +283,68 @@ Untested handlers:
 
 | File | Lines Missed | Reason |
 |------|-------------|--------|
-| `observe/tracing_layer.rs` (Layer impl) | ~106 | Requires tracing subscriber setup; Phase 1 covers pure functions |
-| `agent/create_app.rs` (tool loop) | ~384 | Requires mock CLI subprocess; covered by LLM test tier |
-| `agent/llm_validate.rs` (test functions) | ~351 | LLM test tier only (real Claude API) |
-| `onboarding/claude_auth.rs` | ~179 | Requires PTY/process spawning; test error paths only |
-| `git/ssh_server.rs` | ~192 | SSH protocol hard to test; existing unit tests cover parsing |
-| `store/pool.rs` | 3 | Trivial re-export |
-| `registry/gc.rs` | 25 | Background GC loop; test via E2E |
+| agent/llm_validate.rs | 381 | LLM test tier only (real Claude API) |
+| agent/create_app.rs | 287 | LLM test tier only (mock CLI tool loop) |
+| git/ssh_server.rs | 190 | SSH protocol hard to test |
+| observe/tracing_layer.rs (Layer impl) | ~100 | Requires tracing subscriber harness |
+| onboarding/claude_auth.rs (PTY flow) | ~120 | PTY/process spawning |
+| deployer/analysis.rs | 246 | Complex async analysis tick |
+| registry/gc.rs | 25 | Background GC loop |
+| store/pool.rs | 3 | Trivial re-export |
 
 ---
 
-## Implementation Order Summary
+## Implementation Order
 
-| Order | Phase | Module | Type | Est. Lines | Effort |
-|-------|-------|--------|------|-----------|--------|
-| 1 | P1.1 | pipeline/executor.rs | Unit | 250 | Medium |
-| 2 | P1.2 | observe/tracing_layer.rs | Unit | 80 | Medium |
-| 3 | P1.3 | agent/llm_validate.rs | Unit | 30 | Low |
-| 4 | P1.4 | store/eventbus.rs | Unit | 30 | Low |
-| 5 | P1.5 | agent/create_app.rs | Unit | 15 | Low |
-| 6 | P1.6 | deployer/reconciler.rs | Unit | 15 | Low |
-| 7 | P1.7 | error.rs | Unit | 15 | Low |
-| 8 | P1.8 | deployer/analysis.rs | Unit | 5 | Minimal |
-| 9 | P2.3 | health/checks.rs | Unit+Int | 150 | Medium |
-| 10 | P2.1 | api/onboarding.rs | Integration | 200 | High |
-| 11 | P2.2 | api/merge_requests.rs | Integration | 200 | High |
-| 12 | P2.4 | api/admin.rs | Integration | 80 | Medium |
-| 13 | P2.5 | api/passkeys.rs | Integration | 60 | Medium |
-| 14 | P2.6 | api/commands.rs | Integration | 40 | Low |
-| 15 | P2.7 | pipeline/trigger.rs | Integration | 150 | High |
-| 16 | P3.1 | deployer/reconciler.rs | Integration | 300 | Very High |
-| 17 | P3.3 | store/eventbus.rs | Integration | 150 | High |
-| 18 | P3.2 | deployer/analysis.rs | Integration | 100 | High |
-| 19 | P3.4 | agent/service.rs | Integration | 100 | High |
+| Order | Item | Module | Type | Est. Lines Covered | Effort |
+|-------|------|--------|------|-------------------|--------|
+| 1 | P1.1 | pipeline/trigger.rs | Unit | 50 | Low |
+| 2 | P1.2 | api/sessions.rs | Unit | 20 | Low |
+| 3 | P1.3 | observe/tracing_layer.rs | Unit | 40 | Medium |
+| 4 | P1.4 | error.rs | Unit | 15 | Low |
+| 5 | P1.5 | pipeline/executor.rs | Unit | 30 | Low |
+| 6 | P1.6 | deployer/reconciler.rs | Unit | 5 | Minimal |
+| 7 | P2.1 | api/sessions.rs | Integration | 80 | Medium |
+| 8 | P2.2 | api/admin.rs | Integration | 70 | Low |
+| 9 | P2.3 | api/issues.rs | Integration | 50 | Low |
+| 10 | P2.4 | health/checks.rs | Integration | 100 | Medium |
+| 11 | P2.5 | pipeline/trigger.rs | Integration | 100 | High |
+| 12 | P2.6 | api/merge_requests.rs | Integration | 150 | Medium |
+| 13 | P2.7 | api/onboarding.rs | Integration | 100 | Medium |
+| 14 | P2.8 | api/commands.rs | Integration | 40 | Low |
+| 15 | P2.9 | store/eventbus.rs | Integration | 50 | Medium |
+| 16 | P3.1 | pipeline/executor.rs | Integration | 120 | Medium |
+| 17 | P3.2 | deployer/reconciler.rs | Integration | 80 | Medium |
+| 18 | P3.3 | agent/service.rs | Integration | 100 | Medium |
+| 19 | P3.4 | deployer/namespace+ops_repo | Integration | 100 | High |
 
 ---
 
 ## Expected Coverage Impact
 
-| Phase | Lines Covered | Cumulative Estimate |
-|-------|--------------|---------------------|
-| Baseline | — | 77.65% |
-| Phase 1 (Unit) | ~440 | ~79.5% |
-| Phase 2 (Integration) | ~1,080 | ~84.0% |
-| Phase 3 (Background) | ~750 | ~87.0% |
+| Phase | Tests | Lines Covered | Cumulative |
+|-------|-------|--------------|-----------|
+| Baseline | — | — | 79.67% |
+| Phase 1 (Unit) | ~34 | ~180 | 80.1% |
+| Phase 2 (Integration) | ~30 | ~900 | 82.3% |
+| Phase 3 (Background) | ~15 | ~400 | 83.3% |
 
-**Conservative target**: 85% after Phases 1+2.
-**Stretch target**: 87%+ after all three phases.
+**Note**: These estimates are conservative. Integration tests often cover shared code paths (middleware, auth, validation) beyond the targeted handler, so actual coverage gain will likely be higher.
+
+**Conservative target**: 83%+ after all three phases.
+**Stretch**: If integration tests cover more shared paths than estimated, 85%+ is achievable.
+
+To reach 85%+ without testing the deferred LLM/SSH/PTY paths, consider also adding:
+- More edge-case tests for existing well-covered modules (api/webhooks, api/flags, auth/middleware)
+- Negative-path tests (malformed input, auth failures) that exercise error branches
 
 ---
 
 ## Key Principles
 
-1. **Unit tests first** — Phases 1.1-1.8 run with `just test-unit` (~1s), no cluster needed
-2. **Test pure functions exhaustively** — `build_pod_spec`, `check_container_statuses`, `mark_transitive_dependents_skipped` are deterministic with high bug potential
-3. **Integration tests follow existing patterns** — `helpers::test_state()` + `helpers::test_router()` + direct DB inserts
-4. **Never mock kube client** — always use real Kind cluster
-5. **Run targeted tests during dev** — `cargo nextest run --lib -E 'test(name)'` for unit, `just test-bin module test_name` for integration
-6. **Run `just ci-full` once at the end** before declaring each phase complete
+1. **Unit tests first** — P1.1-P1.6 run with `just test-unit` (~1s), no cluster
+2. **Integration tests follow existing patterns** — `helpers::test_state()` + `helpers::test_router()`
+3. **Never mock kube client** — always use real Kind cluster
+4. **Run targeted tests during dev** — `cargo nextest run --lib -E 'test(name)'` for unit, `just test-bin module test_name` for integration
+5. **Run `just ci-full` once at the end** before declaring each phase complete
+6. **DB-only helpers are high ROI** — P3.1 and P3.2 test pipeline/deployer helpers that only need Postgres, not K8s pods

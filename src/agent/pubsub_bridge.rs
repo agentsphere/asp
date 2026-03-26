@@ -19,6 +19,15 @@ pub async fn publish_event(
 ) -> Result<(), anyhow::Error> {
     let channel = valkey_acl::events_channel(session_id);
     let json = serde_json::to_string(event)?;
+
+    const MAX_PUBSUB_MSG_SIZE: usize = 1_048_576; // 1 MB
+    if json.len() > MAX_PUBSUB_MSG_SIZE {
+        anyhow::bail!(
+            "pubsub message too large: {} bytes (max {MAX_PUBSUB_MSG_SIZE})",
+            json.len()
+        );
+    }
+
     valkey.next().publish::<(), _, _>(&channel, json).await?;
     Ok(())
 }

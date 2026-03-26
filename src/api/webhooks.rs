@@ -436,6 +436,7 @@ async fn test_webhook(
     });
 
     dispatch_single(
+        wh_id,
         &wh.url,
         wh.secret.as_deref(),
         &payload,
@@ -461,7 +462,7 @@ pub async fn fire_webhooks(
 ) {
     let webhooks = match sqlx::query!(
         r#"
-        SELECT url, secret
+        SELECT id, url, secret
         FROM webhooks
         WHERE project_id = $1 AND active = true AND $2 = ANY(events)
         "#,
@@ -479,18 +480,20 @@ pub async fn fire_webhooks(
     };
 
     for wh in webhooks {
+        let webhook_id = wh.id;
         let url = wh.url.clone();
         let secret = wh.secret.clone();
         let payload = payload.clone();
         let sem = semaphore.clone();
 
         tokio::spawn(async move {
-            dispatch_single(&url, secret.as_deref(), &payload, &sem).await;
+            dispatch_single(webhook_id, &url, secret.as_deref(), &payload, &sem).await;
         });
     }
 }
 
 pub(crate) async fn dispatch_single(
+    webhook_id: Uuid,
     url: &str,
     secret: Option<&str>,
     payload: &serde_json::Value,
@@ -504,20 +507,20 @@ pub(crate) async fn dispatch_single(
             .is_some_and(|v| v == "true")
     });
     if !*DEV_MODE && crate::validation::check_ssrf_url(url, &["http", "https"]).is_err() {
-        tracing::warn!("webhook URL failed SSRF re-validation, skipping dispatch");
+        tracing::warn!(webhook_id = %webhook_id, "webhook URL failed SSRF re-validation, skipping dispatch");
         return;
     }
 
     // Acquire semaphore permit (concurrency limit)
     let Ok(_permit) = semaphore.try_acquire() else {
-        tracing::warn!(url, "webhook dispatch dropped: concurrency limit reached");
+        tracing::warn!(webhook_id = %webhook_id, "webhook dispatch dropped: concurrency limit reached");
         return;
     };
 
     let body = match serde_json::to_string(payload) {
         Ok(b) => b,
         Err(e) => {
-            tracing::error!(error = %e, url, "failed to serialize webhook payload");
+            tracing::error!(error = %e, webhook_id = %webhook_id, "failed to serialize webhook payload");
             return;
         }
     };
@@ -538,10 +541,10 @@ pub(crate) async fn dispatch_single(
 
     match request.body(body).send().await {
         Ok(resp) => {
-            tracing::info!(url, status = resp.status().as_u16(), "webhook delivered");
+            tracing::info!(webhook_id = %webhook_id, status = resp.status().as_u16(), "webhook delivered");
         }
         Err(e) => {
-            tracing::warn!(url, error = %e, "webhook delivery failed");
+            tracing::warn!(webhook_id = %webhook_id, error = %e, "webhook delivery failed");
         }
     }
 }

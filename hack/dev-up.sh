@@ -83,15 +83,17 @@ cat > "${ENV_FILE}" <<EOF
 
 # --- Data stores (NodePort via cluster node — no port-forwards) ---
 DATABASE_URL=postgres://platform:dev@${NODE_IP}:${PG_PORT}/platform_dev
-VALKEY_URL=redis://${NODE_IP}:${VALKEY_PORT}
-MINIO_ENDPOINT=http://${NODE_IP}:${MINIO_PORT}
+VALKEY_URL=redis://:dev@${NODE_IP}:${VALKEY_PORT}
+MINIO_ENDPOINT=https://${NODE_IP}:${MINIO_PORT}
 MINIO_ACCESS_KEY=platform
 MINIO_SECRET_KEY=devdevdev
+MINIO_INSECURE=true
 
 # --- Platform core ---
 PLATFORM_LOG=debug
 PLATFORM_LISTEN=0.0.0.0:${BACKEND_PORT}
 PLATFORM_DEV=true
+PLATFORM_ADMIN_PASSWORD=admin
 
 # AES-256-GCM key for secrets encryption (64 hex chars = 32 bytes)
 PLATFORM_MASTER_KEY=0000000000000000000000000000000000000000000000000000000000000000
@@ -105,6 +107,7 @@ PLATFORM_REGISTRY_URL=${PLATFORM_HOST}:${BACKEND_PORT}
 # --- Agent/Pipeline pod communication ---
 PLATFORM_API_URL=http://${PLATFORM_HOST}:${BACKEND_PORT}
 PLATFORM_VALKEY_AGENT_HOST=valkey.${NS}.svc.cluster.local:6379
+PLATFORM_VALKEY_PASSWORD=dev
 
 # --- Namespace prefix (for per-project namespaces) ---
 PLATFORM_NS_PREFIX=${NS}
@@ -130,6 +133,7 @@ WEBAUTHN_RP_ID=localhost
 WEBAUTHN_RP_ORIGIN=http://localhost:${BACKEND_PORT}
 WEBAUTHN_RP_NAME=Platform
 
+PLATFORM_MCP_SERVERS_TARBALL=/tmp/platform-e2e/${WORKTREE}/mcp-servers.tar.gz
 PLATFORM_SEED_COMMANDS_PATH=${PROJECT_DIR}/seed-commands
 EOF
 

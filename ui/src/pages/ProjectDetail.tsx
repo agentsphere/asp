@@ -42,8 +42,8 @@ export function ProjectDetail({ id, tab }: Props) {
   // Fetch iframes + progress for active session
   useEffect(() => {
     if (!activeSession || !id) return;
-    api.get<IframePanel[]>(`/api/projects/${id}/sessions/${activeSession.id}/iframes`)
-      .then(setIframes).catch(() => setIframes([]));
+    api.get<{ items: IframePanel[] }>(`/api/projects/${id}/sessions/${activeSession.id}/iframes`)
+      .then(r => setIframes(r.items)).catch(() => setIframes([]));
     api.get<{ message: string }>(`/api/projects/${id}/sessions/${activeSession.id}/progress`)
       .then(r => setProgressText(r.message)).catch(e => console.warn(e));
   }, [activeSession, id]);

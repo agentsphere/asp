@@ -273,6 +273,17 @@ impl PubSubClient {
     /// Connect to Valkey and return a new `PubSubClient`.
     pub async fn connect(url: &str, session_id: &str) -> anyhow::Result<Self> {
         let config = Config::from_url(url)?;
+        // Debug: test raw TCP before fred connect
+        let host = config.server.hosts().first().map(|s| s.to_string()).unwrap_or_default();
+        eprintln!("[debug] valkey: connecting to {host}, username={:?}", config.username);
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            tokio::net::TcpStream::connect(&host),
+        ).await {
+            Ok(Ok(_)) => eprintln!("[debug] valkey: TCP connect OK"),
+            Ok(Err(e)) => eprintln!("[debug] valkey: TCP connect error: {e}"),
+            Err(_) => eprintln!("[debug] valkey: TCP connect timeout (3s)"),
+        }
         let client = Client::new(config, None, None, None);
         client.init().await?;
 

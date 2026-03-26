@@ -50,6 +50,7 @@ fn make_git_user(user_id: Uuid) -> GitUser {
         ip_addr: None,
         boundary_project_id: None,
         boundary_workspace_id: None,
+        token_scopes: None,
     }
 }
 
@@ -176,6 +177,7 @@ async fn test_check_access_for_user_scope_project_mismatch(pool: PgPool) {
         ip_addr: None,
         boundary_project_id: Some(other_project_id),
         boundary_workspace_id: None,
+        token_scopes: None,
     };
     let project = make_resolved_project(project_id, "public");
 
@@ -197,6 +199,7 @@ async fn test_check_access_for_user_scope_workspace_mismatch(pool: PgPool) {
         ip_addr: None,
         boundary_project_id: None,
         boundary_workspace_id: Some(other_workspace_id),
+        token_scopes: None,
     };
     let project = make_resolved_project(project_id, "public");
 

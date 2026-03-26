@@ -206,6 +206,7 @@ impl russh::server::Handler for SshSessionHandler {
                 ip_addr: None,
                 boundary_project_id: None,
                 boundary_workspace_id: None,
+                token_scopes: None, // SSH key auth — no token scopes
             });
 
             Ok(Auth::Accept)
