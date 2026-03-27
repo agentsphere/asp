@@ -1191,12 +1191,12 @@ async fn seed_all_scans_directory(pool: PgPool) {
     let tag_exists: bool = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM registry_tags t
          JOIN registry_repositories r ON r.id = t.repository_id
-         WHERE r.name = 'platform-runner' AND t.name = 'latest')",
+         WHERE r.name = 'platform-runner' AND t.name = 'v1')",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert!(tag_exists, "latest tag should exist after seed_all");
+    assert!(tag_exists, "v1 tag should exist after seed_all");
 }
 
 #[sqlx::test(migrations = "./migrations")]

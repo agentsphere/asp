@@ -313,7 +313,7 @@ async fn seed_image_cached(
 
     // 6. Write cache file (only on successful import)
     if let SeedResult::Imported { .. } = &result
-        && let Err(e) = write_seed_cache(pool, repository_id, tarball_path, &cache_path).await
+        && let Err(e) = write_seed_cache(pool, repository_id, tarball_path, &cache_path, tag).await
     {
         tracing::warn!(error = %e, "failed to write seed cache (non-fatal)");
     }
@@ -397,6 +397,7 @@ async fn write_seed_cache(
     repository_id: Uuid,
     tarball_path: &Path,
     cache_path: &Path,
+    tag: &str,
 ) -> Result<(), anyhow::Error> {
     // Query blobs linked to this repository
     let blob_rows: Vec<(String, i64, String)> = sqlx::query_as(
@@ -440,9 +441,10 @@ async fn write_seed_cache(
     // Query the tag digest
     let tag_digest: String = sqlx::query_scalar(
         "SELECT manifest_digest FROM registry_tags \
-         WHERE repository_id = $1 AND name = 'latest'",
+         WHERE repository_id = $1 AND name = $2",
     )
     .bind(repository_id)
+    .bind(tag)
     .fetch_one(pool)
     .await?;
 

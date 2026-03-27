@@ -1005,7 +1005,7 @@ mod tests {
 
     #[test]
     fn session_network_policy_ingress_allows_platform() {
-        let np = build_session_network_policy("my-app", "platform");
+        let np = build_session_network_policy("my-app", "platform", "platform");
         let ingress = np["spec"]["ingress"].as_array().unwrap();
         assert_eq!(ingress.len(), 1);
         let rule = &ingress[0];
@@ -1019,7 +1019,7 @@ mod tests {
 
     #[test]
     fn session_network_policy_egress_includes_valkey() {
-        let session_np = build_session_network_policy("my-app", "platform");
+        let session_np = build_session_network_policy("my-app", "platform", "platform");
         let egress = session_np["spec"]["egress"].as_array().unwrap();
         // First rule: platform API (8080) + Valkey (6379)
         let platform_rule = &egress[0];

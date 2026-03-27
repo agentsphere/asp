@@ -307,7 +307,7 @@ pub fn parse_level(s: &str) -> Level {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tracing::field::{Field, Visit};
+    use tracing::field::Field;
 
     // Helper to create a tracing Field for testing.
     // We use tracing::Span with known field names.

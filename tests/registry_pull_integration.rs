@@ -122,7 +122,7 @@ async fn run_pull_test(
         image_name,
         &Uuid::new_v4().to_string()[..8]
     );
-    let image_ref = format!("{registry_node_url}/{image_name}:latest");
+    let image_ref = format!("{registry_node_url}/{image_name}:v1");
     let label_value = Uuid::new_v4().to_string();
 
     // Get admin user ID
@@ -222,7 +222,7 @@ async fn auto_setup_downloads_agent_runner(pool: PgPool) {
     let platform_api_url = std::env::var("PLATFORM_API_URL").expect("PLATFORM_API_URL must be set");
     let namespace = &state.config.agent_namespace;
     let pod_name = format!("setup-test-{}", &Uuid::new_v4().to_string()[..8]);
-    let image = format!("{registry_node_url}/platform-runner-bare:latest");
+    let image = format!("{registry_node_url}/platform-runner-bare:v1");
 
     // 3. Get admin user ID for pull secret
     let admin_id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE name = 'admin'")

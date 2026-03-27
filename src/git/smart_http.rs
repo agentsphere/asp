@@ -302,7 +302,7 @@ pub async fn resolve_project(
 /// `GET /:owner/:repo/info/refs?service=git-upload-pack|git-receive-pack`
 ///
 /// Returns ref advertisement with pkt-line header.
-#[tracing::instrument(skip(state), fields(%owner, %repo))]
+#[tracing::instrument(skip(state, headers), fields(%owner, %repo))]
 async fn info_refs(
     State(state): State<AppState>,
     AxumPath((owner, repo)): AxumPath<(String, String)>,
@@ -671,7 +671,7 @@ async fn check_access(
 
     let git_user = authenticate_basic(headers, &state.pool).await?;
     // S52: rate-limit git basic auth
-    crate::auth::rate_limit::check_rate(&state.valkey, "git_auth", &git_user.user_name, 20, 300)
+    crate::auth::rate_limit::check_rate(&state.valkey, "git_auth", &git_user.user_name, 100, 300)
         .await?;
     check_access_for_user(state, &git_user, project, is_read).await?;
     Ok(Some(git_user))

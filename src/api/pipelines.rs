@@ -376,12 +376,19 @@ async fn get_step_logs(
 
     // Read stored logs from MinIO
     if let Some(ref log_ref) = step.log_ref {
-        let data = state.minio.read(log_ref).await?;
-        let body = Body::from(data.to_vec());
-        Ok(Response::builder()
-            .header("content-type", "text/plain; charset=utf-8")
-            .body(body)
-            .expect("infallible: valid status and header"))
+        match state.minio.read(log_ref).await {
+            Ok(data) => {
+                let body = Body::from(data.to_vec());
+                Ok(Response::builder()
+                    .header("content-type", "text/plain; charset=utf-8")
+                    .body(body)
+                    .expect("infallible: valid status and header"))
+            }
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => {
+                Err(ApiError::NotFound("step logs".into()))
+            }
+            Err(e) => Err(e.into()),
+        }
     } else {
         Ok(Response::builder()
             .header("content-type", "text/plain; charset=utf-8")
