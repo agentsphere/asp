@@ -3561,11 +3561,10 @@ async fn canary_pass_advances_step(pool: PgPool) {
 
     // Insert a "pass" analysis verdict for step 0
     sqlx::query(
-        "INSERT INTO rollout_analyses (release_id, target_id, step_index, verdict, score, raw_data)
-         VALUES ($1, $2, 0, 'pass', 1.0, '{}')",
+        "INSERT INTO rollout_analyses (release_id, step_index, config, verdict, completed_at)
+         VALUES ($1, 0, '{}', 'pass', now())",
     )
     .bind(release_id)
-    .bind(target_id)
     .execute(&pool)
     .await
     .unwrap();
@@ -3637,8 +3636,8 @@ async fn canary_all_steps_pass_promotes(pool: PgPool) {
 
     // Insert pass verdict for the last step
     sqlx::query(
-        "INSERT INTO rollout_analyses (release_id, target_id, step_index, verdict, score, raw_data)
-         VALUES ($1, (SELECT target_id FROM deploy_releases WHERE id = $1), 0, 'pass', 1.0, '{}')",
+        "INSERT INTO rollout_analyses (release_id, step_index, config, verdict, completed_at)
+         VALUES ($1, 0, '{}', 'pass', now())",
     )
     .bind(release_id)
     .execute(&pool)
@@ -3697,11 +3696,10 @@ async fn canary_max_failures_triggers_rollback(pool: PgPool) {
     // Insert 2 "fail" verdicts (meets max_failures = 2)
     for _ in 0..2 {
         sqlx::query(
-            "INSERT INTO rollout_analyses (release_id, target_id, step_index, verdict, score, raw_data)
-             VALUES ($1, $2, 0, 'fail', 0.0, '{}')",
+            "INSERT INTO rollout_analyses (release_id, step_index, config, verdict, completed_at)
+             VALUES ($1, 0, '{}', 'fail', now())",
         )
         .bind(release_id)
-        .bind(target_id)
         .execute(&pool)
         .await
         .unwrap();
@@ -3766,11 +3764,10 @@ async fn canary_single_fail_holds(pool: PgPool) {
 
     // Insert a single "fail" verdict (below max_failures)
     sqlx::query(
-        "INSERT INTO rollout_analyses (release_id, target_id, step_index, verdict, score, raw_data)
-         VALUES ($1, $2, 0, 'fail', 0.3, '{}')",
+        "INSERT INTO rollout_analyses (release_id, step_index, config, verdict, completed_at)
+         VALUES ($1, 0, '{}', 'fail', now())",
     )
     .bind(release_id)
-    .bind(target_id)
     .execute(&pool)
     .await
     .unwrap();
@@ -3831,11 +3828,10 @@ async fn canary_inconclusive_waits(pool: PgPool) {
 
     // Insert an inconclusive verdict
     sqlx::query(
-        "INSERT INTO rollout_analyses (release_id, target_id, step_index, verdict, score, raw_data)
-         VALUES ($1, $2, 0, 'inconclusive', 0.5, '{}')",
+        "INSERT INTO rollout_analyses (release_id, step_index, config, verdict)
+         VALUES ($1, 0, '{}', 'inconclusive')",
     )
     .bind(release_id)
-    .bind(target_id)
     .execute(&pool)
     .await
     .unwrap();
@@ -4324,11 +4320,10 @@ async fn holding_phase_handled_by_canary(pool: PgPool) {
 
     // Insert pass verdict for current step — should advance
     sqlx::query(
-        "INSERT INTO rollout_analyses (release_id, target_id, step_index, verdict, score, raw_data)
-         VALUES ($1, $2, 0, 'pass', 1.0, '{}')",
+        "INSERT INTO rollout_analyses (release_id, step_index, config, verdict, completed_at)
+         VALUES ($1, 0, '{}', 'pass', now())",
     )
     .bind(release_id)
-    .bind(target_id)
     .execute(&pool)
     .await
     .unwrap();
@@ -4597,11 +4592,10 @@ async fn canary_holding_with_max_failures_rolls_back(pool: PgPool) {
     // Insert 2 fail verdicts (hits max_failures)
     for _ in 0..2 {
         sqlx::query(
-            "INSERT INTO rollout_analyses (release_id, target_id, step_index, verdict, score, raw_data)
-             VALUES ($1, $2, 0, 'fail', 0.0, '{}')",
+            "INSERT INTO rollout_analyses (release_id, step_index, config, verdict, completed_at)
+             VALUES ($1, 0, '{}', 'fail', now())",
         )
         .bind(release_id)
-        .bind(target_id)
         .execute(&pool)
         .await
         .unwrap();
