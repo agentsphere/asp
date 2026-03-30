@@ -870,4 +870,363 @@ mod tests {
             );
         }
     }
+
+    // -- pkt_line_header edge cases --
+
+    #[test]
+    fn pkt_line_header_custom_service() {
+        let header = pkt_line_header("custom-service");
+        let s = String::from_utf8(header).unwrap();
+        assert!(s.contains("# service=custom-service\n"));
+        assert!(s.ends_with("0000"));
+        // Verify the length prefix is correct
+        let announcement = "# service=custom-service\n";
+        let expected_len = announcement.len() + 4;
+        let hex_prefix = format!("{expected_len:04x}");
+        assert!(s.starts_with(&hex_prefix));
+    }
+
+    // -- add_www_authenticate tests --
+
+    #[tokio::test]
+    async fn add_www_authenticate_adds_header_on_401() {
+        let response = Response::builder()
+            .status(axum::http::StatusCode::UNAUTHORIZED)
+            .body(Body::empty())
+            .unwrap();
+        let result = add_www_authenticate(response).await;
+        assert_eq!(result.status(), axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            result
+                .headers()
+                .get(axum::http::header::WWW_AUTHENTICATE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "Basic realm=\"platform\""
+        );
+    }
+
+    #[tokio::test]
+    async fn add_www_authenticate_passes_through_non_401() {
+        let response = Response::builder()
+            .status(axum::http::StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+        let result = add_www_authenticate(response).await;
+        assert_eq!(result.status(), axum::http::StatusCode::OK);
+        assert!(
+            result
+                .headers()
+                .get(axum::http::header::WWW_AUTHENTICATE)
+                .is_none(),
+            "non-401 should not get WWW-Authenticate header"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_www_authenticate_passes_through_403() {
+        let response = Response::builder()
+            .status(axum::http::StatusCode::FORBIDDEN)
+            .body(Body::empty())
+            .unwrap();
+        let result = add_www_authenticate(response).await;
+        assert_eq!(result.status(), axum::http::StatusCode::FORBIDDEN);
+        assert!(
+            result
+                .headers()
+                .get(axum::http::header::WWW_AUTHENTICATE)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn add_www_authenticate_passes_through_500() {
+        let response = Response::builder()
+            .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::empty())
+            .unwrap();
+        let result = add_www_authenticate(response).await;
+        assert_eq!(
+            result.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert!(
+            result
+                .headers()
+                .get(axum::http::header::WWW_AUTHENTICATE)
+                .is_none()
+        );
+    }
+
+    // -- GitUser struct tests --
+
+    #[test]
+    fn git_user_struct() {
+        let user = GitUser {
+            user_id: Uuid::nil(),
+            user_name: "alice".into(),
+            ip_addr: Some("192.168.1.1".into()),
+            boundary_project_id: None,
+            boundary_workspace_id: None,
+            token_scopes: None,
+        };
+        assert_eq!(user.user_name, "alice");
+        assert_eq!(user.ip_addr, Some("192.168.1.1".to_string()));
+        assert!(user.boundary_project_id.is_none());
+        assert!(user.token_scopes.is_none());
+    }
+
+    #[test]
+    fn git_user_with_token_scopes() {
+        let user = GitUser {
+            user_id: Uuid::nil(),
+            user_name: "bot".into(),
+            ip_addr: None,
+            boundary_project_id: Some(Uuid::nil()),
+            boundary_workspace_id: Some(Uuid::nil()),
+            token_scopes: Some(vec!["project:read".into(), "project:write".into()]),
+        };
+        assert!(user.boundary_project_id.is_some());
+        assert!(user.boundary_workspace_id.is_some());
+        assert_eq!(user.token_scopes.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn git_user_clone() {
+        let user = GitUser {
+            user_id: Uuid::nil(),
+            user_name: "bob".into(),
+            ip_addr: None,
+            boundary_project_id: None,
+            boundary_workspace_id: None,
+            token_scopes: Some(vec!["git:read".into()]),
+        };
+        let cloned = user.clone();
+        assert_eq!(cloned.user_name, user.user_name);
+        assert_eq!(cloned.token_scopes, user.token_scopes);
+    }
+
+    // -- ResolvedProject struct tests --
+
+    #[test]
+    fn resolved_project_struct() {
+        let project = ResolvedProject {
+            project_id: Uuid::nil(),
+            owner_id: Uuid::nil(),
+            repo_disk_path: PathBuf::from("/repos/alice/myapp.git"),
+            default_branch: "main".into(),
+            visibility: "public".into(),
+        };
+        assert_eq!(project.default_branch, "main");
+        assert_eq!(project.visibility, "public");
+        assert_eq!(
+            project.repo_disk_path,
+            PathBuf::from("/repos/alice/myapp.git")
+        );
+    }
+
+    #[test]
+    fn resolved_project_clone() {
+        let project = ResolvedProject {
+            project_id: Uuid::nil(),
+            owner_id: Uuid::nil(),
+            repo_disk_path: PathBuf::from("/repos/test.git"),
+            default_branch: "develop".into(),
+            visibility: "private".into(),
+        };
+        let cloned = project.clone();
+        assert_eq!(cloned.project_id, project.project_id);
+        assert_eq!(cloned.default_branch, project.default_branch);
+    }
+
+    // -- InfoRefsQuery deserialization --
+
+    #[test]
+    fn info_refs_query_with_service() {
+        let q: InfoRefsQuery =
+            serde_json::from_value(serde_json::json!({"service": "git-upload-pack"})).unwrap();
+        assert_eq!(q.service.as_deref(), Some("git-upload-pack"));
+    }
+
+    #[test]
+    fn info_refs_query_without_service() {
+        let q: InfoRefsQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(q.service.is_none());
+    }
+
+    // -- extract_basic_credentials: invalid UTF-8 --
+
+    #[test]
+    fn extract_basic_credentials_invalid_utf8() {
+        let mut headers = HeaderMap::new();
+        // Encode bytes that aren't valid UTF-8 after base64 decode
+        // \xff\xfe is invalid UTF-8
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &[0xff, 0xfe]);
+        headers.insert(AUTHORIZATION, format!("Basic {encoded}").parse().unwrap());
+        assert!(
+            extract_basic_credentials(&headers).is_err(),
+            "invalid UTF-8 should be rejected"
+        );
+    }
+
+    // -- extract_basic_credentials: edge cases --
+
+    #[test]
+    fn extract_basic_credentials_long_password() {
+        let mut headers = HeaderMap::new();
+        let long_pass = "x".repeat(1000);
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            format!("user:{long_pass}"),
+        );
+        headers.insert(AUTHORIZATION, format!("Basic {encoded}").parse().unwrap());
+        let (user, pass) = extract_basic_credentials(&headers).unwrap();
+        assert_eq!(user, "user");
+        assert_eq!(pass.len(), 1000);
+    }
+
+    #[test]
+    fn extract_basic_credentials_special_chars_in_username() {
+        let mut headers = HeaderMap::new();
+        // base64("user@org:password")
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "user@org:password",
+        );
+        headers.insert(AUTHORIZATION, format!("Basic {encoded}").parse().unwrap());
+        let (user, pass) = extract_basic_credentials(&headers).unwrap();
+        assert_eq!(user, "user@org");
+        assert_eq!(pass, "password");
+    }
+
+    #[test]
+    fn extract_basic_credentials_multiple_colons_in_password() {
+        let mut headers = HeaderMap::new();
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "user:a:b:c:d");
+        headers.insert(AUTHORIZATION, format!("Basic {encoded}").parse().unwrap());
+        let (user, pass) = extract_basic_credentials(&headers).unwrap();
+        assert_eq!(user, "user");
+        assert_eq!(pass, "a:b:c:d");
+    }
+
+    // -- pkt_line_header: additional tests --
+
+    #[test]
+    fn pkt_line_header_length_is_correct() {
+        let header = pkt_line_header("git-upload-pack");
+        // "# service=git-upload-pack\n" = 26 bytes
+        // + 4 hex length prefix = 30 decimal = 0x001e
+        let s = String::from_utf8(header.clone()).unwrap();
+        let hex_prefix = &s[..4];
+        let expected_len = "# service=git-upload-pack\n".len() + 4;
+        assert_eq!(
+            hex_prefix,
+            format!("{expected_len:04x}"),
+            "length prefix should match"
+        );
+        // Total header size = pkt-line + flush-pkt
+        assert_eq!(header.len(), expected_len + 4); // +4 for "0000"
+    }
+
+    // -- validate_ref: more edge cases --
+
+    #[test]
+    fn validate_ref_accepts_refs_heads_prefix() {
+        assert!(validate_ref("refs/heads/main").is_ok());
+        assert!(validate_ref("refs/tags/v1.0.0").is_ok());
+    }
+
+    #[test]
+    fn validate_ref_accepts_short_hash() {
+        assert!(validate_ref("abc1234").is_ok());
+    }
+
+    // -- InfoRefsQuery: edge cases --
+
+    #[test]
+    fn info_refs_query_debug() {
+        let q = InfoRefsQuery {
+            service: Some("git-upload-pack".into()),
+        };
+        let debug = format!("{q:?}");
+        assert!(debug.contains("InfoRefsQuery"));
+    }
+
+    // -- ResolvedProject: edge cases --
+
+    #[test]
+    fn resolved_project_private_visibility() {
+        let project = ResolvedProject {
+            project_id: Uuid::nil(),
+            owner_id: Uuid::nil(),
+            repo_disk_path: PathBuf::from("/data/repos/test.git"),
+            default_branch: "main".into(),
+            visibility: "private".into(),
+        };
+        assert_eq!(project.visibility, "private");
+    }
+
+    #[test]
+    fn resolved_project_internal_visibility() {
+        let project = ResolvedProject {
+            project_id: Uuid::nil(),
+            owner_id: Uuid::nil(),
+            repo_disk_path: PathBuf::from("/data/repos/test.git"),
+            default_branch: "main".into(),
+            visibility: "internal".into(),
+        };
+        assert_eq!(project.visibility, "internal");
+    }
+
+    // -- GitUser: boundary scenarios --
+
+    #[test]
+    fn git_user_with_empty_scopes() {
+        let user = GitUser {
+            user_id: Uuid::nil(),
+            user_name: "bot".into(),
+            ip_addr: None,
+            boundary_project_id: None,
+            boundary_workspace_id: None,
+            token_scopes: Some(vec![]),
+        };
+        assert_eq!(user.token_scopes.as_ref().unwrap().len(), 0);
+    }
+
+    // -- add_www_authenticate: additional status codes --
+
+    #[tokio::test]
+    async fn add_www_authenticate_passes_through_404() {
+        let response = Response::builder()
+            .status(axum::http::StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap();
+        let result = add_www_authenticate(response).await;
+        assert_eq!(result.status(), axum::http::StatusCode::NOT_FOUND);
+        assert!(
+            result
+                .headers()
+                .get(axum::http::header::WWW_AUTHENTICATE)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn add_www_authenticate_passes_through_200_with_body() {
+        let response = Response::builder()
+            .status(axum::http::StatusCode::OK)
+            .body(Body::from("hello"))
+            .unwrap();
+        let result = add_www_authenticate(response).await;
+        assert_eq!(result.status(), axum::http::StatusCode::OK);
+        assert!(
+            result
+                .headers()
+                .get(axum::http::header::WWW_AUTHENTICATE)
+                .is_none()
+        );
+    }
 }

@@ -389,4 +389,147 @@ mod tests {
         let result = render_template("Do $ARGUMENTS now", "");
         assert_eq!(result, "Do  now");
     }
+
+    // -- ResolvedCommandFile serialization --
+
+    #[test]
+    fn resolved_command_file_serialize() {
+        let rcf = ResolvedCommandFile {
+            name: "dev".into(),
+            prompt_template: "Fix $ARGUMENTS".into(),
+            scope: "project".into(),
+            persistent_session: true,
+        };
+        let json = serde_json::to_string(&rcf).unwrap();
+        assert!(json.contains("\"name\":\"dev\""));
+        assert!(json.contains("\"scope\":\"project\""));
+        assert!(json.contains("\"persistent_session\":true"));
+        assert!(json.contains("\"prompt_template\":\"Fix $ARGUMENTS\""));
+    }
+
+    #[test]
+    fn resolved_command_file_serialize_global_scope() {
+        let rcf = ResolvedCommandFile {
+            name: "review".into(),
+            prompt_template: "Review the code".into(),
+            scope: "global".into(),
+            persistent_session: false,
+        };
+        let json = serde_json::to_string(&rcf).unwrap();
+        assert!(json.contains("\"scope\":\"global\""));
+        assert!(json.contains("\"persistent_session\":false"));
+    }
+
+    #[test]
+    fn resolved_command_file_clone() {
+        let rcf = ResolvedCommandFile {
+            name: "test".into(),
+            prompt_template: "Run tests".into(),
+            scope: "workspace".into(),
+            persistent_session: false,
+        };
+        let cloned = rcf.clone();
+        assert_eq!(cloned.name, "test");
+        assert_eq!(cloned.scope, "workspace");
+    }
+
+    #[test]
+    fn resolved_command_file_debug() {
+        let rcf = ResolvedCommandFile {
+            name: "ops".into(),
+            prompt_template: "Deploy".into(),
+            scope: "project".into(),
+            persistent_session: true,
+        };
+        let debug = format!("{rcf:?}");
+        assert!(debug.contains("ops"));
+        assert!(debug.contains("project"));
+    }
+
+    // -- ParsedCommand --
+
+    #[test]
+    fn parsed_command_debug() {
+        let cmd = ParsedCommand {
+            name: "dev".into(),
+            arguments: "fix bug".into(),
+        };
+        let debug = format!("{cmd:?}");
+        assert!(debug.contains("dev"));
+        assert!(debug.contains("fix bug"));
+    }
+
+    #[test]
+    fn parsed_command_equality() {
+        let a = ParsedCommand {
+            name: "dev".into(),
+            arguments: "fix".into(),
+        };
+        let b = ParsedCommand {
+            name: "dev".into(),
+            arguments: "fix".into(),
+        };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn parsed_command_inequality() {
+        let a = ParsedCommand {
+            name: "dev".into(),
+            arguments: "fix".into(),
+        };
+        let b = ParsedCommand {
+            name: "review".into(),
+            arguments: "fix".into(),
+        };
+        assert_ne!(a, b);
+    }
+
+    // -- validate_command_name edge cases --
+
+    #[test]
+    fn command_name_max_length_ok() {
+        let name = "a".repeat(100);
+        assert!(validate_command_name(&name).is_ok());
+    }
+
+    #[test]
+    fn command_name_over_max_length_rejected() {
+        let name = "a".repeat(101);
+        assert!(validate_command_name(&name).is_err());
+    }
+
+    #[test]
+    fn command_name_with_numbers_ok() {
+        assert!(validate_command_name("dev123").is_ok());
+        assert!(validate_command_name("1test").is_ok());
+    }
+
+    #[test]
+    fn command_name_with_slash_rejected() {
+        assert!(validate_command_name("dev/test").is_err());
+    }
+
+    // -- parse_command_input edge cases --
+
+    #[test]
+    fn parse_command_input_trailing_whitespace() {
+        let result = parse_command_input("/dev  fix bug  ").unwrap();
+        assert_eq!(result.name, "dev");
+        assert_eq!(result.arguments, "fix bug");
+    }
+
+    #[test]
+    fn parse_command_input_tab_separated() {
+        let result = parse_command_input("/dev\tfix bug").unwrap();
+        assert_eq!(result.name, "dev");
+        assert_eq!(result.arguments, "fix bug");
+    }
+
+    // -- MAX_TEMPLATE_SIZE --
+
+    #[test]
+    fn max_template_size_is_100kb() {
+        assert_eq!(MAX_TEMPLATE_SIZE, 100 * 1024);
+    }
 }

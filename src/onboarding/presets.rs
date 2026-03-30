@@ -245,4 +245,88 @@ mod tests {
         assert_eq!(json["pipeline_concurrency"], 4);
         assert_eq!(json["team_workspace"], true);
     }
+
+    #[test]
+    fn preset_config_deserializes() {
+        let json = r#"{"org_type":"startup","pipeline_concurrency":4,"team_workspace":true,"strict_netpols":false}"#;
+        let p: PresetConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(p.org_type, OrgType::Startup);
+        assert_eq!(p.pipeline_concurrency, 4);
+        assert!(p.team_workspace);
+        assert!(!p.strict_netpols);
+    }
+
+    #[test]
+    fn security_policy_serializes() {
+        let s = default_security_policy(OrgType::TechOrg);
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["passkey_enforcement"], "mandatory");
+    }
+
+    #[test]
+    fn security_policy_deserializes() {
+        let json = r#"{"passkey_enforcement":"optional"}"#;
+        let s: SecurityPolicy = serde_json::from_str(json).unwrap();
+        assert_eq!(s.passkey_enforcement, PasskeyPolicy::Optional);
+    }
+
+    #[test]
+    fn passkey_policy_all_variants_serialize() {
+        assert_eq!(
+            serde_json::to_string(&PasskeyPolicy::Optional).unwrap(),
+            "\"optional\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PasskeyPolicy::Recommended).unwrap(),
+            "\"recommended\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PasskeyPolicy::Mandatory).unwrap(),
+            "\"mandatory\""
+        );
+    }
+
+    #[test]
+    fn org_type_debug() {
+        let debug = format!("{:?}", OrgType::Solo);
+        assert_eq!(debug, "Solo");
+    }
+
+    #[test]
+    fn preset_config_debug() {
+        let p = PresetConfig::for_org_type(OrgType::Solo);
+        let debug = format!("{p:?}");
+        assert!(debug.contains("PresetConfig"));
+        assert!(debug.contains("Solo"));
+    }
+
+    #[test]
+    fn security_policy_debug() {
+        let s = default_security_policy(OrgType::Startup);
+        let debug = format!("{s:?}");
+        assert!(debug.contains("SecurityPolicy"));
+        assert!(debug.contains("Recommended"));
+    }
+
+    #[test]
+    fn preset_config_clone() {
+        let p = PresetConfig::for_org_type(OrgType::TechOrg);
+        let cloned = p.clone();
+        assert_eq!(p.pipeline_concurrency, cloned.pipeline_concurrency);
+        assert_eq!(p.team_workspace, cloned.team_workspace);
+        assert_eq!(p.strict_netpols, cloned.strict_netpols);
+    }
+
+    #[test]
+    fn passkey_policy_eq() {
+        assert_eq!(PasskeyPolicy::Optional, PasskeyPolicy::Optional);
+        assert_ne!(PasskeyPolicy::Optional, PasskeyPolicy::Mandatory);
+    }
+
+    #[test]
+    fn org_type_copy() {
+        let org = OrgType::Solo;
+        let org2 = org; // Copy
+        assert_eq!(org, org2);
+    }
 }

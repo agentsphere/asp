@@ -280,4 +280,218 @@ mod tests {
             "expected weight-sum error, got: {msg}"
         );
     }
+
+    #[test]
+    fn weighted_httproute_100_percent_canary() {
+        let route = build_weighted_httproute(
+            "api-route",
+            "ns",
+            "api.example.com",
+            "stable",
+            "canary",
+            0,
+            100,
+            &GatewayRef {
+                name: "gw",
+                namespace: "gw-system",
+            },
+        )
+        .unwrap();
+
+        let backends = route["spec"]["rules"][0]["backendRefs"].as_array().unwrap();
+        assert_eq!(backends[0]["weight"], 0);
+        assert_eq!(backends[1]["weight"], 100);
+    }
+
+    #[test]
+    fn weighted_httproute_wildcard_hostname_no_hostnames() {
+        let route = build_weighted_httproute(
+            "api-route",
+            "ns",
+            "*",
+            "stable",
+            "canary",
+            50,
+            50,
+            &GatewayRef {
+                name: "gw",
+                namespace: "gw-system",
+            },
+        )
+        .unwrap();
+
+        // Wildcard "*" hostname should not add hostnames to spec
+        assert!(route["spec"]["hostnames"].is_null());
+    }
+
+    #[test]
+    fn weighted_httproute_real_hostname_has_hostnames() {
+        let route = build_weighted_httproute(
+            "api-route",
+            "ns",
+            "api.example.com",
+            "stable",
+            "canary",
+            50,
+            50,
+            &GatewayRef {
+                name: "gw",
+                namespace: "gw-system",
+            },
+        )
+        .unwrap();
+
+        let hostnames = route["spec"]["hostnames"].as_array().unwrap();
+        assert_eq!(hostnames.len(), 1);
+        assert_eq!(hostnames[0], "api.example.com");
+    }
+
+    #[test]
+    fn weighted_httproute_rejects_zero_sum() {
+        let err = build_weighted_httproute(
+            "api-route",
+            "ns",
+            "api.example.com",
+            "stable",
+            "canary",
+            0,
+            0,
+            &GatewayRef {
+                name: "gw",
+                namespace: "gw-system",
+            },
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("must sum to 100"));
+    }
+
+    #[test]
+    fn weighted_httproute_has_managed_by_label() {
+        let route = build_weighted_httproute(
+            "api-route",
+            "ns",
+            "*",
+            "stable",
+            "canary",
+            50,
+            50,
+            &GatewayRef {
+                name: "gw",
+                namespace: "gw-system",
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            route["metadata"]["labels"]["platform.io/managed-by"],
+            "platform-deployer"
+        );
+    }
+
+    #[test]
+    fn header_match_httproute_wildcard_no_hostnames() {
+        let headers = std::collections::HashMap::from([("x-flag".to_string(), "on".to_string())]);
+        let route = build_header_match_httproute(
+            "ab-route",
+            "ns",
+            "*",
+            "control",
+            "treatment",
+            &headers,
+            &GatewayRef {
+                name: "gw",
+                namespace: "gw-system",
+            },
+        );
+        assert!(route["spec"]["hostnames"].is_null());
+    }
+
+    #[test]
+    fn header_match_httproute_real_hostname_has_hostnames() {
+        let headers = std::collections::HashMap::from([("x-flag".to_string(), "on".to_string())]);
+        let route = build_header_match_httproute(
+            "ab-route",
+            "ns",
+            "test.example.com",
+            "control",
+            "treatment",
+            &headers,
+            &GatewayRef {
+                name: "gw",
+                namespace: "gw-system",
+            },
+        );
+        let hostnames = route["spec"]["hostnames"].as_array().unwrap();
+        assert_eq!(hostnames[0], "test.example.com");
+    }
+
+    #[test]
+    fn header_match_httproute_multiple_headers() {
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("x-experiment".to_string(), "treatment".to_string());
+        headers.insert("x-variant".to_string(), "B".to_string());
+
+        let route = build_header_match_httproute(
+            "ab-route",
+            "ns",
+            "*",
+            "control",
+            "treatment",
+            &headers,
+            &GatewayRef {
+                name: "gw",
+                namespace: "gw-system",
+            },
+        );
+
+        let rules = route["spec"]["rules"].as_array().unwrap();
+        let header_matches = rules[0]["matches"][0]["headers"].as_array().unwrap();
+        assert_eq!(header_matches.len(), 2);
+    }
+
+    #[test]
+    fn header_match_httproute_empty_headers() {
+        let headers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+        let route = build_header_match_httproute(
+            "ab-route",
+            "ns",
+            "*",
+            "control",
+            "treatment",
+            &headers,
+            &GatewayRef {
+                name: "gw",
+                namespace: "gw-system",
+            },
+        );
+
+        let rules = route["spec"]["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 2);
+        let header_matches = rules[0]["matches"][0]["headers"].as_array().unwrap();
+        assert!(header_matches.is_empty());
+    }
+
+    #[test]
+    fn header_match_httproute_has_managed_by_label() {
+        let headers = std::collections::HashMap::new();
+        let route = build_header_match_httproute(
+            "ab-route",
+            "ns",
+            "*",
+            "control",
+            "treatment",
+            &headers,
+            &GatewayRef {
+                name: "gw",
+                namespace: "gw-system",
+            },
+        );
+        assert_eq!(
+            route["metadata"]["labels"]["platform.io/managed-by"],
+            "platform-deployer"
+        );
+    }
 }

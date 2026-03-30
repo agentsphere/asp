@@ -146,4 +146,88 @@ mod tests {
         let d2 = Digest::parse(&s).unwrap();
         assert_eq!(d, d2);
     }
+
+    #[test]
+    fn parse_rejects_empty_string() {
+        assert!(Digest::parse("").is_err());
+    }
+
+    #[test]
+    fn parse_rejects_only_colon() {
+        assert!(Digest::parse(":").is_err());
+    }
+
+    #[test]
+    fn parse_rejects_sha512() {
+        let hex = "a".repeat(128);
+        assert!(Digest::parse(&format!("sha512:{hex}")).is_err());
+    }
+
+    #[test]
+    fn parse_mixed_case_normalizes() {
+        let hex_upper = "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
+        let d = Digest::parse(&format!("sha256:{hex_upper}")).unwrap();
+        assert_eq!(d.hex, hex_upper.to_ascii_lowercase());
+    }
+
+    #[test]
+    fn parse_hex_63_chars_rejected() {
+        let hex = "a".repeat(63);
+        assert!(Digest::parse(&format!("sha256:{hex}")).is_err());
+    }
+
+    #[test]
+    fn parse_hex_65_chars_rejected() {
+        let hex = "a".repeat(65);
+        assert!(Digest::parse(&format!("sha256:{hex}")).is_err());
+    }
+
+    #[test]
+    fn digest_equality() {
+        let hex = "a".repeat(64);
+        let d1 = Digest::parse(&format!("sha256:{hex}")).unwrap();
+        let d2 = Digest::parse(&format!("sha256:{hex}")).unwrap();
+        assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn digest_inequality() {
+        let d1 = Digest::parse(&format!("sha256:{}", "a".repeat(64))).unwrap();
+        let d2 = Digest::parse(&format!("sha256:{}", "b".repeat(64))).unwrap();
+        assert_ne!(d1, d2);
+    }
+
+    #[test]
+    fn digest_clone() {
+        let d = Digest::parse(&format!("sha256:{}", "f".repeat(64))).unwrap();
+        let cloned = d.clone();
+        assert_eq!(d, cloned);
+    }
+
+    #[test]
+    fn digest_debug() {
+        let d = Digest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap();
+        let debug = format!("{d:?}");
+        assert!(debug.contains("sha256"));
+        assert!(debug.contains("Digest"));
+    }
+
+    #[test]
+    fn sha256_digest_empty_data() {
+        let d = sha256_digest(b"");
+        assert_eq!(d.algorithm, "sha256");
+        // Known SHA256 of empty string
+        assert_eq!(
+            d.hex,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn minio_path_contains_algorithm_and_hex() {
+        let d = sha256_digest(b"test");
+        let path = d.minio_path();
+        assert!(path.starts_with("registry/blobs/sha256/"));
+        assert!(path.ends_with(&d.hex));
+    }
 }

@@ -46,3 +46,57 @@ impl AgentProvider for ClaudeCodeProvider {
         "claude-code"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_name_is_claude_code() {
+        let provider = ClaudeCodeProvider;
+        assert_eq!(provider.name(), "claude-code");
+    }
+
+    #[test]
+    fn parse_progress_valid_assistant_text() {
+        let provider = ClaudeCodeProvider;
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}]}}"#;
+        let event = provider.parse_progress(line);
+        assert!(event.is_some());
+        let event = event.unwrap();
+        assert_eq!(event.kind, crate::agent::provider::ProgressKind::Text);
+        assert_eq!(event.message, "Hello");
+    }
+
+    #[test]
+    fn parse_progress_invalid_json() {
+        let provider = ClaudeCodeProvider;
+        let result = provider.parse_progress("not json");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_progress_error_event() {
+        let provider = ClaudeCodeProvider;
+        let line = r#"{"type":"error","error":{"message":"rate limit"}}"#;
+        let event = provider.parse_progress(line).unwrap();
+        assert_eq!(event.kind, crate::agent::provider::ProgressKind::Error);
+        assert!(event.message.contains("rate limit"));
+    }
+
+    #[test]
+    fn parse_progress_result_success() {
+        let provider = ClaudeCodeProvider;
+        let line = r#"{"type":"result","subtype":"success","session_id":"s1","is_error":false,"result":"done"}"#;
+        let event = provider.parse_progress(line).unwrap();
+        assert_eq!(event.kind, crate::agent::provider::ProgressKind::Completed);
+    }
+
+    #[test]
+    fn parse_progress_unknown_type() {
+        let provider = ClaudeCodeProvider;
+        let line = r#"{"type":"stream_partial","data":"chunk"}"#;
+        let result = provider.parse_progress(line);
+        assert!(result.is_none());
+    }
+}

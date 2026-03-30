@@ -400,4 +400,72 @@ mod tests {
         assert_eq!(AnalysisVerdict::Inconclusive.as_str(), "inconclusive");
         assert_eq!(AnalysisVerdict::Cancelled.as_str(), "cancelled");
     }
+
+    // -- invert_condition: all cases --
+
+    #[test]
+    fn invert_condition_lte_unchanged() {
+        assert_eq!(invert_condition("lte"), "lte");
+    }
+
+    #[test]
+    fn invert_condition_gte_unchanged() {
+        assert_eq!(invert_condition("gte"), "gte");
+    }
+
+    #[test]
+    fn invert_condition_empty_string() {
+        assert_eq!(invert_condition(""), "");
+    }
+
+    // -- MetricGate serde --
+
+    #[test]
+    fn metric_gate_serde_roundtrip() {
+        let gate = MetricGate {
+            metric: "error_rate".into(),
+            name: None,
+            condition: "lt".into(),
+            threshold: 0.05,
+            aggregation: "avg".into(),
+            window: 120,
+        };
+        let json = serde_json::to_value(&gate).unwrap();
+        let parsed: MetricGate = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.metric, "error_rate");
+        assert_eq!(parsed.threshold, 0.05);
+        assert_eq!(parsed.aggregation, "avg");
+        assert_eq!(parsed.window, 120);
+    }
+
+    #[test]
+    fn metric_gate_custom_metric_with_name() {
+        let gate = MetricGate {
+            metric: "custom".into(),
+            name: Some("my_custom_metric".into()),
+            condition: "gt".into(),
+            threshold: 100.0,
+            aggregation: "sum".into(),
+            window: 300,
+        };
+        let json = serde_json::to_value(&gate).unwrap();
+        assert_eq!(json["name"], "my_custom_metric");
+        assert_eq!(json["metric"], "custom");
+    }
+
+    // -- AnalysisVerdict Display --
+
+    #[test]
+    fn verdict_display_matches_as_str() {
+        let verdicts = [
+            AnalysisVerdict::Running,
+            AnalysisVerdict::Pass,
+            AnalysisVerdict::Fail,
+            AnalysisVerdict::Inconclusive,
+            AnalysisVerdict::Cancelled,
+        ];
+        for v in verdicts {
+            assert_eq!(v.to_string(), v.as_str());
+        }
+    }
 }

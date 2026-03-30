@@ -937,4 +937,290 @@ mod tests {
             "child process should be killed after drop"
         );
     }
+
+    // -- build_args: additional option combinations --
+
+    #[test]
+    fn build_args_with_system_prompt() {
+        let opts = CliSpawnOptions {
+            system_prompt: Some("You are a helpful assistant.".into()),
+            ..Default::default()
+        };
+        let args = build_args(&opts);
+        assert!(args.contains(&"--system-prompt".to_owned()));
+        assert!(args.contains(&"You are a helpful assistant.".to_owned()));
+    }
+
+    #[test]
+    fn build_args_with_append_system_prompt() {
+        let opts = CliSpawnOptions {
+            append_system_prompt: Some("Additional context.".into()),
+            ..Default::default()
+        };
+        let args = build_args(&opts);
+        assert!(args.contains(&"--append-system-prompt".to_owned()));
+        assert!(args.contains(&"Additional context.".to_owned()));
+    }
+
+    #[test]
+    fn build_args_with_allowed_tools() {
+        let opts = CliSpawnOptions {
+            allowed_tools: Some(vec!["Read".into(), "Write".into(), "Bash".into()]),
+            ..Default::default()
+        };
+        let args = build_args(&opts);
+        assert!(args.contains(&"--allowedTools".to_owned()));
+        assert!(args.contains(&"Read,Write,Bash".to_owned()));
+    }
+
+    #[test]
+    fn build_args_with_all_options() {
+        let opts = CliSpawnOptions {
+            model: Some("opus".into()),
+            system_prompt: Some("sys".into()),
+            append_system_prompt: Some("append".into()),
+            allowed_tools: Some(vec!["Read".into()]),
+            permission_mode: Some("bypassPermissions".into()),
+            max_turns: Some(5),
+            resume_session: Some("sess-123".into()),
+            mcp_config: Some(PathBuf::from("/tmp/mcp.json")),
+            include_partial: true,
+            disable_tools: true,
+            json_schema: Some(r#"{"type":"object"}"#.into()),
+            ..Default::default()
+        };
+        let args = build_args(&opts);
+        assert!(args.contains(&"--model".to_owned()));
+        assert!(args.contains(&"--system-prompt".to_owned()));
+        assert!(args.contains(&"--append-system-prompt".to_owned()));
+        assert!(args.contains(&"--allowedTools".to_owned()));
+        assert!(args.contains(&"--permission-mode".to_owned()));
+        assert!(args.contains(&"--max-turns".to_owned()));
+        assert!(args.contains(&"--resume".to_owned()));
+        assert!(args.contains(&"--mcp-config".to_owned()));
+        assert!(args.contains(&"--include-partial-messages".to_owned()));
+        assert!(args.contains(&"--tools".to_owned()));
+        assert!(args.contains(&"--json-schema".to_owned()));
+    }
+
+    #[test]
+    fn build_args_no_resume_no_initial_session() {
+        let opts = CliSpawnOptions::default();
+        let args = build_args(&opts);
+        assert!(!args.contains(&"--resume".to_owned()));
+        assert!(!args.contains(&"--session-id".to_owned()));
+    }
+
+    #[test]
+    fn build_args_prompt_with_session_id() {
+        let opts = CliSpawnOptions {
+            prompt: Some("test".into()),
+            initial_session_id: Some("sid-abc".into()),
+            ..Default::default()
+        };
+        let args = build_args(&opts);
+        assert!(args.contains(&"-p".to_owned()));
+        assert!(args.contains(&"--session-id".to_owned()));
+        // --input-format should NOT be present in prompt mode
+        assert!(!args.iter().any(|a| a == "--input-format"));
+    }
+
+    // -- send_structured tests --
+
+    #[tokio::test]
+    async fn send_structured_writes_json() {
+        let transport = spawn_cat_transport();
+
+        let content = serde_json::json!([
+            {"type": "text", "text": "analyze this"},
+            {"type": "image", "data": "base64..."}
+        ]);
+        transport.send_structured(content.clone()).await.unwrap();
+
+        // Read back the echoed line
+        let mut stdout = transport.stdout.lock().await;
+        let mut line = String::new();
+        stdout.read_line(&mut line).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["type"], "user");
+        assert_eq!(parsed["message"]["role"], "user");
+        assert_eq!(parsed["message"]["content"], content);
+    }
+
+    // -- send_control tests --
+
+    #[tokio::test]
+    async fn send_control_writes_interrupt() {
+        let transport = spawn_cat_transport();
+
+        let ctrl = ControlRequest::interrupt();
+        transport.send_control(ctrl).await.unwrap();
+
+        let mut stdout = transport.stdout.lock().await;
+        let mut line = String::new();
+        stdout.read_line(&mut line).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["type"], "control");
+        assert_eq!(parsed["control"]["type"], "interrupt");
+    }
+
+    #[tokio::test]
+    async fn send_control_set_model() {
+        let transport = spawn_cat_transport();
+
+        let ctrl = ControlRequest::set_model("opus-4");
+        transport.send_control(ctrl).await.unwrap();
+
+        let mut stdout = transport.stdout.lock().await;
+        let mut line = String::new();
+        stdout.read_line(&mut line).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["control"]["type"], "set_model");
+        assert_eq!(parsed["control"]["model"], "opus-4");
+    }
+
+    // -- wait tests --
+
+    #[tokio::test]
+    async fn wait_returns_exit_code() {
+        // Spawn a process that exits with code 0
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let transport = SubprocessTransport {
+            child,
+            stdin: Mutex::new(Some(BufWriter::new(stdin))),
+            stdout: Mutex::new(BufReader::new(stdout)),
+            stderr_task: None,
+            session_id: Mutex::new(None),
+            alive: std::sync::atomic::AtomicBool::new(true),
+        };
+
+        let (code, stderr) = transport.wait().await.unwrap();
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wait_returns_nonzero_exit_code() {
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "exit 42"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        let transport = SubprocessTransport {
+            child,
+            stdin: Mutex::new(Some(BufWriter::new(stdin))),
+            stdout: Mutex::new(BufReader::new(stdout)),
+            stderr_task: None,
+            session_id: Mutex::new(None),
+            alive: std::sync::atomic::AtomicBool::new(true),
+        };
+
+        let (code, _) = transport.wait().await.unwrap();
+        assert_eq!(code, 42);
+    }
+
+    #[tokio::test]
+    async fn wait_captures_stderr() {
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "echo 'error msg' >&2; exit 1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+
+        let stderr_task = Some(tokio::spawn(async move {
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+            let mut collected = String::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.is_empty() {
+                    collected.push_str(&line);
+                }
+            }
+            collected
+        }));
+
+        let transport = SubprocessTransport {
+            child,
+            stdin: Mutex::new(Some(BufWriter::new(stdin))),
+            stdout: Mutex::new(BufReader::new(stdout)),
+            stderr_task,
+            session_id: Mutex::new(None),
+            alive: std::sync::atomic::AtomicBool::new(true),
+        };
+
+        let (code, stderr_output) = transport.wait().await.unwrap();
+        assert_eq!(code, 1);
+        assert!(
+            stderr_output.contains("error msg"),
+            "stderr should contain 'error msg', got: {stderr_output}"
+        );
+    }
+
+    // -- write_json error when stdin closed --
+
+    #[tokio::test]
+    async fn write_json_fails_when_stdin_dropped() {
+        let transport = spawn_cat_transport();
+        // Close stdin first
+        transport.close_stdin().await;
+        // Now try to send — stdin is None, should fail with NotRunning
+        let result = transport.send_message("hello").await;
+        assert!(matches!(result, Err(CliError::NotRunning)));
+    }
+
+    // -- session_id tracking --
+
+    #[tokio::test]
+    async fn session_id_initially_none() {
+        let transport = spawn_cat_transport();
+        assert!(transport.session_id().await.is_none());
+    }
+
+    // -- recv skips empty lines --
+
+    #[tokio::test]
+    async fn recv_skips_empty_lines() {
+        let transport = spawn_cat_transport();
+
+        {
+            let mut guard = transport.stdin.lock().await;
+            let stdin = guard.as_mut().unwrap();
+            // Write empty lines then a valid message
+            stdin.write_all(b"\n\n\n").await.unwrap();
+            stdin
+                .write_all(br#"{"type":"system","subtype":"init","session_id":"after-empty"}"#)
+                .await
+                .unwrap();
+            stdin.write_all(b"\n").await.unwrap();
+            stdin.flush().await.unwrap();
+        }
+
+        let msg = transport.recv().await.unwrap().unwrap();
+        match msg {
+            CliMessage::System(s) => assert_eq!(s.session_id, "after-empty"),
+            other => panic!("expected System, got: {other:?}"),
+        }
+    }
 }

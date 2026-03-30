@@ -244,3 +244,151 @@ async fn update_ref(repo_dir: &Path, branch: &str, commit_hash: &str) -> anyhow:
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dir_node_insert_simple_file() {
+        let mut node = DirNode::default();
+        node.insert("README.md", "# Hello");
+        assert_eq!(node.files.len(), 1);
+        assert_eq!(node.files[0].0, "README.md");
+        assert_eq!(node.files[0].1, "# Hello");
+        assert!(node.dirs.is_empty());
+    }
+
+    #[test]
+    fn dir_node_insert_nested_file() {
+        let mut node = DirNode::default();
+        node.insert("src/main.rs", "fn main() {}");
+        assert!(node.files.is_empty());
+        assert_eq!(node.dirs.len(), 1);
+        assert!(node.dirs.contains_key("src"));
+        let src = &node.dirs["src"];
+        assert_eq!(src.files.len(), 1);
+        assert_eq!(src.files[0].0, "main.rs");
+    }
+
+    #[test]
+    fn dir_node_insert_deeply_nested() {
+        let mut node = DirNode::default();
+        node.insert(".claude/commands/dev.md", "content");
+        assert!(node.files.is_empty());
+        assert!(node.dirs.contains_key(".claude"));
+        let claude = &node.dirs[".claude"];
+        assert!(claude.dirs.contains_key("commands"));
+        let commands = &claude.dirs["commands"];
+        assert_eq!(commands.files.len(), 1);
+        assert_eq!(commands.files[0].0, "dev.md");
+    }
+
+    #[test]
+    fn dir_node_insert_multiple_files_same_dir() {
+        let mut node = DirNode::default();
+        node.insert("src/main.rs", "fn main() {}");
+        node.insert("src/lib.rs", "pub mod app;");
+        let src = &node.dirs["src"];
+        assert_eq!(src.files.len(), 2);
+    }
+
+    #[test]
+    fn dir_node_insert_mixed_files_and_dirs() {
+        let mut node = DirNode::default();
+        node.insert("README.md", "readme");
+        node.insert("src/main.rs", "main");
+        node.insert("src/config/mod.rs", "config");
+        assert_eq!(node.files.len(), 1);
+        assert_eq!(node.dirs.len(), 1);
+        let src = &node.dirs["src"];
+        assert_eq!(src.files.len(), 1);
+        assert_eq!(src.dirs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn init_bare_repo_creates_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = init_bare_repo(tmp.path(), "testuser", "testrepo", "main").await;
+        assert!(result.is_ok(), "init_bare_repo should succeed: {result:?}");
+        let repo_path = result.unwrap();
+        assert!(repo_path.exists());
+        assert!(repo_path.join("HEAD").exists());
+        // Check HEAD points to main
+        let head_content = tokio::fs::read_to_string(repo_path.join("HEAD"))
+            .await
+            .unwrap();
+        assert!(head_content.contains("refs/heads/main"));
+    }
+
+    #[tokio::test]
+    async fn init_bare_repo_with_custom_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = init_bare_repo(tmp.path(), "testuser", "customrepo", "develop").await;
+        assert!(result.is_ok());
+        let repo_path = result.unwrap();
+        let head_content = tokio::fs::read_to_string(repo_path.join("HEAD"))
+            .await
+            .unwrap();
+        assert!(head_content.contains("refs/heads/develop"));
+    }
+
+    #[tokio::test]
+    async fn init_bare_repo_with_files_creates_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = vec![templates::TemplateFile {
+            path: "hello.txt",
+            content: "Hello, World!".into(),
+        }];
+        let result = init_bare_repo_with_files(tmp.path(), "alice", "myapp", "main", &files).await;
+        assert!(
+            result.is_ok(),
+            "init_bare_repo_with_files should succeed: {result:?}"
+        );
+        let repo_path = result.unwrap();
+        assert!(repo_path.exists());
+    }
+
+    #[tokio::test]
+    async fn hash_object_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        // First init a bare repo so hash-object has a valid git dir
+        let _ = tokio::process::Command::new("git")
+            .arg("init")
+            .arg("--bare")
+            .arg(tmp.path())
+            .output()
+            .await
+            .unwrap();
+
+        let hash = hash_object(tmp.path(), "test content").await;
+        assert!(hash.is_ok(), "hash_object should succeed: {hash:?}");
+        let hash = hash.unwrap();
+        assert_eq!(hash.len(), 40, "git hash should be 40 hex chars");
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[tokio::test]
+    async fn mktree_with_blob() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _ = tokio::process::Command::new("git")
+            .arg("init")
+            .arg("--bare")
+            .arg(tmp.path())
+            .output()
+            .await
+            .unwrap();
+
+        // First create a blob, then use it in mktree
+        let blob_hash = hash_object(tmp.path(), "content").await.unwrap();
+        let entry = format!("100644 blob {blob_hash}\ttest.txt");
+        let result = mktree(tmp.path(), &[entry]).await;
+        assert!(
+            result.is_ok(),
+            "mktree with one entry should succeed: {result:?}"
+        );
+        let tree_hash = result.unwrap();
+        assert_eq!(tree_hash.len(), 40);
+        assert!(tree_hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+}

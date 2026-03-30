@@ -953,6 +953,211 @@ mod tests {
     }
 
     #[test]
+    fn tarball_newer_than_cache_newer_tarball() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache.json");
+        let tarball = dir.path().join("image.tar");
+
+        // Create cache first
+        std::fs::write(&cache, b"old cache").unwrap();
+        // Small delay to ensure different mtime
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Create tarball second (newer)
+        std::fs::write(&tarball, b"new tarball").unwrap();
+
+        assert!(
+            tarball_newer_than_cache(&tarball, &cache),
+            "tarball should be newer than cache"
+        );
+    }
+
+    #[test]
+    fn tarball_newer_than_cache_older_tarball() {
+        let dir = tempfile::tempdir().unwrap();
+        let tarball = dir.path().join("image.tar");
+        std::fs::write(&tarball, b"old tarball").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let cache = dir.path().join("cache.json");
+        std::fs::write(&cache, b"new cache").unwrap();
+
+        assert!(
+            !tarball_newer_than_cache(&tarball, &cache),
+            "tarball should be older than cache"
+        );
+    }
+
+    #[test]
+    fn tarball_newer_than_cache_no_cache_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let tarball = dir.path().join("image.tar");
+        std::fs::write(&tarball, b"tarball").unwrap();
+        let cache = dir.path().join("nonexistent-cache.json");
+
+        assert!(
+            tarball_newer_than_cache(&tarball, &cache),
+            "missing cache should be treated as newer"
+        );
+    }
+
+    #[test]
+    fn tarball_newer_than_cache_no_tarball_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let tarball = dir.path().join("nonexistent.tar");
+        let cache = dir.path().join("cache.json");
+        std::fs::write(&cache, b"cache").unwrap();
+
+        assert!(
+            !tarball_newer_than_cache(&tarball, &cache),
+            "missing tarball should return false"
+        );
+    }
+
+    #[test]
+    fn tarball_newer_than_cache_both_missing() {
+        let tarball = Path::new("/nonexistent/image.tar");
+        let cache = Path::new("/nonexistent/cache.json");
+
+        assert!(!tarball_newer_than_cache(tarball, cache));
+    }
+
+    #[test]
+    fn tarball_stem_tar_extension() {
+        let path = Path::new("/tmp/seed/platform-runner.tar");
+        assert_eq!(tarball_stem(path), "platform-runner");
+    }
+
+    #[test]
+    fn tarball_stem_tar_gz_extension() {
+        let path = Path::new("/tmp/seed/my-image.tar.gz");
+        assert_eq!(tarball_stem(path), "my-image");
+    }
+
+    #[test]
+    fn tarball_stem_tgz_extension() {
+        let path = Path::new("/tmp/seed/app.tgz");
+        assert_eq!(tarball_stem(path), "app");
+    }
+
+    #[test]
+    fn tarball_stem_unknown_extension() {
+        let path = Path::new("/tmp/seed/readme.txt");
+        assert_eq!(tarball_stem(path), "unknown");
+    }
+
+    #[test]
+    fn tarball_stem_no_extension() {
+        let path = Path::new("/tmp/seed/noext");
+        assert_eq!(tarball_stem(path), "unknown");
+    }
+
+    #[test]
+    fn try_read_cache_nonexistent_returns_none() {
+        let result = try_read_cache(Path::new("/nonexistent/cache.json"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn try_read_cache_invalid_json_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad-cache.json");
+        std::fs::write(&path, b"not json").unwrap();
+        let result = try_read_cache(&path);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn try_read_cache_valid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SeedCache {
+            blobs: vec![],
+            manifests: vec![],
+            tag_digest: "sha256:abc".into(),
+        };
+        let path = dir.path().join("good-cache.json");
+        std::fs::write(&path, serde_json::to_vec(&cache).unwrap()).unwrap();
+        let result = try_read_cache(&path);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().tag_digest, "sha256:abc");
+    }
+
+    #[test]
+    fn detect_manifest_media_type_invalid_json() {
+        let content = b"not json at all";
+        assert_eq!(
+            detect_manifest_media_type(content),
+            "application/vnd.oci.image.manifest.v1+json"
+        );
+    }
+
+    #[test]
+    fn detect_manifest_media_type_docker_manifest() {
+        let json = br#"{"mediaType": "application/vnd.docker.distribution.manifest.v2+json"}"#;
+        assert_eq!(
+            detect_manifest_media_type(json),
+            "application/vnd.docker.distribution.manifest.v2+json"
+        );
+    }
+
+    #[test]
+    fn detect_manifest_media_type_index() {
+        let json = br#"{"mediaType": "application/vnd.oci.image.index.v1+json"}"#;
+        assert_eq!(
+            detect_manifest_media_type(json),
+            "application/vnd.oci.image.index.v1+json"
+        );
+    }
+
+    #[test]
+    fn detect_manifest_media_type_null_media_type() {
+        let json = br#"{"mediaType": null}"#;
+        assert_eq!(
+            detect_manifest_media_type(json),
+            "application/vnd.oci.image.manifest.v1+json"
+        );
+    }
+
+    #[test]
+    fn detect_manifest_media_type_empty_json() {
+        let json = br#"{}"#;
+        assert_eq!(
+            detect_manifest_media_type(json),
+            "application/vnd.oci.image.manifest.v1+json"
+        );
+    }
+
+    #[test]
+    fn detect_manifest_media_type_empty_bytes() {
+        assert_eq!(
+            detect_manifest_media_type(b""),
+            "application/vnd.oci.image.manifest.v1+json"
+        );
+    }
+
+    #[test]
+    fn image_name_from_filename_edge_cases() {
+        // Empty string
+        assert_eq!(image_name_from_filename(""), None);
+        // Just .tar
+        assert_eq!(image_name_from_filename(".tar"), Some("".to_owned()));
+        // Multiple dots
+        assert_eq!(
+            image_name_from_filename("my.multi.dot.image.tar"),
+            Some("my.multi.dot.image".to_owned())
+        );
+        // .tar.gz with dots
+        assert_eq!(
+            image_name_from_filename("my.image.tar.gz"),
+            Some("my.image".to_owned())
+        );
+    }
+
+    #[test]
+    fn digest_to_blob_path_without_prefix() {
+        // If the digest doesn't have sha256: prefix, it strips nothing
+        assert_eq!(digest_to_blob_path("abc123"), "blobs/sha256/abc123");
+    }
+
+    #[test]
     fn extract_gzipped_tarball() {
         use flate2::write::GzEncoder;
         use std::io::Write;

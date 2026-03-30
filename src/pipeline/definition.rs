@@ -2927,4 +2927,943 @@ pipeline:
             result.err()
         );
     }
+
+    // -- is_in_process --
+
+    #[test]
+    fn is_in_process_gitops_sync() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: sync
+      type: gitops_sync
+      gitops:
+        copy: ["deploy/"]
+"#;
+        let def = parse(yaml).unwrap();
+        assert!(def.steps[0].is_in_process());
+    }
+
+    #[test]
+    fn is_in_process_deploy_watch() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: watch
+      type: deploy_watch
+      deploy_watch:
+        environment: staging
+";
+        let def = parse(yaml).unwrap();
+        assert!(def.steps[0].is_in_process());
+    }
+
+    #[test]
+    fn is_in_process_false_for_command() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: test
+      image: alpine
+";
+        let def = parse(yaml).unwrap();
+        assert!(!def.steps[0].is_in_process());
+    }
+
+    #[test]
+    fn is_in_process_false_for_imagebuild() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: build
+      type: imagebuild
+      imageName: app
+";
+        let def = parse(yaml).unwrap();
+        assert!(!def.steps[0].is_in_process());
+    }
+
+    #[test]
+    fn is_in_process_false_for_deploy_test() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: e2e
+      deploy_test:
+        test_image: registry/test:v1
+";
+        let def = parse(yaml).unwrap();
+        assert!(!def.steps[0].is_in_process());
+    }
+
+    // -- validate_ab_test_config edge cases --
+
+    #[test]
+    fn validate_ab_test_empty_control_service() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: exp
+      type: ab_test
+      ab_test:
+        control_service: ""
+        treatment_service: treatment
+        match:
+          headers:
+            x-exp: "1"
+        success_metric: metric
+        success_condition: gt
+"#;
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("control_service")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_ab_test_empty_treatment_service() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: exp
+      type: ab_test
+      ab_test:
+        control_service: control
+        treatment_service: ""
+        match:
+          headers:
+            x-exp: "1"
+        success_metric: metric
+        success_condition: gt
+"#;
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("treatment_service")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_ab_test_empty_success_metric() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: exp
+      type: ab_test
+      ab_test:
+        control_service: control
+        treatment_service: treatment
+        match:
+          headers:
+            x-exp: "1"
+        success_metric: ""
+        success_condition: gt
+"#;
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("success_metric")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_ab_test_invalid_success_condition() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: exp
+      type: ab_test
+      ab_test:
+        control_service: control
+        treatment_service: treatment
+        match:
+          headers:
+            x-exp: "1"
+        success_metric: conversion_rate
+        success_condition: invalid
+"#;
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("success_condition")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_ab_test_zero_duration() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: exp
+      type: ab_test
+      ab_test:
+        control_service: control
+        treatment_service: treatment
+        match:
+          headers:
+            x-exp: "1"
+        success_metric: conversion_rate
+        success_condition: gt
+        duration: 0
+"#;
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("duration")),
+            "got: {err:?}"
+        );
+    }
+
+    // -- validate_canary_config edge cases --
+
+    #[test]
+    fn validate_canary_empty_stable_service() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: api
+      type: canary
+      canary:
+        stable_service: ""
+        canary_service: c
+        steps: [100]
+"#;
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("stable_service")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_canary_empty_canary_service() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: api
+      type: canary
+      canary:
+        stable_service: s
+        canary_service: ""
+        steps: [100]
+"#;
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("canary_service")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_canary_empty_steps_list() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: api
+      type: canary
+      canary:
+        stable_service: s
+        canary_service: c
+        steps: []
+"#;
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("steps must not be empty")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_canary_step_value_zero() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: api
+      type: canary
+      canary:
+        stable_service: s
+        canary_service: c
+        steps: [0, 100]
+"#;
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("1-100")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_canary_interval_zero() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: api
+      type: canary
+      canary:
+        stable_service: s
+        canary_service: c
+        steps: [100]
+        interval: 0
+"#;
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("interval")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_metric_gate_empty_metric() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: api
+      type: canary
+      canary:
+        stable_service: s
+        canary_service: c
+        steps: [100]
+        progress_gates:
+          - metric: ''
+            condition: lt
+            threshold: 0.05
+";
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("metric must not be empty")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_metric_gate_invalid_condition() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: api
+      type: canary
+      canary:
+        stable_service: s
+        canary_service: c
+        steps: [100]
+        rollback_triggers:
+          - metric: error_rate
+            condition: invalid
+            threshold: 0.05
+";
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("condition must be gt, lt, or eq")),
+            "got: {err:?}"
+        );
+    }
+
+    // -- validate_step_condition edge cases --
+
+    #[test]
+    fn validate_step_condition_empty_branch_pattern() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: test
+      image: alpine
+      only:
+        branches: [""]
+"#;
+        let err = parse(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("1-255")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_step_condition_branch_pattern_too_long() {
+        let long_branch = "a".repeat(256);
+        let yaml = format!(
+            r#"
+pipeline:
+  steps:
+    - name: test
+      image: alpine
+      only:
+        branches: ["{long_branch}"]
+"#
+        );
+        let err = parse(&yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("1-255")),
+            "got: {err:?}"
+        );
+    }
+
+    // -- validate_flags edge cases --
+
+    #[test]
+    fn validate_flag_empty_key() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+flags:
+  - key: ""
+    default_value: false
+"#;
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("1-255")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_flag_key_too_long() {
+        let long_key = "a".repeat(256);
+        let yaml = format!(
+            r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+flags:
+  - key: "{long_key}"
+    default_value: false
+"#
+        );
+        let err = parse_platform_file(&yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("1-255")),
+            "got: {err:?}"
+        );
+    }
+
+    // -- validate_deploy_config edge cases --
+
+    #[test]
+    fn validate_deploy_spec_empty_name() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: ""
+      type: rolling
+"#;
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("1-255")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_deploy_spec_name_too_long() {
+        let long_name = "a".repeat(256);
+        let yaml = format!(
+            r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: "{long_name}"
+      type: rolling
+"#
+        );
+        let err = parse_platform_file(&yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("1-255")),
+            "got: {err:?}"
+        );
+    }
+
+    // -- artifact path traversal --
+
+    #[test]
+    fn validate_artifact_path_traversal_rejected() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: test
+      image: alpine
+  artifacts:
+    - name: stolen
+      path: ../../../etc/passwd
+";
+        let err = parse(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("..")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_artifact_path_normal_ok() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: test
+      image: alpine
+  artifacts:
+    - name: results
+      path: target/test-results/
+";
+        assert!(parse(yaml).is_ok());
+    }
+
+    // -- dev_image too long --
+
+    #[test]
+    fn validate_dev_image_dockerfile_too_long() {
+        let long_path = "a".repeat(256);
+        let yaml = format!(
+            r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+  dev_image:
+    dockerfile: "{long_path}"
+"#
+        );
+        let err = parse(&yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("255 characters")),
+            "got: {err:?}"
+        );
+    }
+
+    // -- validate_canary_service_refs: empty manifests --
+
+    #[test]
+    fn validate_canary_refs_empty_manifest_content() {
+        let specs = vec![DeploySpec {
+            name: "api".into(),
+            deploy_type: "canary".into(),
+            canary: Some(CanaryConfig {
+                stable_service: "stable".into(),
+                canary_service: "canary".into(),
+                steps: vec![10, 100],
+                interval: 60,
+                min_requests: 100,
+                max_failures: 3,
+                progress_gates: vec![],
+                rollback_triggers: vec![],
+            }),
+            ab_test: None,
+            include_staging: false,
+            stages: None,
+        }];
+        let err = validate_canary_service_refs(&specs, "").unwrap_err();
+        assert!(err.to_string().contains("stable_service"));
+    }
+
+    #[test]
+    fn validate_canary_refs_non_service_manifests() {
+        let manifest = r"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+";
+        let specs = vec![DeploySpec {
+            name: "api".into(),
+            deploy_type: "canary".into(),
+            canary: Some(CanaryConfig {
+                stable_service: "stable".into(),
+                canary_service: "canary".into(),
+                steps: vec![10, 100],
+                interval: 60,
+                min_requests: 100,
+                max_failures: 3,
+                progress_gates: vec![],
+                rollback_triggers: vec![],
+            }),
+            ab_test: None,
+            include_staging: false,
+            stages: None,
+        }];
+        let err = validate_canary_service_refs(&specs, manifest).unwrap_err();
+        assert!(err.to_string().contains("stable_service"));
+    }
+
+    // -- expand_step_env edge cases --
+
+    #[test]
+    fn expand_step_env_multiple_occurrences() {
+        let env = vec![("X".into(), "1".into())];
+        let result = expand_step_env("$X-$X-$X", &env);
+        assert_eq!(result, "1-1-1");
+    }
+
+    #[test]
+    fn expand_step_env_partial_match() {
+        let env = vec![("REG".into(), "value".into())];
+        let result = expand_step_env("$REGISTRY", &env);
+        // $REG matches but $REGISTRY is not the same as $REG
+        // The expansion replaces $REG within $REGISTRY → "valueISTRY"
+        assert_eq!(result, "valueISTRY");
+    }
+
+    #[test]
+    fn expand_step_env_empty_value() {
+        let env = vec![("EMPTY".into(), "".into())];
+        let result = expand_step_env("before$EMPTYafter", &env);
+        assert_eq!(result, "beforeafter");
+    }
+
+    // -- matches_tag edge cases --
+
+    #[test]
+    fn matches_tag_empty_patterns_matches_all() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: test
+      image: alpine
+  on:
+    tag:
+      patterns: []
+";
+        let def = parse(yaml).unwrap();
+        assert!(matches_tag(def.trigger.as_ref(), "any-tag"));
+    }
+
+    // -- canary config with rollback_triggers validation --
+
+    #[test]
+    fn validate_canary_rollback_trigger_custom_without_name() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: api
+      type: canary
+      canary:
+        stable_service: s
+        canary_service: c
+        steps: [100]
+        rollback_triggers:
+          - metric: custom
+            condition: gt
+            threshold: 0.5
+";
+        let err = parse_platform_file(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("custom") && msg.contains("name")),
+            "got: {err:?}"
+        );
+    }
+
+    // -- valid ab_test with all conditions --
+
+    #[test]
+    fn validate_ab_test_valid_conditions() {
+        for cond in ["gt", "lt", "eq"] {
+            let yaml = format!(
+                r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: exp
+      type: ab_test
+      ab_test:
+        control_service: control
+        treatment_service: treatment
+        match:
+          headers:
+            x-exp: "1"
+        success_metric: conversion_rate
+        success_condition: {cond}
+"#
+            );
+            assert!(
+                parse_platform_file(&yaml).is_ok(),
+                "condition '{cond}' should be valid"
+            );
+        }
+    }
+
+    // -- gitops_sync with empty copy list --
+
+    #[test]
+    fn validate_gitops_sync_empty_copy_rejected() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: sync
+      type: gitops_sync
+      gitops:
+        copy: []
+"#;
+        let err = parse(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("at least one entry")),
+            "got: {err:?}"
+        );
+    }
+
+    // -- flag key with allowed special chars --
+
+    #[test]
+    fn validate_flag_key_with_dots_and_hyphens() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+flags:
+  - key: my-flag.v2
+    default_value: true
+";
+        assert!(parse_platform_file(yaml).is_ok());
+    }
+
+    #[test]
+    fn validate_flag_key_with_underscore() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+flags:
+  - key: my_flag_123
+    default_value: false
+";
+        assert!(parse_platform_file(yaml).is_ok());
+    }
+
+    // -- deploy_test readiness_timeout boundary --
+
+    #[test]
+    fn validate_deploy_test_readiness_timeout_above_600() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: e2e
+      deploy_test:
+        test_image: registry/test:v1
+        readiness_timeout: 601
+";
+        let err = parse(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("readiness_timeout must be 1-600")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_deploy_test_readiness_timeout_exactly_600() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: e2e
+      deploy_test:
+        test_image: registry/test:v1
+        readiness_timeout: 600
+";
+        assert!(parse(yaml).is_ok());
+    }
+
+    #[test]
+    fn validate_deploy_test_readiness_timeout_exactly_1() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: e2e
+      deploy_test:
+        test_image: registry/test:v1
+        readiness_timeout: 1
+";
+        assert!(parse(yaml).is_ok());
+    }
+
+    // -- multiple valid events --
+
+    #[test]
+    fn validate_step_condition_all_valid_events() {
+        for event in ["push", "mr", "tag", "api"] {
+            let yaml = format!(
+                r"
+pipeline:
+  steps:
+    - name: test
+      image: alpine
+      only:
+        events: [{event}]
+"
+            );
+            assert!(parse(&yaml).is_ok(), "event '{event}' should be valid");
+        }
+    }
+
+    // -- deploy config with variables and staging --
+
+    #[test]
+    fn parse_deploy_config_with_staging() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  enable_staging: true
+  specs:
+    - name: api
+      type: rolling
+";
+        let pf = parse_platform_file(yaml).unwrap();
+        let deploy = pf.deploy.unwrap();
+        assert!(deploy.enable_staging);
+    }
+
+    // -- default deploy type --
+
+    #[test]
+    fn deploy_spec_default_type_is_rolling() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: api
+";
+        let pf: PlatformFile = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(pf.deploy.unwrap().specs[0].deploy_type, "rolling");
+    }
+
+    // -- canary default values --
+
+    #[test]
+    fn canary_config_defaults() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: api
+      type: canary
+      canary:
+        stable_service: s
+        canary_service: c
+        steps: [100]
+";
+        let pf: PlatformFile = serde_yaml::from_str(yaml).unwrap();
+        let canary = pf.deploy.unwrap().specs[0].canary.as_ref().unwrap().clone();
+        assert_eq!(canary.interval, 120);
+        assert_eq!(canary.min_requests, 100);
+        assert_eq!(canary.max_failures, 3);
+        assert!(canary.progress_gates.is_empty());
+        assert!(canary.rollback_triggers.is_empty());
+    }
+
+    // -- ab_test default values --
+
+    #[test]
+    fn ab_test_config_defaults() {
+        let yaml = r#"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+deploy:
+  specs:
+    - name: exp
+      type: ab_test
+      ab_test:
+        control_service: ctrl
+        treatment_service: treat
+        match:
+          headers: {}
+        success_metric: metric
+        success_condition: gt
+"#;
+        let pf: PlatformFile = serde_yaml::from_str(yaml).unwrap();
+        let ab = pf.deploy.unwrap().specs[0]
+            .ab_test
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(ab.duration, 86400);
+        assert_eq!(ab.min_samples, 1000);
+    }
+
+    // -- deploy_watch default timeout --
+
+    #[test]
+    fn deploy_watch_default_timeout_value() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: watch
+      type: deploy_watch
+      deploy_watch:
+        environment: production
+";
+        let pf: PlatformFile = serde_yaml::from_str(yaml).unwrap();
+        let dw = pf.pipeline.steps[0].deploy_watch.as_ref().unwrap();
+        assert_eq!(dw.timeout, 300);
+    }
 }

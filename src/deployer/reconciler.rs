@@ -486,8 +486,14 @@ async fn handle_promoting(state: &AppState, release: &PendingRelease) -> Result<
         apply_gateway_resources(state, release, &ns, 100).await;
 
         // Re-render manifests with stable_image = canary_image (promotion)
-        // The new stable is the canary image
+        // Re-inject secrets (envFrom) since render_manifests produces raw templates
+        let secrets_name = inject_project_secrets(state, release, &ns).await;
         let (rendered, _sha) = render_manifests(state, release).await?;
+        let rendered = if let Some(ref sn) = secrets_name {
+            applier::inject_env_from_secret(&rendered, sn)?
+        } else {
+            rendered
+        };
         let _ = applier::apply_with_tracking(&state.kube, &rendered, &ns, Some(release.id)).await;
     }
 
@@ -1900,5 +1906,191 @@ mod tests {
             !ns.contains("production"),
             "should not contain full 'production' word"
         );
+    }
+
+    #[test]
+    fn sample_release_has_expected_defaults() {
+        let r = sample_release();
+        assert_eq!(r.strategy, "rolling");
+        assert_eq!(r.phase, "pending");
+        assert_eq!(r.traffic_weight, 0);
+        assert_eq!(r.current_step, 0);
+        assert_eq!(r.environment, "production");
+        assert!(r.ops_repo_id.is_none());
+        assert!(r.manifest_path.is_none());
+        assert!(r.branch_slug.is_none());
+        assert!(r.pipeline_id.is_none());
+        assert!(r.tracked_resources.is_empty());
+        assert!(!r.skip_prune);
+    }
+
+    #[test]
+    fn sample_release_canary_strategy() {
+        let mut r = sample_release();
+        r.strategy = "canary".into();
+        r.phase = "progressing".into();
+        r.traffic_weight = 20;
+        r.current_step = 1;
+        r.rollout_config = serde_json::json!({
+            "steps": [10, 20, 50, 100],
+            "stable_service": "api-stable",
+            "canary_service": "api-canary",
+        });
+        assert_eq!(r.strategy, "canary");
+        assert_eq!(r.traffic_weight, 20);
+        // Verify rollout config can extract steps
+        let steps = r
+            .rollout_config
+            .get("steps")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert_eq!(steps.len(), 4);
+    }
+
+    #[test]
+    fn sample_release_ab_test_strategy() {
+        let mut r = sample_release();
+        r.strategy = "ab_test".into();
+        r.phase = "progressing".into();
+        r.rollout_config = serde_json::json!({
+            "duration": 86400,
+            "control_service": "checkout-control",
+            "treatment_service": "checkout-treatment",
+            "match": { "headers": { "x-experiment": "treatment" } },
+        });
+        let duration = r
+            .rollout_config
+            .get("duration")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        assert_eq!(duration, 86400);
+    }
+
+    #[test]
+    fn basic_manifest_staging_environment() {
+        let mut r = sample_release();
+        r.environment = "staging".into();
+        let manifest = generate_basic_manifest(&r).unwrap();
+        assert!(manifest.contains("name: my-app-staging"));
+    }
+
+    #[test]
+    fn basic_manifest_preview_environment() {
+        let mut r = sample_release();
+        r.environment = "preview-my-feature".into();
+        let manifest = generate_basic_manifest(&r).unwrap();
+        assert!(manifest.contains("name: my-app-preview-my-feature"));
+    }
+
+    #[test]
+    fn basic_manifest_different_project_name() {
+        let mut r = sample_release();
+        r.project_name = "api-gateway".into();
+        let manifest = generate_basic_manifest(&r).unwrap();
+        assert!(manifest.contains("name: api-gateway-production"));
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&manifest).unwrap();
+        assert_eq!(
+            parsed["spec"]["selector"]["matchLabels"]["app"],
+            "api-gateway-production"
+        );
+    }
+
+    #[test]
+    fn build_docker_config_auth_encoding_complex() {
+        let config = build_deploy_docker_config(
+            "registry:5000",
+            None,
+            "my-user",
+            "p@$$w0rd_with_special=chars",
+        );
+        let auth_str = config["auths"]["registry:5000"]["auth"].as_str().unwrap();
+        let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, auth_str)
+            .expect("auth should be valid base64");
+        let decoded_str = String::from_utf8(decoded).unwrap();
+        assert_eq!(decoded_str, "my-user:p@$$w0rd_with_special=chars");
+    }
+
+    #[test]
+    fn build_docker_config_empty_password() {
+        let config = build_deploy_docker_config("registry:5000", None, "admin", "");
+        let auth_str = config["auths"]["registry:5000"]["auth"].as_str().unwrap();
+        let decoded =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, auth_str).unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), "admin:");
+    }
+
+    #[test]
+    fn env_suffix_test_environment() {
+        assert_eq!(env_suffix("test"), "test");
+    }
+
+    #[test]
+    fn env_suffix_integration() {
+        assert_eq!(env_suffix("integration"), "integration");
+    }
+
+    #[test]
+    fn target_namespace_test_environment() {
+        let config = crate::config::Config::test_default();
+        assert_eq!(target_namespace(&config, "app", "test"), "app-test");
+    }
+
+    #[test]
+    fn registry_pull_secret_name_is_fixed() {
+        assert_eq!(REGISTRY_PULL_SECRET_NAME, "platform-registry-pull");
+    }
+
+    #[test]
+    fn tracked_resources_empty_vec_serializes() {
+        let tracked: Vec<applier::TrackedResource> = Vec::new();
+        let json = serde_json::to_value(&tracked).unwrap();
+        let parsed: Vec<applier::TrackedResource> = serde_json::from_value(json).unwrap();
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn tracked_resources_from_invalid_json() {
+        let bad_json = serde_json::json!("not an array");
+        let result = serde_json::from_value::<Vec<applier::TrackedResource>>(bad_json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tracked_resources_from_null_json() {
+        let null_json = serde_json::json!(null);
+        let result = serde_json::from_value::<Vec<applier::TrackedResource>>(null_json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tracked_resources_from_object_json() {
+        let obj_json = serde_json::json!({"key": "value"});
+        let result = serde_json::from_value::<Vec<applier::TrackedResource>>(obj_json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn basic_manifest_image_with_sha256_digest() {
+        let mut r = sample_release();
+        r.image_ref = "myregistry.io/app@sha256:aabbccddee1122334455667788990011aabbccddee1122334455667788990011".into();
+        let manifest = generate_basic_manifest(&r).unwrap();
+        assert!(manifest.contains("image: myregistry.io/app@sha256:aabbccddee1122334455667788990011aabbccddee1122334455667788990011"));
+    }
+
+    #[test]
+    fn basic_manifest_with_localhost_registry() {
+        let mut r = sample_release();
+        r.image_ref = "localhost:5000/myapp:v1".into();
+        let manifest = generate_basic_manifest(&r).unwrap();
+        assert!(manifest.contains("image: localhost:5000/myapp:v1"));
+    }
+
+    #[test]
+    fn basic_manifest_hyphenated_project_name() {
+        let mut r = sample_release();
+        r.project_name = "my-complex-app-name".into();
+        r.environment = "staging".into();
+        let manifest = generate_basic_manifest(&r).unwrap();
+        assert!(manifest.contains("name: my-complex-app-name-staging"));
     }
 }

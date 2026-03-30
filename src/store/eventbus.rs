@@ -93,10 +93,10 @@ pub enum PlatformEvent {
         project_id: Uuid,
         weights: std::collections::HashMap<String, u32>,
     },
-    /// Feature flags registered from pipeline (key + `default_value`).
+    /// Feature flags registered from pipeline (key, `default_value`, description).
     FlagsRegistered {
         project_id: Uuid,
-        flags: Vec<(String, serde_json::Value)>,
+        flags: Vec<(String, serde_json::Value, Option<String>)>,
     },
 }
 
@@ -134,12 +134,19 @@ pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>
     let mut message_rx = subscriber.message_rx();
     state.task_registry.register("event_bus", 30);
 
+    // Periodic keepalive so health checks don't mark us stale when idle
+    let mut keepalive = tokio::time::interval(std::time::Duration::from_secs(25));
+    keepalive.tick().await; // consume the immediate first tick
+
     loop {
         tokio::select! {
             _ = shutdown.changed() => {
                 tracing::info!("event bus subscriber shutting down");
                 let _ = subscriber.unsubscribe(CHANNEL).await;
                 break;
+            }
+            _ = keepalive.tick() => {
+                state.task_registry.heartbeat("event_bus");
             }
             msg = message_rx.recv() => {
                 match msg {
@@ -485,10 +492,16 @@ async fn handle_ops_repo_updated(
     if let Some(ref pf) = platform_file
         && !pf.flags.is_empty()
     {
-        let flag_defs: Vec<(String, serde_json::Value)> = pf
+        let flag_defs: Vec<(String, serde_json::Value, Option<String>)> = pf
             .flags
             .iter()
-            .map(|f| (f.key.clone(), f.default_value.clone()))
+            .map(|f| {
+                (
+                    f.key.clone(),
+                    f.default_value.clone(),
+                    f.description.clone(),
+                )
+            })
             .collect();
         handle_flags_registered_inner(state, project_id, &flag_defs).await;
     }
@@ -944,15 +957,15 @@ async fn demo_mark_prod_complete(state: &AppState, project_id: Uuid) {
 async fn handle_flags_registered_inner(
     state: &AppState,
     project_id: Uuid,
-    flags: &[(String, serde_json::Value)],
+    flags: &[(String, serde_json::Value, Option<String>)],
 ) {
-    for (key, default_value) in flags {
+    for (key, default_value, description) in flags {
         // Use WHERE NOT EXISTS instead of ON CONFLICT because the unique constraint
         // (key, project_id, environment) treats NULL environment values as distinct
         // in PostgreSQL, so ON CONFLICT DO NOTHING would create duplicates.
         let _ = sqlx::query(
-            "INSERT INTO feature_flags (project_id, key, default_value, flag_type)
-             SELECT $1, $2, $3, 'boolean'
+            "INSERT INTO feature_flags (project_id, key, default_value, flag_type, description)
+             SELECT $1, $2, $3, 'boolean', $4
              WHERE NOT EXISTS (
                  SELECT 1 FROM feature_flags
                  WHERE project_id = $1 AND key = $2 AND environment IS NULL
@@ -961,14 +974,29 @@ async fn handle_flags_registered_inner(
         .bind(project_id)
         .bind(key)
         .bind(default_value)
+        .bind(description.as_deref())
         .execute(&state.pool)
         .await;
+
+        // Update description if flag already exists and description changed
+        if let Some(desc) = description {
+            let _ = sqlx::query(
+                "UPDATE feature_flags SET description = $3
+                 WHERE project_id = $1 AND key = $2 AND environment IS NULL
+                   AND (description IS NULL OR description != $3)",
+            )
+            .bind(project_id)
+            .bind(key)
+            .bind(desc)
+            .execute(&state.pool)
+            .await;
+        }
     }
 
     // Prune flags not in the current platform.yaml.
     // Only delete flags that have no rules/overrides (never user-configured).
     if !flags.is_empty() {
-        let current_keys: Vec<&str> = flags.iter().map(|(k, _)| k.as_str()).collect();
+        let current_keys: Vec<&str> = flags.iter().map(|(k, _, _)| k.as_str()).collect();
         let deleted = sqlx::query(
             "DELETE FROM feature_flags
              WHERE project_id = $1
@@ -996,7 +1024,7 @@ async fn handle_flags_registered_inner(
 async fn handle_flags_registered(
     state: &AppState,
     project_id: Uuid,
-    flags: &[(String, serde_json::Value)],
+    flags: &[(String, serde_json::Value, Option<String>)],
 ) -> anyhow::Result<()> {
     handle_flags_registered_inner(state, project_id, flags).await;
     tracing::info!(
@@ -1104,8 +1132,8 @@ mod tests {
             PlatformEvent::FlagsRegistered {
                 project_id: Uuid::nil(),
                 flags: vec![
-                    ("feature_a".into(), serde_json::json!(false)),
-                    ("feature_b".into(), serde_json::json!(true)),
+                    ("feature_a".into(), serde_json::json!(false), None),
+                    ("feature_b".into(), serde_json::json!(true), None),
                 ],
             },
         ];
@@ -1202,7 +1230,7 @@ mod tests {
             (
                 PlatformEvent::FlagsRegistered {
                     project_id: Uuid::nil(),
-                    flags: vec![("flag_a".into(), serde_json::json!(false))],
+                    flags: vec![("flag_a".into(), serde_json::json!(false), None)],
                 },
                 "FlagsRegistered",
             ),
@@ -1653,8 +1681,12 @@ mod tests {
         let event = PlatformEvent::FlagsRegistered {
             project_id: Uuid::new_v4(),
             flags: vec![
-                ("dark_mode".into(), serde_json::json!(false)),
-                ("max_retries".into(), serde_json::json!(5)),
+                (
+                    "dark_mode".into(),
+                    serde_json::json!(false),
+                    Some("Enable dark mode".into()),
+                ),
+                ("max_retries".into(), serde_json::json!(5), None),
             ],
         };
 
@@ -1953,5 +1985,123 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn event_clone() {
+        let event = PlatformEvent::ImageBuilt {
+            project_id: Uuid::nil(),
+            environment: "prod".into(),
+            image_ref: "img:v1".into(),
+            pipeline_id: Uuid::nil(),
+            triggered_by: None,
+        };
+        let cloned = event.clone();
+        let json1 = serde_json::to_string(&event).unwrap();
+        let json2 = serde_json::to_string(&cloned).unwrap();
+        assert_eq!(json1, json2);
+    }
+
+    #[test]
+    fn event_debug_format() {
+        let event = PlatformEvent::AlertFired {
+            rule_id: Uuid::nil(),
+            project_id: None,
+            severity: "info".into(),
+            value: None,
+            message: "test".into(),
+            alert_name: "test-alert".into(),
+        };
+        let debug = format!("{event:?}");
+        assert!(debug.contains("AlertFired"));
+        assert!(debug.contains("test-alert"));
+    }
+
+    #[test]
+    fn deploy_requested_with_null_requested_by() {
+        let json = r#"{
+            "type": "DeployRequested",
+            "project_id": "00000000-0000-0000-0000-000000000001",
+            "environment": "staging",
+            "image_ref": "img:v1",
+            "requested_by": null
+        }"#;
+        let event: PlatformEvent = serde_json::from_str(json).unwrap();
+        match event {
+            PlatformEvent::DeployRequested { requested_by, .. } => {
+                assert!(requested_by.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn alert_fired_with_no_value() {
+        let event = PlatformEvent::AlertFired {
+            rule_id: Uuid::new_v4(),
+            project_id: None,
+            severity: "warning".into(),
+            value: None,
+            message: "absent metric".into(),
+            alert_name: "Heartbeat".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed["value"].is_null());
+        assert!(parsed["project_id"].is_null());
+    }
+
+    #[test]
+    fn event_deserialization_missing_required_field() {
+        // ImageBuilt missing "environment"
+        let json = r#"{
+            "type": "ImageBuilt",
+            "project_id": "00000000-0000-0000-0000-000000000001",
+            "image_ref": "img:v1",
+            "pipeline_id": "00000000-0000-0000-0000-000000000002"
+        }"#;
+        let result: Result<PlatformEvent, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "missing required field should fail");
+    }
+
+    #[test]
+    fn event_json_has_type_tag_not_internal_fields() {
+        let event = PlatformEvent::ReleaseCreated {
+            target_id: Uuid::nil(),
+            release_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            image_ref: "img:v1".into(),
+            strategy: "rolling".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        // Verify serde tags properly
+        assert!(json.contains(r#""type":"ReleaseCreated""#));
+        assert!(json.contains(r#""strategy":"rolling""#));
+    }
+
+    #[test]
+    fn resolve_deploy_ab_test_not_in_custom_stages() {
+        let mut pf = minimal_platform_file();
+        pf.deploy = Some(
+            serde_json::from_value(serde_json::json!({
+                "specs": [{
+                    "name": "web",
+                    "type": "ab_test",
+                    "stages": ["qa"],
+                    "ab_test": {
+                        "control_service": "web-control",
+                        "treatment_service": "web-treatment",
+                        "match": { "headers": {} },
+                        "success_metric": "latency",
+                        "success_condition": "t < c"
+                    }
+                }]
+            }))
+            .unwrap(),
+        );
+        // "staging" not in custom stages → falls back to rolling
+        let (config, strategy) = resolve_deploy_config_from_specs(&pf, "staging");
+        assert_eq!(strategy, Some("rolling".into()));
+        assert_eq!(config, serde_json::json!({}));
     }
 }

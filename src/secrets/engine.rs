@@ -1162,4 +1162,118 @@ mod tests {
         let decrypted = decrypt(&encrypted_new, &new_key, None).unwrap();
         assert_eq!(decrypted, b"rotating-secret");
     }
+
+    // -- decrypt legacy vs versioned format edge cases --
+
+    #[test]
+    fn decrypt_versioned_with_version_byte_first() {
+        // Data starts with 0x01 → treated as versioned, strip first byte
+        let key = [42u8; 32];
+        let encrypted = encrypt(b"versioned", &key).unwrap();
+        assert_eq!(encrypted[0], ENCRYPTION_VERSION);
+        let decrypted = decrypt(&encrypted, &key, None).unwrap();
+        assert_eq!(decrypted, b"versioned");
+    }
+
+    #[test]
+    fn decrypt_legacy_format_first_byte_not_version() {
+        // Manually create a legacy blob without version prefix
+        let key = [42u8; 32];
+        let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+        // Use a nonce that doesn't start with 0x01
+        let nonce_bytes: [u8; 12] = [0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = cipher.encrypt(nonce, b"legacy-value".as_ref()).unwrap();
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&nonce_bytes);
+        blob.extend_from_slice(&ciphertext);
+        assert_ne!(
+            blob[0], ENCRYPTION_VERSION,
+            "first byte should not be version"
+        );
+        let decrypted = decrypt(&blob, &key, None).unwrap();
+        assert_eq!(decrypted, b"legacy-value");
+    }
+
+    #[test]
+    fn decrypt_version_byte_plus_exactly_12_bytes_nonce_fails() {
+        // Version (1) + nonce (12) = 13 bytes, no ciphertext → decryption should fail
+        let key = [42u8; 32];
+        let mut data = vec![ENCRYPTION_VERSION];
+        data.extend_from_slice(&[0u8; 12]);
+        let err = decrypt(&data, &key, None).unwrap_err();
+        assert!(
+            err.to_string().contains("decryption failed"),
+            "nonce-only versioned data should fail decryption, got: {err}"
+        );
+    }
+
+    // -- extract_secret_patterns with multiple patterns interspersed --
+
+    #[test]
+    fn secret_pattern_with_text_between() {
+        let template = "host=${{ secrets.HOST }} port=${{ secrets.PORT }} db=${{ secrets.DB }}";
+        let patterns = extract_secret_patterns(template);
+        assert_eq!(patterns.len(), 3);
+        assert_eq!(patterns[0].2, "HOST");
+        assert_eq!(patterns[1].2, "PORT");
+        assert_eq!(patterns[2].2, "DB");
+    }
+
+    #[test]
+    fn secret_pattern_mixed_valid_and_invalid() {
+        // First is valid, second has spaces (invalid), third is valid
+        let template = "${{ secrets.A }} ${{ secrets.bad name }} ${{ secrets.B }}";
+        let patterns = extract_secret_patterns(template);
+        assert_eq!(patterns.len(), 2);
+        assert_eq!(patterns[0].2, "A");
+        assert_eq!(patterns[1].2, "B");
+    }
+
+    #[test]
+    fn secret_pattern_only_prefix_no_closing() {
+        let patterns = extract_secret_patterns("${{ secrets.OPEN_ENDED");
+        assert!(patterns.is_empty());
+    }
+
+    // -- SecretMetadata serialization --
+
+    #[test]
+    fn secret_metadata_serializes() {
+        let meta = SecretMetadata {
+            id: Uuid::nil(),
+            project_id: Some(Uuid::nil()),
+            workspace_id: None,
+            environment: Some("production".into()),
+            name: "DB_URL".into(),
+            scope: "pipeline".into(),
+            version: 3,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&meta).unwrap();
+        assert_eq!(json["name"], "DB_URL");
+        assert_eq!(json["scope"], "pipeline");
+        assert_eq!(json["version"], 3);
+        assert_eq!(json["environment"], "production");
+        assert!(json["workspace_id"].is_null());
+    }
+
+    #[test]
+    fn secret_metadata_debug() {
+        let meta = SecretMetadata {
+            id: Uuid::nil(),
+            project_id: None,
+            workspace_id: None,
+            environment: None,
+            name: "test".into(),
+            scope: "all".into(),
+            version: 1,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let debug = format!("{meta:?}");
+        assert!(debug.contains("SecretMetadata"));
+        assert!(debug.contains("test"));
+    }
 }

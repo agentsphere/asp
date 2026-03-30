@@ -892,4 +892,140 @@ mod tests {
         // Should NOT contain extra quotes around string values
         assert!(!formatted.contains("name: \"my-project\""));
     }
+
+    #[test]
+    fn format_tool_results_with_string_value() {
+        let results = vec![("my_tool".to_owned(), Ok(serde_json::json!("just a string")))];
+        let formatted = format_tool_results(&results);
+        assert!(formatted.contains("[my_tool] OK"));
+        assert!(formatted.contains("result: \"just a string\""));
+    }
+
+    #[test]
+    fn format_tool_results_with_number_value() {
+        let results = vec![("count_tool".to_owned(), Ok(serde_json::json!(42)))];
+        let formatted = format_tool_results(&results);
+        assert!(formatted.contains("[count_tool] OK"));
+        assert!(formatted.contains("result: 42"));
+    }
+
+    #[test]
+    fn format_tool_results_with_array_value() {
+        let results = vec![(
+            "list_tool".to_owned(),
+            Ok(serde_json::json!(["a", "b", "c"])),
+        )];
+        let formatted = format_tool_results(&results);
+        assert!(formatted.contains("[list_tool] OK"));
+        assert!(formatted.contains("result:"));
+    }
+
+    #[test]
+    fn format_tool_results_with_null_value() {
+        let results = vec![("null_tool".to_owned(), Ok(serde_json::json!(null)))];
+        let formatted = format_tool_results(&results);
+        assert!(formatted.contains("[null_tool] OK"));
+        assert!(formatted.contains("result: null"));
+    }
+
+    #[test]
+    fn format_tool_results_hint_field_only_in_arrow() {
+        // _next should appear as → hint, not as a key-value pair
+        let results = vec![(
+            "tool_a".to_owned(),
+            Ok(serde_json::json!({"name": "x", "_next": "Do Y next"})),
+        )];
+        let formatted = format_tool_results(&results);
+        assert!(formatted.contains("→ Do Y next"));
+        assert!(!formatted.contains("_next:"));
+    }
+
+    #[test]
+    fn format_tool_results_underscore_fields_skipped() {
+        // Fields starting with _ (other than _next) should be skipped
+        let results = vec![(
+            "tool_b".to_owned(),
+            Ok(serde_json::json!({"visible": "yes", "_internal": "hidden"})),
+        )];
+        let formatted = format_tool_results(&results);
+        assert!(formatted.contains("visible: yes"));
+        assert!(!formatted.contains("_internal"));
+    }
+
+    #[test]
+    fn format_tool_results_numeric_value_in_object() {
+        let results = vec![(
+            "tool_c".to_owned(),
+            Ok(serde_json::json!({"count": 42, "active": true})),
+        )];
+        let formatted = format_tool_results(&results);
+        assert!(formatted.contains("count: 42"));
+        assert!(formatted.contains("active: true"));
+    }
+
+    #[test]
+    fn parse_structured_output_no_result_no_fallback_defaults() {
+        let result = ResultMessage {
+            subtype: "success".into(),
+            session_id: "s1".into(),
+            is_error: false,
+            result: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            usage: None,
+            structured_output: None,
+        };
+        let resp = parse_structured_output(&result, None);
+        assert_eq!(resp.text, "No response from agent");
+        assert!(resp.tools.is_empty());
+    }
+
+    #[test]
+    fn structured_response_missing_text_fails() {
+        let json = r#"{"tools":[]}"#;
+        let result = serde_json::from_str::<StructuredResponse>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn structured_response_missing_tools_fails() {
+        let json = r#"{"text":"hello"}"#;
+        let result = serde_json::from_str::<StructuredResponse>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tool_request_debug() {
+        let req = ToolRequest {
+            name: "test".into(),
+            parameters: serde_json::json!({}),
+        };
+        let debug = format!("{req:?}");
+        assert!(debug.contains("test"));
+    }
+
+    #[test]
+    fn structured_response_clone() {
+        let resp = StructuredResponse {
+            text: "hello".into(),
+            tools: vec![ToolRequest {
+                name: "create_project".into(),
+                parameters: serde_json::json!({"name": "test"}),
+            }],
+        };
+        let cloned = resp.clone();
+        assert_eq!(cloned.text, "hello");
+        assert_eq!(cloned.tools.len(), 1);
+        assert_eq!(cloned.tools[0].name, "create_project");
+    }
+
+    #[test]
+    fn create_app_schema_required_fields_on_tool_items() {
+        let schema = create_app_schema();
+        let required = &schema["properties"]["tools"]["items"]["required"];
+        let arr = required.as_array().unwrap();
+        assert!(arr.contains(&serde_json::json!("name")));
+        assert!(arr.contains(&serde_json::json!("parameters")));
+    }
 }

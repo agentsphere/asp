@@ -139,4 +139,20 @@ mod tests {
     fn normalize_arch_empty() {
         assert!(normalize_arch("").is_err());
     }
+
+    #[test]
+    fn normalize_arch_case_sensitive() {
+        // Uppercase variants should fail (we require exact match)
+        assert!(normalize_arch("AMD64").is_err());
+        assert!(normalize_arch("ARM64").is_err());
+        assert!(normalize_arch("X86_64").is_err());
+    }
+
+    #[test]
+    fn normalize_arch_similar_invalid() {
+        assert!(normalize_arch("amd32").is_err());
+        assert!(normalize_arch("arm32").is_err());
+        assert!(normalize_arch("i386").is_err());
+        assert!(normalize_arch("mips64").is_err());
+    }
 }

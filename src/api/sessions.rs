@@ -1403,6 +1403,35 @@ mod tests {
     }
 
     #[test]
+    fn truncate_prompt_unicode_boundary() {
+        // Unicode chars: each emoji is >1 byte but 1 char
+        let emoji_str = "🎉🎊🎈🎁🎀";
+        // 5 chars, truncate to 3
+        let result = truncate_prompt(emoji_str, 3);
+        assert_eq!(result, "🎉🎊🎈...");
+    }
+
+    #[test]
+    fn truncate_prompt_single_char_max() {
+        assert_eq!(truncate_prompt("abcdef", 1), "a...");
+    }
+
+    #[test]
+    fn validate_provider_config_valid_admin_role() {
+        let config = serde_json::json!({ "role": "admin" });
+        assert!(validate_provider_config(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_provider_config_browser_with_review_role_rejected() {
+        let config = serde_json::json!({
+            "browser": { "allowed_origins": ["http://localhost:3000"] },
+            "role": "review"
+        });
+        assert!(validate_provider_config(&config).is_err());
+    }
+
+    #[test]
     fn session_to_response_browser_disabled_without_config() {
         let session = crate::agent::provider::AgentSession {
             id: uuid::Uuid::new_v4(),

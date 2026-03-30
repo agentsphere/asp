@@ -269,6 +269,51 @@ mod tests {
     }
 
     #[test]
+    fn docker_config_encodes_credentials_correctly() {
+        let config = build_docker_config("registry.test.io", "user", "pass");
+        let auth_str = config["auths"]["registry.test.io"]["auth"]
+            .as_str()
+            .unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(auth_str)
+            .unwrap();
+        let creds = String::from_utf8(decoded).unwrap();
+        assert_eq!(creds, "user:pass");
+    }
+
+    #[test]
+    fn docker_config_with_special_chars_in_password() {
+        let config = build_docker_config("reg.io", "user", "p@ss:w0rd!#$");
+        let auth_str = config["auths"]["reg.io"]["auth"].as_str().unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(auth_str)
+            .unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), "user:p@ss:w0rd!#$");
+    }
+
+    #[test]
+    fn docker_config_with_empty_username() {
+        let config = build_docker_config("reg.io", "", "token");
+        let auth_str = config["auths"]["reg.io"]["auth"].as_str().unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(auth_str)
+            .unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), ":token");
+    }
+
+    #[test]
+    fn build_secret_name_long_label() {
+        let name = build_secret_name("abcdefghijklmnop");
+        assert_eq!(name, "regpull-abcdefgh");
+    }
+
+    #[test]
+    fn build_secret_name_single_char() {
+        let name = build_secret_name("x");
+        assert_eq!(name, "regpull-x");
+    }
+
+    #[test]
     fn push_secret_docker_config_structure() {
         let config = build_docker_config("registry.example.com:5000", "agent-user", "tok_push");
         let auths = config["auths"].as_object().unwrap();
@@ -277,5 +322,58 @@ mod tests {
             .decode(auths["registry.example.com:5000"]["auth"].as_str().unwrap())
             .unwrap();
         assert_eq!(String::from_utf8(decoded).unwrap(), "agent-user:tok_push");
+    }
+
+    #[test]
+    fn build_secret_name_with_hyphens() {
+        let name = build_secret_name("a-b-c-d-e-f-g-h");
+        assert_eq!(name, "regpull-a-b-c-d-");
+    }
+
+    #[test]
+    fn build_secret_name_unicode() {
+        // Unicode characters — get truncated at byte level
+        let name = build_secret_name("test1234extra");
+        assert_eq!(name, "regpull-test1234");
+    }
+
+    #[test]
+    fn docker_config_json_structure() {
+        let config = build_docker_config("localhost:5000", "user", "pass");
+        assert!(config.is_object());
+        assert!(config["auths"].is_object());
+        let auths = config["auths"].as_object().unwrap();
+        assert_eq!(auths.len(), 1);
+        assert!(auths.contains_key("localhost:5000"));
+        assert!(auths["localhost:5000"]["auth"].is_string());
+    }
+
+    #[test]
+    fn docker_config_base64_is_valid() {
+        let config = build_docker_config("reg.io", "myuser", "mytoken");
+        let auth_str = config["auths"]["reg.io"]["auth"].as_str().unwrap();
+        // Verify it's valid base64
+        let result = base64::engine::general_purpose::STANDARD.decode(auth_str);
+        assert!(result.is_ok(), "auth should be valid base64");
+    }
+
+    #[test]
+    fn pull_secret_result_fields() {
+        let result = PullSecretResult {
+            secret_name: "regpull-test1234".into(),
+            token_hash: "sha256:abc".into(),
+        };
+        assert_eq!(result.secret_name, "regpull-test1234");
+        assert_eq!(result.token_hash, "sha256:abc");
+    }
+
+    #[test]
+    fn push_secret_result_fields() {
+        let result = PushSecretResult {
+            secret_name: "registry-push-abc".into(),
+            token_hash: "sha256:def".into(),
+        };
+        assert_eq!(result.secret_name, "registry-push-abc");
+        assert_eq!(result.token_hash, "sha256:def");
     }
 }

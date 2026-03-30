@@ -1337,4 +1337,175 @@ echo "Store this token securely."
         // Should not panic
         manager.cancel(Uuid::new_v4()).await;
     }
+
+    #[test]
+    fn parse_validation_ndjson_result_is_error_with_init() {
+        // init present + result with is_error=true → still true (saw_init overrides)
+        let output = r#"{"type":"system","subtype":"init","session_id":"abc"}
+{"type":"result","is_error":true,"result":"error"}"#;
+        assert!(parse_validation_ndjson(output));
+    }
+
+    #[test]
+    fn parse_validation_ndjson_result_no_is_error_field() {
+        // result without is_error field and no init → false
+        let output = r#"{"type":"result","result":"something"}"#;
+        assert!(!parse_validation_ndjson(output));
+    }
+
+    #[test]
+    fn parse_validation_ndjson_mixed_json_and_garbage() {
+        // Some lines are valid JSON, some are not
+        let output = "garbage line\n{\"type\":\"system\",\"subtype\":\"init\"}\nmore garbage\n";
+        assert!(parse_validation_ndjson(output));
+    }
+
+    #[test]
+    fn parse_validation_ndjson_result_is_error_false_no_init() {
+        // result with is_error=false but no init → true (is_error=false is sufficient)
+        let output = r#"{"type":"result","is_error":false,"result":"ok"}"#;
+        assert!(parse_validation_ndjson(output));
+    }
+
+    #[test]
+    fn strip_ansi_osc_sequence() {
+        // OSC sequence: ESC ] ... BEL
+        let input = "\x1b]0;window title\x07Hello";
+        let result = strip_ansi_escapes(input);
+        assert_eq!(result, "Hello");
+    }
+
+    #[test]
+    fn strip_ansi_single_esc_at_end() {
+        let input = "text\x1b";
+        let result = strip_ansi_escapes(input);
+        assert_eq!(result, "text");
+    }
+
+    #[test]
+    fn strip_ansi_esc_with_unknown_next_char() {
+        // ESC followed by a non-[ non-] char → skip the next char only (not subsequent ones)
+        let input = "\x1b(BHello";
+        let result = strip_ansi_escapes(input);
+        // ESC skips `(`, then `B` and `Hello` are regular chars
+        assert_eq!(result, "BHello");
+    }
+
+    #[test]
+    fn strip_ansi_csi_with_numeric_params() {
+        // ESC [ 32 ; 1 m (set color + bold)
+        let input = "\x1b[32;1mGreen Bold\x1b[0m";
+        let result = strip_ansi_escapes(input);
+        assert_eq!(result, "Green Bold");
+    }
+
+    #[test]
+    fn find_oauth_url_only_marker_no_params() {
+        // Just the marker without any query params
+        let text = "https://claude.ai/oauth/authorize?";
+        // The marker itself is 39 chars, url must be > marker_len to be valid
+        // "https://claude.ai/oauth/authorize?" is exactly the marker — no extra chars
+        assert!(find_oauth_url(text).is_none());
+    }
+
+    #[test]
+    fn find_oauth_url_with_carriage_returns() {
+        let text = "https://claude.ai/oauth/authorize?client=test\r\n&state=abc\r\n\r\nDone";
+        let url = find_oauth_url(text).unwrap();
+        assert!(url.contains("client=test"));
+        assert!(url.contains("&state=abc"));
+        assert!(!url.contains("Done"));
+    }
+
+    #[test]
+    fn find_oauth_token_exactly_20_chars_too_short() {
+        // "sk-ant-oat" (10 chars) + 10 more = 20 chars total — not > 20
+        let text = "sk-ant-oat0123456789";
+        assert_eq!(text.len(), 20);
+        assert!(find_oauth_token(text).is_none());
+    }
+
+    #[test]
+    fn find_oauth_token_21_chars_is_enough() {
+        let text = "sk-ant-oat01234567890";
+        assert_eq!(text.len(), 21);
+        let token = find_oauth_token(text).unwrap();
+        assert_eq!(token, "sk-ant-oat01234567890");
+    }
+
+    #[test]
+    fn is_url_char_valid_chars() {
+        for c in "abcXYZ012-._~:/?#[]@!$&'()*+,;=%".chars() {
+            assert!(is_url_char(c), "'{c}' should be valid URL char");
+        }
+    }
+
+    #[test]
+    fn is_url_char_invalid_chars() {
+        for c in " \t\n\r<>{}|^`".chars() {
+            assert!(!is_url_char(c), "'{c}' should not be valid URL char");
+        }
+    }
+
+    #[test]
+    fn auth_session_state_serialize() {
+        let state = AuthSessionState::UrlReady {
+            auth_url: "https://example.com".into(),
+        };
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["state"], "url_ready");
+        assert_eq!(json["auth_url"], "https://example.com");
+    }
+
+    #[test]
+    fn auth_session_state_starting_serialize() {
+        let state = AuthSessionState::Starting;
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["state"], "starting");
+    }
+
+    #[test]
+    fn auth_session_state_verifying_serialize() {
+        let state = AuthSessionState::Verifying;
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["state"], "verifying");
+    }
+
+    #[test]
+    fn auth_session_state_completed_serialize() {
+        let state = AuthSessionState::Completed;
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["state"], "completed");
+    }
+
+    #[test]
+    fn auth_session_state_failed_serialize() {
+        let state = AuthSessionState::Failed {
+            error: "timeout".into(),
+        };
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["state"], "failed");
+        assert_eq!(json["error"], "timeout");
+    }
+
+    #[test]
+    fn auth_session_state_clone() {
+        let state = AuthSessionState::UrlReady {
+            auth_url: "https://example.com".into(),
+        };
+        let cloned = state.clone();
+        let json1 = serde_json::to_value(&state).unwrap();
+        let json2 = serde_json::to_value(&cloned).unwrap();
+        assert_eq!(json1, json2);
+    }
+
+    #[test]
+    fn auth_session_state_debug() {
+        let state = AuthSessionState::Failed {
+            error: "test-error".into(),
+        };
+        let debug = format!("{state:?}");
+        assert!(debug.contains("Failed"));
+        assert!(debug.contains("test-error"));
+    }
 }

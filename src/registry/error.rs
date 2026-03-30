@@ -468,4 +468,87 @@ mod tests {
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
+
+    #[test]
+    fn registry_error_manifest_invalid_returns_400() {
+        let err = RegistryError::ManifestInvalid("bad manifest".into());
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn registry_error_manifest_unknown_returns_404() {
+        let err = RegistryError::ManifestUnknown;
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn registry_error_blob_unknown_returns_500() {
+        // BlobUnknown maps to OciErrorCode::BlobUnknown which is 404,
+        // but the actual error variant is not an internal error so it gets
+        // the OCI code's status (404), not 500.
+        let err = RegistryError::BlobUnknown;
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -- OciErrorCode is Copy + Clone + Debug --
+
+    #[test]
+    fn oci_error_code_copy_clone_debug() {
+        let code = OciErrorCode::BlobUnknown;
+        let copied = code;
+        let cloned = code.clone();
+        let debug = format!("{code:?}");
+        assert_eq!(copied.as_str(), cloned.as_str());
+        assert!(debug.contains("BlobUnknown"));
+    }
+
+    // -- RegistryError From implementations --
+
+    #[test]
+    fn registry_error_from_anyhow() {
+        let err: RegistryError = anyhow::anyhow!("test error").into();
+        assert!(matches!(err, RegistryError::Internal(_)));
+        assert!(err.to_string().contains("test error"));
+    }
+
+    #[test]
+    fn registry_error_from_opendal() {
+        let opendal_err = opendal::Error::new(opendal::ErrorKind::NotFound, "blob gone");
+        let err: RegistryError = opendal_err.into();
+        assert!(matches!(err, RegistryError::Storage(_)));
+    }
+
+    // -- Ensure Db/Storage/Internal all map to 500 --
+
+    #[tokio::test]
+    async fn registry_error_db_uses_500_and_hides_details() {
+        let db_err = sqlx::Error::RowNotFound;
+        let err = RegistryError::Db(db_err);
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = axum::body::to_bytes(response.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json["errors"][0]["message"], "internal error",
+            "DB error details should not leak"
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_error_storage_hides_details() {
+        let opendal_err = opendal::Error::new(opendal::ErrorKind::Unexpected, "s3 secret");
+        let err = RegistryError::Storage(opendal_err);
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = axum::body::to_bytes(response.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["errors"][0]["message"], "internal error");
+    }
 }

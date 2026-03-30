@@ -489,4 +489,155 @@ mod tests {
             "myproject/session-abc12345-*"
         ));
     }
+
+    // -- glob_match edge cases --
+
+    #[test]
+    fn glob_match_empty_pattern_and_input() {
+        assert!(glob_match("", ""));
+    }
+
+    #[test]
+    fn glob_match_star_only_matches_anything() {
+        assert!(glob_match("*", "anything-at-all"));
+        assert!(glob_match("*", ""));
+    }
+
+    #[test]
+    fn glob_match_multiple_stars() {
+        assert!(glob_match("*foo*bar*", "xxxfooyyybarz"));
+        assert!(glob_match("*foo*bar*", "foobar"));
+        assert!(!glob_match("*foo*bar*", "foobaz"));
+    }
+
+    #[test]
+    fn glob_match_leading_star() {
+        assert!(glob_match("*.tar", "image.tar"));
+        assert!(glob_match("*.tar", ".tar"));
+        assert!(!glob_match("*.tar", "image.zip"));
+    }
+
+    #[test]
+    fn glob_match_trailing_star() {
+        assert!(glob_match("prefix*", "prefix-anything"));
+        assert!(glob_match("prefix*", "prefix"));
+        assert!(!glob_match("prefix*", "other"));
+    }
+
+    #[test]
+    fn glob_match_no_star_must_be_exact() {
+        assert!(glob_match("exact", "exact"));
+        assert!(!glob_match("exact", "exacta"));
+        assert!(!glob_match("exact", "exac"));
+    }
+
+    #[test]
+    fn glob_match_pattern_must_anchor_start() {
+        // Pattern "abc*" must match at start
+        assert!(glob_match("abc*", "abcdef"));
+        assert!(!glob_match("abc*", "xabcdef"));
+    }
+
+    #[test]
+    fn glob_match_pattern_must_anchor_end() {
+        // Pattern "*abc" must match at end
+        assert!(glob_match("*abc", "xyzabc"));
+        assert!(!glob_match("*abc", "xyzabcd"));
+    }
+
+    #[test]
+    fn glob_match_middle_star() {
+        assert!(glob_match("a*z", "az"));
+        assert!(glob_match("a*z", "abcz"));
+        assert!(!glob_match("a*z", "abcza"));
+    }
+
+    // -- RepoAccess struct --
+
+    #[test]
+    fn repo_access_struct() {
+        let access = RepoAccess {
+            repository_id: Uuid::nil(),
+            project_id: Some(Uuid::nil()),
+        };
+        assert_eq!(access.repository_id, Uuid::nil());
+        assert_eq!(access.project_id, Some(Uuid::nil()));
+    }
+
+    #[test]
+    fn repo_access_no_project() {
+        let access = RepoAccess {
+            repository_id: Uuid::new_v4(),
+            project_id: None,
+        };
+        assert!(access.project_id.is_none());
+    }
+
+    // -- glob_match: comprehensive edge cases --
+
+    #[test]
+    fn glob_match_empty_pattern_nonempty_input() {
+        assert!(!glob_match("", "something"));
+    }
+
+    #[test]
+    fn glob_match_nonempty_pattern_empty_input() {
+        assert!(!glob_match("abc", ""));
+    }
+
+    #[test]
+    fn glob_match_star_star() {
+        // "**" is just two stars, treated as a single pattern with two segments
+        assert!(glob_match("**", "anything"));
+        assert!(glob_match("**", ""));
+    }
+
+    #[test]
+    fn glob_match_consecutive_stars_with_text() {
+        assert!(glob_match("a**b", "ab"));
+        assert!(glob_match("a**b", "axxb"));
+    }
+
+    #[test]
+    fn glob_match_star_at_both_ends() {
+        assert!(glob_match("*middle*", "start_middle_end"));
+        assert!(glob_match("*middle*", "middle"));
+        assert!(!glob_match("*middle*", "mid"));
+    }
+
+    #[test]
+    fn glob_match_single_char_pattern() {
+        assert!(glob_match("a", "a"));
+        assert!(!glob_match("a", "b"));
+        assert!(!glob_match("a", ""));
+    }
+
+    #[test]
+    fn glob_match_pattern_longer_than_input() {
+        assert!(!glob_match("abcdef", "abc"));
+    }
+
+    // -- matches_tag_pattern: additional edge cases --
+
+    #[test]
+    fn matches_tag_pattern_empty_pattern_empty_ref() {
+        assert!(matches_tag_pattern("", ""));
+    }
+
+    #[test]
+    fn matches_tag_pattern_star_matches_empty() {
+        assert!(matches_tag_pattern("", "*"));
+    }
+
+    #[test]
+    fn matches_tag_pattern_colon_in_pattern() {
+        assert!(matches_tag_pattern("repo:tag", "repo:*"));
+        assert!(matches_tag_pattern("repo:v1.0.0", "repo:v*"));
+    }
+
+    #[test]
+    fn matches_tag_pattern_slash_in_pattern() {
+        assert!(matches_tag_pattern("ns/repo:tag", "ns/repo:*"));
+        assert!(!matches_tag_pattern("other/repo:tag", "ns/repo:*"));
+    }
 }

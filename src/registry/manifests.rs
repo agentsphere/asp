@@ -385,3 +385,93 @@ async fn verify_blob_references(
 fn header_val(s: &str) -> HeaderValue {
     HeaderValue::from_str(s).unwrap_or_else(|_| HeaderValue::from_static(""))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allowed_media_types_contains_oci_manifest() {
+        assert!(ALLOWED_MEDIA_TYPES.contains(&"application/vnd.oci.image.manifest.v1+json"));
+    }
+
+    #[test]
+    fn allowed_media_types_contains_oci_index() {
+        assert!(ALLOWED_MEDIA_TYPES.contains(&"application/vnd.oci.image.index.v1+json"));
+    }
+
+    #[test]
+    fn allowed_media_types_contains_docker_manifest() {
+        assert!(
+            ALLOWED_MEDIA_TYPES.contains(&"application/vnd.docker.distribution.manifest.v2+json")
+        );
+    }
+
+    #[test]
+    fn allowed_media_types_contains_docker_manifest_list() {
+        assert!(
+            ALLOWED_MEDIA_TYPES
+                .contains(&"application/vnd.docker.distribution.manifest.list.v2+json")
+        );
+    }
+
+    #[test]
+    fn allowed_media_types_rejects_unknown() {
+        assert!(!ALLOWED_MEDIA_TYPES.contains(&"application/octet-stream"));
+        assert!(!ALLOWED_MEDIA_TYPES.contains(&"text/plain"));
+        assert!(!ALLOWED_MEDIA_TYPES.contains(&"application/json"));
+    }
+
+    #[test]
+    fn header_val_valid() {
+        let val = header_val("sha256:abc");
+        assert_eq!(val.to_str().unwrap(), "sha256:abc");
+    }
+
+    #[test]
+    fn header_val_invalid_returns_empty() {
+        let val = header_val("bad\nvalue");
+        assert_eq!(val.to_str().unwrap(), "");
+    }
+
+    #[test]
+    fn header_val_content_type() {
+        let val = header_val("application/vnd.oci.image.manifest.v1+json");
+        assert_eq!(
+            val.to_str().unwrap(),
+            "application/vnd.oci.image.manifest.v1+json"
+        );
+    }
+
+    #[test]
+    fn header_val_digest_format() {
+        let hex = "a".repeat(64);
+        let val = header_val(&format!("sha256:{hex}"));
+        assert!(val.to_str().unwrap().starts_with("sha256:"));
+    }
+
+    #[test]
+    fn header_val_location_path() {
+        let val = header_val("/v2/myapp/manifests/sha256:abc123");
+        assert_eq!(val.to_str().unwrap(), "/v2/myapp/manifests/sha256:abc123");
+    }
+
+    #[test]
+    fn header_val_empty() {
+        let val = header_val("");
+        assert_eq!(val.to_str().unwrap(), "");
+    }
+
+    #[test]
+    fn allowed_media_types_length() {
+        assert_eq!(ALLOWED_MEDIA_TYPES.len(), 4);
+    }
+
+    #[test]
+    fn allowed_media_types_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for mt in ALLOWED_MEDIA_TYPES {
+            assert!(seen.insert(mt), "duplicate media type: {mt}");
+        }
+    }
+}

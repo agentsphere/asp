@@ -923,4 +923,269 @@ cccccccccccccccccccccccccccccccccccccccc ddddddddddddddddddddddddddddddddddddddd
         let result = get_tag_sha(Path::new("/nonexistent/repo.git"), "v1.0.0").await;
         assert!(result.is_none());
     }
+
+    // -- parse_ref_updates: additional edge cases --
+
+    #[test]
+    fn parse_ref_updates_only_whitespace_lines() {
+        let input = "   \n   \n   \n";
+        let updates = parse_ref_updates(input);
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn parse_ref_updates_single_field_line() {
+        let input = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n";
+        let updates = parse_ref_updates(input);
+        assert!(updates.is_empty(), "single field should be rejected");
+    }
+
+    #[test]
+    fn parse_ref_updates_empty_refname() {
+        let sha = "a".repeat(40);
+        let input = format!("{sha} {sha} \n");
+        let updates = parse_ref_updates(&input);
+        assert!(updates.is_empty(), "empty refname should be rejected");
+    }
+
+    // -- parse_pack_commands: more edge cases --
+
+    #[test]
+    fn parse_pack_two_refs_with_capabilities() {
+        let old = "a".repeat(40);
+        let new = "b".repeat(40);
+        // First line has capabilities after NUL
+        let cmd1 = format!("{old} {new} refs/heads/main\0 report-status side-band-64k\n");
+        let cmd2 = format!("{old} {new} refs/heads/feature\n");
+        let len1 = cmd1.len() + 4;
+        let len2 = cmd2.len() + 4;
+        let data = format!("{len1:04x}{cmd1}{len2:04x}{cmd2}0000");
+        let updates = parse_pack_commands(data.as_bytes());
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].refname, "refs/heads/main");
+        assert_eq!(updates[1].refname, "refs/heads/feature");
+    }
+
+    #[test]
+    fn parse_pack_deletion() {
+        let old = "a".repeat(40);
+        let new = "0".repeat(40);
+        let cmd = format!("{old} {new} refs/heads/old-branch\n");
+        let pkt_len = cmd.len() + 4;
+        let data = format!("{pkt_len:04x}{cmd}0000");
+        let updates = parse_pack_commands(data.as_bytes());
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].new_sha, new);
+    }
+
+    #[test]
+    fn parse_pack_branch_creation() {
+        let old = "0".repeat(40);
+        let new = "b".repeat(40);
+        let cmd = format!("{old} {new} refs/heads/new-branch\n");
+        let pkt_len = cmd.len() + 4;
+        let data = format!("{pkt_len:04x}{cmd}0000");
+        let updates = parse_pack_commands(data.as_bytes());
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].old_sha, old);
+    }
+
+    // -- extract_pushed_tags: multiple valid tags --
+
+    #[test]
+    fn extract_tags_multiple_valid() {
+        let updates = vec![
+            RefUpdate {
+                old_sha: "a".repeat(40),
+                new_sha: "b".repeat(40),
+                refname: "refs/tags/v1.0.0".into(),
+            },
+            RefUpdate {
+                old_sha: "a".repeat(40),
+                new_sha: "b".repeat(40),
+                refname: "refs/tags/v2.0.0".into(),
+            },
+            RefUpdate {
+                old_sha: "a".repeat(40),
+                new_sha: "b".repeat(40),
+                refname: "refs/tags/v3.0.0-rc.1".into(),
+            },
+        ];
+        let tags = extract_pushed_tags(&updates);
+        assert_eq!(tags, vec!["v1.0.0", "v2.0.0", "v3.0.0-rc.1"]);
+    }
+
+    #[test]
+    fn extract_tags_empty_updates() {
+        let tags = extract_pushed_tags(&[]);
+        assert!(tags.is_empty());
+    }
+
+    // -- PostReceiveParams struct --
+
+    #[test]
+    fn post_receive_params_struct() {
+        let params = PostReceiveParams {
+            project_id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            user_name: "alice".into(),
+            repo_path: std::path::PathBuf::from("/repos/test.git"),
+            default_branch: "main".into(),
+            pushed_branches: vec!["main".into()],
+            pushed_tags: vec!["v1.0.0".into()],
+        };
+        assert_eq!(params.pushed_branches.len(), 1);
+        assert_eq!(params.pushed_tags.len(), 1);
+        assert_eq!(params.user_name, "alice");
+        assert_eq!(params.default_branch, "main");
+    }
+
+    // -- check_file_exists: additional --
+
+    #[tokio::test]
+    async fn check_file_exists_nonexistent_ref() {
+        let result = check_file_exists(
+            Path::new("/nonexistent/repo.git"),
+            "nonexistent-ref",
+            "README.md",
+        )
+        .await;
+        assert!(!result);
+    }
+
+    // -- extract_pushed_branches: deletion of all branches --
+
+    #[test]
+    fn extract_branches_all_deletions() {
+        let updates = vec![
+            RefUpdate {
+                old_sha: "a".repeat(40),
+                new_sha: "0".repeat(40),
+                refname: "refs/heads/branch1".into(),
+            },
+            RefUpdate {
+                old_sha: "b".repeat(40),
+                new_sha: "0".repeat(40),
+                refname: "refs/heads/branch2".into(),
+            },
+        ];
+        let branches = extract_pushed_branches(&updates);
+        assert!(
+            branches.is_empty(),
+            "all deletions should produce no branches"
+        );
+    }
+
+    // -- extract_pushed_tags: mixed valid and dangerous --
+
+    #[test]
+    fn extract_tags_mixed_valid_and_dangerous() {
+        let updates = vec![
+            RefUpdate {
+                old_sha: "a".repeat(40),
+                new_sha: "b".repeat(40),
+                refname: "refs/tags/v1.0.0".into(),
+            },
+            RefUpdate {
+                old_sha: "a".repeat(40),
+                new_sha: "b".repeat(40),
+                refname: "refs/tags/v2;evil".into(),
+            },
+            RefUpdate {
+                old_sha: "a".repeat(40),
+                new_sha: "b".repeat(40),
+                refname: "refs/tags/v3.0.0".into(),
+            },
+        ];
+        let tags = extract_pushed_tags(&updates);
+        assert_eq!(tags, vec!["v1.0.0", "v3.0.0"]);
+    }
+
+    // -- parse_pack_commands: realistic multi-ref push --
+
+    #[test]
+    fn parse_pack_realistic_multi_ref_push() {
+        let old = "a".repeat(40);
+        let new1 = "b".repeat(40);
+        let new2 = "c".repeat(40);
+        // First cmd with capabilities
+        let cmd1 = format!("{old} {new1} refs/heads/main\0 report-status side-band-64k\n");
+        // Second cmd without capabilities
+        let cmd2 = format!("{old} {new2} refs/tags/v1.0.0\n");
+        // Third cmd: branch deletion
+        let zero = "0".repeat(40);
+        let cmd3 = format!("{old} {zero} refs/heads/old-branch\n");
+
+        let len1 = cmd1.len() + 4;
+        let len2 = cmd2.len() + 4;
+        let len3 = cmd3.len() + 4;
+        let data = format!("{len1:04x}{cmd1}{len2:04x}{cmd2}{len3:04x}{cmd3}0000");
+
+        let updates = parse_pack_commands(data.as_bytes());
+        assert_eq!(updates.len(), 3);
+        assert_eq!(updates[0].refname, "refs/heads/main");
+        assert_eq!(updates[1].refname, "refs/tags/v1.0.0");
+        assert_eq!(updates[2].refname, "refs/heads/old-branch");
+        assert_eq!(updates[2].new_sha, zero);
+    }
+
+    // -- parse_pack_commands: edge case with exact boundary --
+
+    #[test]
+    fn parse_pack_exactly_at_data_boundary() {
+        // pkt-line that consumes exactly all remaining bytes before flush
+        let old = "a".repeat(40);
+        let new = "b".repeat(40);
+        let cmd = format!("{old} {new} refs/heads/x\n");
+        let pkt_len = cmd.len() + 4;
+        let data = format!("{pkt_len:04x}{cmd}0000");
+        let updates = parse_pack_commands(data.as_bytes());
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].refname, "refs/heads/x");
+    }
+
+    // -- RefUpdate: edge cases --
+
+    #[test]
+    fn ref_update_with_long_refname() {
+        let long_ref = format!("refs/heads/{}", "a".repeat(200));
+        let update = RefUpdate {
+            old_sha: "a".repeat(40),
+            new_sha: "b".repeat(40),
+            refname: long_ref.clone(),
+        };
+        assert_eq!(update.refname, long_ref);
+    }
+
+    // -- PostReceiveParams: edge cases --
+
+    #[test]
+    fn post_receive_params_empty_branches_and_tags() {
+        let params = PostReceiveParams {
+            project_id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            user_name: "bob".into(),
+            repo_path: std::path::PathBuf::from("/repos/test.git"),
+            default_branch: "main".into(),
+            pushed_branches: vec![],
+            pushed_tags: vec![],
+        };
+        assert!(params.pushed_branches.is_empty());
+        assert!(params.pushed_tags.is_empty());
+    }
+
+    #[test]
+    fn post_receive_params_multiple_branches_and_tags() {
+        let params = PostReceiveParams {
+            project_id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            user_name: "alice".into(),
+            repo_path: std::path::PathBuf::from("/repos/test.git"),
+            default_branch: "main".into(),
+            pushed_branches: vec!["main".into(), "develop".into(), "feature/x".into()],
+            pushed_tags: vec!["v1.0.0".into(), "v2.0.0".into()],
+        };
+        assert_eq!(params.pushed_branches.len(), 3);
+        assert_eq!(params.pushed_tags.len(), 2);
+    }
 }

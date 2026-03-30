@@ -1694,4 +1694,178 @@ mod tests {
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
+
+    // -- read_dir_yaml_at_ref: trailing slash handling --
+
+    #[tokio::test]
+    async fn read_dir_yaml_trailing_slash_stripped() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let (project_repo, sha) = create_project_repo_with_deploy(
+            &tmp,
+            &[("deploy/app.yaml", "kind: Deployment\nname: app")],
+        )
+        .await;
+
+        // Call with trailing slash
+        let result = read_dir_yaml_at_ref(&project_repo, &sha, "deploy/").await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("kind: Deployment"));
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    // -- read_dir_yaml_at_ref: yml extension --
+
+    #[tokio::test]
+    async fn read_dir_yaml_includes_yml_extension() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let (project_repo, sha) = create_project_repo_with_deploy(
+            &tmp,
+            &[("deploy/service.yml", "kind: Service\nname: svc")],
+        )
+        .await;
+
+        let result = read_dir_yaml_at_ref(&project_repo, &sha, "deploy").await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("kind: Service"));
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    // -- merge_branch --
+
+    #[tokio::test]
+    async fn merge_branch_integrates_changes() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        // Create a staging branch with content
+        ensure_branch_exists(&repo_path, "staging").await.unwrap();
+        write_file_to_repo(
+            &repo_path,
+            "staging",
+            "deploy/app.yaml",
+            "kind: Deployment\nv2",
+        )
+        .await
+        .unwrap();
+
+        // Create production branch
+        ensure_branch_exists(&repo_path, "production")
+            .await
+            .unwrap();
+
+        // Merge staging into production
+        let sha = merge_branch(&repo_path, "staging", "production")
+            .await
+            .unwrap();
+        assert!(!sha.is_empty());
+
+        // Verify production now has the file from staging
+        let content = read_file_at_ref(&repo_path, &sha, "deploy/app.yaml")
+            .await
+            .unwrap();
+        assert!(content.contains("v2"));
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    // -- validate_commit_sha: 6-char boundary --
+
+    #[test]
+    fn validate_commit_sha_exactly_6_fails() {
+        assert!(validate_commit_sha("abcdef").is_err());
+    }
+
+    // -- init_ops_repo: creates correct directory structure --
+
+    #[tokio::test]
+    async fn init_ops_repo_appends_git_suffix() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&tmp).await.unwrap();
+
+        let path = init_ops_repo(&tmp, "test-repo", "main").await.unwrap();
+        assert!(path.to_str().unwrap().ends_with("test-repo.git"));
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    // -- write_file_to_repo: nested directories --
+
+    #[tokio::test]
+    async fn write_file_to_nested_directory() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        let sha = write_file_to_repo(
+            &repo_path,
+            "main",
+            "deep/nested/dir/config.yaml",
+            "key: value",
+        )
+        .await
+        .unwrap();
+        assert!(!sha.is_empty());
+
+        let content = read_file_at_ref(&repo_path, "main", "deep/nested/dir/config.yaml")
+            .await
+            .unwrap();
+        assert_eq!(content, "key: value");
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    // -- commit_values: image_ref in commit message --
+
+    #[tokio::test]
+    async fn commit_values_without_image_ref() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        // Values without image_ref field
+        let values = serde_json::json!({
+            "replicas": 2,
+            "memory": "512Mi"
+        });
+
+        let sha = commit_values(&repo_path, "main", "staging", &values)
+            .await
+            .unwrap();
+        assert!(!sha.is_empty());
+
+        let read_back = read_values(&repo_path, "main", "staging").await.unwrap();
+        assert_eq!(read_back["replicas"], 2);
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    // -- read_values: missing file --
+
+    #[tokio::test]
+    async fn read_values_missing_environment_errors() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        let result = read_values(&repo_path, "main", "nonexistent").await;
+        assert!(result.is_err());
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    // -- resolve_manifest_path: additional edge cases --
+
+    #[test]
+    fn manifest_path_with_leading_slash_in_subpath() {
+        let path =
+            resolve_manifest_path(Path::new("/data/ops"), "myrepo", "/subdir/", "deploy.yaml")
+                .unwrap();
+        assert_eq!(path, PathBuf::from("/data/ops/myrepo/subdir/deploy.yaml"));
+    }
+
+    #[test]
+    fn manifest_path_multiple_subdirectories() {
+        let path = resolve_manifest_path(Path::new("/data/ops"), "myrepo", "/a/b/c", "deploy.yaml")
+            .unwrap();
+        assert_eq!(path, PathBuf::from("/data/ops/myrepo/a/b/c/deploy.yaml"));
+    }
 }

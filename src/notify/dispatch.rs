@@ -249,3 +249,54 @@ pub async fn on_alert_firing(state: &AppState, user_id: Uuid, alert_id: Uuid) {
     )
     .await;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notify_channel_as_str() {
+        assert_eq!(NotifyChannel::InApp.as_str(), "in_app");
+        assert_eq!(NotifyChannel::Email.as_str(), "email");
+        assert_eq!(NotifyChannel::Webhook.as_str(), "webhook");
+    }
+
+    #[test]
+    fn notify_channel_serialize() {
+        assert_eq!(
+            serde_json::to_string(&NotifyChannel::InApp).unwrap(),
+            "\"in_app\""
+        );
+        assert_eq!(
+            serde_json::to_string(&NotifyChannel::Email).unwrap(),
+            "\"email\""
+        );
+        assert_eq!(
+            serde_json::to_string(&NotifyChannel::Webhook).unwrap(),
+            "\"webhook\""
+        );
+    }
+
+    #[test]
+    fn notify_channel_deserialize() {
+        let ch: NotifyChannel = serde_json::from_str("\"in_app\"").unwrap();
+        assert_eq!(ch.as_str(), "in_app");
+        let ch: NotifyChannel = serde_json::from_str("\"email\"").unwrap();
+        assert_eq!(ch.as_str(), "email");
+        let ch: NotifyChannel = serde_json::from_str("\"webhook\"").unwrap();
+        assert_eq!(ch.as_str(), "webhook");
+    }
+
+    #[test]
+    fn notify_channel_debug() {
+        let debug = format!("{:?}", NotifyChannel::Email);
+        assert_eq!(debug, "Email");
+    }
+
+    #[test]
+    fn notify_channel_clone() {
+        let ch = NotifyChannel::InApp;
+        let cloned = ch.clone();
+        assert_eq!(ch.as_str(), cloned.as_str());
+    }
+}

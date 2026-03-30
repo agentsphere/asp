@@ -438,7 +438,7 @@ async fn create_pipeline_with_steps(
                      --context=dir:///workspace \
                      --dockerfile={dockerfile} \
                      --destination=${{REGISTRY}}/${{PLATFORM_PROJECT_NAME}}/{image_name}:${{COMMIT_SHA}}{version_dest} \
-                     --build-arg=PLATFORM_RUNNER_IMAGE=${{REGISTRY}}/platform-runner:latest \
+                     --build-arg=PLATFORM_RUNNER_IMAGE=${{REGISTRY}}/platform-runner:v1 \
                      --insecure --insecure-registry=${{REGISTRY}} \
                      --insecure-pull \
                      --cache=true --cache-repo=${{REGISTRY}}/${{PLATFORM_PROJECT_NAME}}/cache"
@@ -1076,5 +1076,186 @@ mod tests {
         let keys: Vec<&String> = result.keys().collect();
         // BTreeMap sorts alphabetically
         assert_eq!(keys, vec!["app", "worker"]);
+    }
+
+    // -- increment_patch edge cases --
+
+    #[test]
+    fn increment_patch_preserves_major_minor() {
+        assert_eq!(increment_patch("5.10.0").unwrap(), "5.10.1");
+        assert_eq!(increment_patch("0.0.0").unwrap(), "0.0.1");
+    }
+
+    #[test]
+    fn increment_patch_large_patch_number() {
+        assert_eq!(increment_patch("1.0.999").unwrap(), "1.0.1000");
+    }
+
+    #[test]
+    fn increment_patch_empty_string() {
+        assert!(increment_patch("").is_err());
+    }
+
+    #[test]
+    fn increment_patch_single_number() {
+        assert!(increment_patch("42").is_err());
+    }
+
+    #[test]
+    fn increment_patch_four_parts() {
+        assert!(increment_patch("1.2.3.4").is_err());
+    }
+
+    // -- is_valid_semver edge cases --
+
+    #[test]
+    fn is_valid_semver_leading_zeros() {
+        // Leading zeros are technically valid digits
+        assert!(is_valid_semver("01.02.03"));
+    }
+
+    #[test]
+    fn is_valid_semver_extra_dots() {
+        assert!(!is_valid_semver("1.2.3."));
+    }
+
+    // -- parse_version_file edge cases --
+
+    #[test]
+    fn parse_version_file_trailing_newline() {
+        let result = parse_version_file("app=1.0.0\n").unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result["app"], "1.0.0");
+    }
+
+    #[test]
+    fn parse_version_file_mixed_comments_and_blanks() {
+        let content = "\n# header\n\napp=1.0.0\n\n# footer\nworker=2.0.0\n\n";
+        let result = parse_version_file(content).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result["app"], "1.0.0");
+        assert_eq!(result["worker"], "2.0.0");
+    }
+
+    #[test]
+    fn parse_version_file_duplicate_keys() {
+        // BTreeMap replaces the earlier entry
+        let result = parse_version_file("app=1.0.0\napp=2.0.0").unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result["app"], "2.0.0");
+    }
+
+    #[test]
+    fn parse_version_file_key_with_dashes() {
+        let result = parse_version_file("my-service=1.0.0").unwrap();
+        assert_eq!(result["my-service"], "1.0.0");
+    }
+
+    #[test]
+    fn parse_version_file_rejects_empty_value() {
+        // Empty value after = is not valid semver
+        assert!(parse_version_file("app=").is_err());
+    }
+
+    #[test]
+    fn parse_version_file_rejects_value_with_prefix() {
+        assert!(parse_version_file("app=v1.0.0").is_err());
+    }
+
+    // -- VersionInfo struct --
+
+    #[test]
+    fn version_info_fields() {
+        let mut images = BTreeMap::new();
+        images.insert("app".to_string(), "1.0.0".to_string());
+        let vi = VersionInfo {
+            images: images.clone(),
+            raw: "app=1.0.0".to_string(),
+        };
+        assert_eq!(vi.images, images);
+        assert_eq!(vi.raw, "app=1.0.0");
+    }
+
+    #[test]
+    fn version_info_clone() {
+        let mut images = BTreeMap::new();
+        images.insert("app".to_string(), "1.0.0".to_string());
+        let vi = VersionInfo {
+            images,
+            raw: "app=1.0.0".to_string(),
+        };
+        let cloned = vi.clone();
+        assert_eq!(cloned.raw, vi.raw);
+        assert_eq!(cloned.images, vi.images);
+    }
+
+    // -- PushTriggerParams / MrTriggerParams / TagTriggerParams struct usage --
+
+    #[test]
+    fn push_trigger_params_fields() {
+        let params = PushTriggerParams {
+            project_id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            repo_path: std::path::PathBuf::from("/tmp/test"),
+            branch: "main".to_string(),
+            commit_sha: Some("abc123".to_string()),
+        };
+        assert_eq!(params.branch, "main");
+        assert_eq!(params.commit_sha, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn mr_trigger_params_fields() {
+        let params = MrTriggerParams {
+            project_id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            repo_path: std::path::PathBuf::from("/tmp/test"),
+            source_branch: "feature/login".to_string(),
+            commit_sha: None,
+            action: "opened".to_string(),
+        };
+        assert_eq!(params.source_branch, "feature/login");
+        assert_eq!(params.action, "opened");
+        assert!(params.commit_sha.is_none());
+    }
+
+    #[test]
+    fn tag_trigger_params_fields() {
+        let params = TagTriggerParams {
+            project_id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            repo_path: std::path::PathBuf::from("/tmp/test"),
+            tag_name: "v1.0.0".to_string(),
+            commit_sha: Some("deadbeef".to_string()),
+        };
+        assert_eq!(params.tag_name, "v1.0.0");
+        assert_eq!(params.commit_sha.as_deref(), Some("deadbeef"));
+    }
+
+    // -- ref_to_branch edge cases --
+
+    #[test]
+    fn ref_to_branch_double_prefix() {
+        // "refs/heads/refs/heads/main" strips only the first prefix
+        assert_eq!(
+            ref_to_branch("refs/heads/refs/heads/main"),
+            "refs/heads/main"
+        );
+    }
+
+    #[test]
+    fn ref_to_branch_only_slash() {
+        assert_eq!(ref_to_branch("/"), "/");
+    }
+
+    // -- should_trigger_push edge cases --
+
+    #[test]
+    fn should_trigger_empty_branches_matches_all() {
+        let def = definition::parse(
+            "pipeline:\n  steps:\n    - name: test\n      image: alpine\n  on:\n    push:\n      branches: []\n",
+        )
+        .unwrap();
+        assert!(should_trigger_push(&def, "anything"));
     }
 }

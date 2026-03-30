@@ -1229,4 +1229,121 @@ mod tests {
             assert!(!t.should_fire);
         }
     }
+
+    // -- parse_alert_query additional edge cases --
+
+    #[test]
+    fn parse_query_multiple_spaces_between_parts() {
+        let q = parse_alert_query("metric:cpu_usage   agg:sum   window:600").unwrap();
+        assert_eq!(q.metric_name, "cpu_usage");
+        assert_eq!(q.aggregation, "sum");
+        assert_eq!(q.window_secs, 600);
+    }
+
+    #[test]
+    fn parse_query_metric_only_uses_defaults() {
+        let q = parse_alert_query("metric:memory_usage").unwrap();
+        assert_eq!(q.metric_name, "memory_usage");
+        assert_eq!(q.aggregation, "avg");
+        assert_eq!(q.window_secs, 300);
+        assert!(q.labels.is_none());
+    }
+
+    #[test]
+    fn parse_query_labels_valid_json_object() {
+        let q =
+            parse_alert_query(r#"metric:errors labels:{"env":"prod","service":"api"} agg:count"#)
+                .unwrap();
+        assert_eq!(q.aggregation, "count");
+        let labels = q.labels.unwrap();
+        assert_eq!(labels["env"], "prod");
+        assert_eq!(labels["service"], "api");
+    }
+
+    #[test]
+    fn parse_query_labels_array_json() {
+        // Array is valid JSON, even if not semantically useful
+        let q = parse_alert_query(r#"metric:test labels:[1,2,3]"#).unwrap();
+        let labels = q.labels.unwrap();
+        assert!(labels.is_array());
+    }
+
+    #[test]
+    fn parse_query_too_long_rejected() {
+        let long_query = format!("metric:{}", "x".repeat(1001));
+        assert!(parse_alert_query(&long_query).is_err());
+    }
+
+    #[test]
+    fn parse_query_unknown_prefix_ignored() {
+        // Unknown prefixes like "foo:bar" are silently ignored
+        let q = parse_alert_query("metric:cpu foo:bar baz:qux").unwrap();
+        assert_eq!(q.metric_name, "cpu");
+        assert_eq!(q.aggregation, "avg"); // default, since no agg: prefix
+    }
+
+    // -- check_condition additional edge cases --
+
+    #[test]
+    fn condition_eq_both_none_returns_false() {
+        // Both threshold and value are None (not absent condition)
+        assert!(!check_condition("eq", None, None));
+    }
+
+    #[test]
+    fn condition_lt_equal_values_returns_false() {
+        assert!(!check_condition("lt", Some(10.0), Some(10.0)));
+    }
+
+    #[test]
+    fn condition_gt_equal_values_returns_false() {
+        assert!(!check_condition("gt", Some(10.0), Some(10.0)));
+    }
+
+    #[test]
+    fn condition_absent_with_some_threshold_returns_false() {
+        // absent means no value; having a value means not absent
+        assert!(!check_condition("absent", Some(10.0), Some(5.0)));
+    }
+
+    #[test]
+    fn condition_gt_negative_values() {
+        assert!(check_condition("gt", Some(-10.0), Some(-5.0)));
+        assert!(!check_condition("gt", Some(-5.0), Some(-10.0)));
+    }
+
+    // -- AlertState edge cases --
+
+    #[test]
+    fn alert_state_pending_exactly_at_hold_period() {
+        let now = Utc::now();
+        let mut state = AlertState {
+            first_triggered: Some(now - chrono::Duration::seconds(60)),
+            firing: false,
+        };
+        let t = next_alert_state(&mut state, true, now, 60);
+        // Exactly at the boundary — should fire (>=)
+        assert!(state.firing);
+        assert!(t.should_fire);
+    }
+
+    #[test]
+    fn alert_state_with_zero_hold_period() {
+        let now = Utc::now();
+        let mut state = AlertState {
+            first_triggered: None,
+            firing: false,
+        };
+        // With for_seconds=0, immediately transitions
+        let t = next_alert_state(&mut state, true, now, 0);
+        assert!(state.firing);
+        assert!(t.should_fire);
+    }
+
+    // -- validate_condition --
+
+    #[test]
+    fn validate_condition_whitespace_rejected() {
+        assert!(validate_condition(" gt ").is_err());
+    }
 }

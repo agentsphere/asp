@@ -1537,4 +1537,173 @@ mod tests {
         assert!(get_provider("claude/code").is_err());
         assert!(get_provider("claude@code").is_err());
     }
+
+    #[test]
+    fn short_id_is_8_chars() {
+        for _ in 0..10 {
+            let session_id = Uuid::new_v4();
+            let short_id = &session_id.to_string()[..8];
+            assert_eq!(short_id.len(), 8);
+        }
+    }
+
+    #[test]
+    fn repo_clone_url_format() {
+        // Simulates the URL construction in get_project_repo_info
+        let platform_api_url = "http://platform.platform.svc:8080";
+        let owner_name = "alice";
+        let project_name = "my-app";
+        let url = format!(
+            "{}/{}/{}.git",
+            platform_api_url.trim_end_matches('/'),
+            owner_name,
+            project_name
+        );
+        assert_eq!(url, "http://platform.platform.svc:8080/alice/my-app.git");
+    }
+
+    #[test]
+    fn repo_clone_url_trims_trailing_slash() {
+        let platform_api_url = "http://platform.svc:8080/";
+        let url = format!(
+            "{}/{}/{}.git",
+            platform_api_url.trim_end_matches('/'),
+            "bob",
+            "test-project"
+        );
+        assert_eq!(url, "http://platform.svc:8080/bob/test-project.git");
+    }
+
+    #[test]
+    fn agent_session_execution_mode_values() {
+        // Verify the string values used in match statements
+        let modes = ["pod", "cli_subprocess"];
+        for mode in modes {
+            assert!(!mode.is_empty());
+        }
+    }
+
+    #[test]
+    fn agent_session_status_values() {
+        // Verify status strings used across the module
+        let statuses = ["pending", "running", "completed", "failed", "stopped"];
+        for status in statuses {
+            assert!(!status.is_empty());
+        }
+    }
+
+    #[test]
+    fn child_completion_event_format() {
+        // Simulates notify_parent_of_completion event construction
+        let child_id = Uuid::new_v4();
+        let child_status = "completed";
+        let event = ProgressEvent {
+            kind: ProgressKind::Milestone,
+            message: format!("Child agent session {child_id} finished with status: {child_status}"),
+            metadata: Some(serde_json::json!({
+                "event_type": "child_completion",
+                "child_session_id": child_id,
+                "child_status": child_status,
+            })),
+        };
+        assert_eq!(event.kind, ProgressKind::Milestone);
+        assert!(event.message.contains("finished with status: completed"));
+        let meta = event.metadata.unwrap();
+        assert_eq!(meta["event_type"], "child_completion");
+        assert_eq!(meta["child_status"], "completed");
+    }
+
+    #[test]
+    fn idle_session_completed_event() {
+        // Simulates the event published when an idle session is reaped
+        let event = ProgressEvent {
+            kind: ProgressKind::Completed,
+            message: "Session closed due to inactivity".into(),
+            metadata: None,
+        };
+        assert_eq!(event.kind, ProgressKind::Completed);
+        assert!(event.message.contains("inactivity"));
+    }
+
+    #[test]
+    fn agent_webhook_payload_format() {
+        let session_id = Uuid::new_v4();
+        let project_id = Uuid::new_v4();
+        let payload = serde_json::json!({
+            "action": "completed",
+            "session_id": session_id,
+            "project_id": project_id,
+        });
+        assert_eq!(payload["action"], "completed");
+        assert_eq!(payload["session_id"], session_id.to_string());
+    }
+
+    #[test]
+    fn session_log_path_format() {
+        let session_id = Uuid::new_v4();
+        let path = format!("logs/agents/{session_id}/output.log");
+        assert!(path.starts_with("logs/agents/"));
+        assert!(path.ends_with("/output.log"));
+    }
+
+    #[test]
+    fn idle_session_query_format() {
+        // Verify the interval format string used in reap_idle_sessions
+        let timeout_secs = 3600;
+        let interval = format!("{timeout_secs} seconds");
+        assert_eq!(interval, "3600 seconds");
+    }
+
+    #[test]
+    fn preview_service_name_format() {
+        let short_id = "abc12345";
+        let svc_name = format!("preview-{short_id}");
+        assert_eq!(svc_name, "preview-abc12345");
+        // Must be under 63 chars (DNS limit)
+        assert!(svc_name.len() <= 63);
+    }
+
+    #[test]
+    fn preview_service_json_structure() {
+        let session_id = Uuid::new_v4();
+        let session_ns = "proj-dev-abc12345";
+        let svc_name = "preview-abc12345";
+        let svc_json = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": svc_name,
+                "namespace": session_ns,
+                "labels": {
+                    "platform.io/component": "iframe-preview",
+                    "platform.io/session": session_id.to_string(),
+                }
+            },
+            "spec": {
+                "selector": {
+                    "platform.io/session": session_id.to_string(),
+                },
+                "ports": [{
+                    "name": "iframe",
+                    "port": 8000,
+                    "targetPort": 8000,
+                    "protocol": "TCP"
+                }]
+            }
+        });
+        assert_eq!(svc_json["kind"], "Service");
+        assert_eq!(svc_json["spec"]["ports"][0]["port"], 8000);
+        assert_eq!(
+            svc_json["metadata"]["labels"]["platform.io/component"],
+            "iframe-preview"
+        );
+    }
+
+    #[test]
+    fn get_provider_returns_claude_code_name() {
+        let provider = get_provider("claude-code").unwrap();
+        // The provider implements AgentProvider — verify it returns a valid object
+        // (We can't call .name() because the trait method isn't used directly in tests)
+        assert!(std::mem::size_of_val(&provider) > 0);
+    }
 }

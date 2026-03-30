@@ -331,6 +331,164 @@ LR+IPE/XK6cA/j6YvUkcTSPKKxlR8cf8PQKdl8Y/k9BqLZmX8rsNI7cG
     }
 
     #[test]
+    fn test_parse_gpg_key_whitespace_only() {
+        let result = parse_gpg_public_key("   \n\t  ");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_gpg_key_whitespace_around_valid_key() {
+        // Leading/trailing whitespace should be trimmed
+        let armor_with_space = format!("  \n{TEST_ED25519_GPG_KEY}\n  ");
+        let result = parse_gpg_public_key(&armor_with_space);
+        assert!(result.is_ok(), "whitespace around valid key should be ok");
+    }
+
+    #[test]
+    fn test_gpg_key_error_display() {
+        assert_eq!(
+            GpgKeyError::InvalidArmor.to_string(),
+            "invalid PGP public key armor"
+        );
+        assert_eq!(
+            GpgKeyError::MetadataError.to_string(),
+            "failed to extract key metadata"
+        );
+    }
+
+    #[test]
+    fn test_gpg_key_error_to_api_error() {
+        let api_err: crate::error::ApiError = GpgKeyError::InvalidArmor.into();
+        match api_err {
+            crate::error::ApiError::BadRequest(msg) => {
+                assert!(msg.contains("invalid PGP public key armor"));
+            }
+            other => panic!("expected BadRequest, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_extract_email_from_uid_standard() {
+        assert_eq!(
+            extract_email_from_uid("Alice <alice@example.com>"),
+            Some("alice@example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_email_from_uid_no_brackets() {
+        assert_eq!(extract_email_from_uid("Alice alice@example.com"), None);
+    }
+
+    #[test]
+    fn test_extract_email_from_uid_empty_brackets() {
+        // "<>" — start=0, end=1, end > start + 1 is false → None
+        assert_eq!(extract_email_from_uid("<>"), None);
+    }
+
+    #[test]
+    fn test_extract_email_from_uid_only_open_bracket() {
+        assert_eq!(extract_email_from_uid("Alice <alice@example.com"), None);
+    }
+
+    #[test]
+    fn test_extract_email_from_uid_only_close_bracket() {
+        assert_eq!(extract_email_from_uid("Alice alice@example.com>"), None);
+    }
+
+    #[test]
+    fn test_extract_email_from_uid_complex_name() {
+        assert_eq!(
+            extract_email_from_uid("John Q. Public Jr. III <john@company.org>"),
+            Some("john@company.org".to_string())
+        );
+    }
+
+    #[test]
+    fn test_verify_email_match_case_variations() {
+        let emails = vec!["User@EXAMPLE.com".to_string()];
+        assert!(verify_email_match(&emails, "user@example.com"));
+        assert!(verify_email_match(&emails, "USER@EXAMPLE.COM"));
+        assert!(verify_email_match(&emails, "User@EXAMPLE.com"));
+    }
+
+    #[test]
+    fn test_parsed_gpg_key_debug() {
+        let parsed = parse_gpg_public_key(TEST_ED25519_GPG_KEY).unwrap();
+        let debug = format!("{parsed:?}");
+        assert!(debug.contains("ParsedGpgKey"));
+        assert!(debug.contains("fingerprint"));
+    }
+
+    #[test]
+    fn test_parsed_gpg_key_clone() {
+        let parsed = parse_gpg_public_key(TEST_ED25519_GPG_KEY).unwrap();
+        let cloned = parsed.clone();
+        assert_eq!(cloned.fingerprint, parsed.fingerprint);
+        assert_eq!(cloned.key_id, parsed.key_id);
+        assert_eq!(cloned.emails, parsed.emails);
+        assert_eq!(cloned.can_sign, parsed.can_sign);
+    }
+
+    #[test]
+    fn test_parse_rsa_key_can_sign() {
+        let parsed = parse_gpg_public_key(TEST_RSA_GPG_KEY).unwrap();
+        assert!(parsed.can_sign, "RSA signing key should have can_sign=true");
+    }
+
+    #[test]
+    fn test_parse_rsa_key_key_id_length() {
+        let parsed = parse_gpg_public_key(TEST_RSA_GPG_KEY).unwrap();
+        assert_eq!(parsed.key_id.len(), 16);
+        assert!(parsed.fingerprint.ends_with(&parsed.key_id));
+    }
+
+    #[test]
+    fn test_parse_rsa_key_has_public_key_bytes() {
+        let parsed = parse_gpg_public_key(TEST_RSA_GPG_KEY).unwrap();
+        assert!(
+            !parsed.public_key_bytes.is_empty(),
+            "RSA key should have non-empty serialized bytes"
+        );
+    }
+
+    #[test]
+    fn test_parse_rsa_key_has_armor() {
+        let parsed = parse_gpg_public_key(TEST_RSA_GPG_KEY).unwrap();
+        assert!(
+            parsed
+                .public_key_armor
+                .contains("-----BEGIN PGP PUBLIC KEY BLOCK-----"),
+            "RSA key armor should contain BEGIN marker"
+        );
+        assert!(
+            parsed
+                .public_key_armor
+                .contains("-----END PGP PUBLIC KEY BLOCK-----"),
+            "RSA key armor should contain END marker"
+        );
+    }
+
+    #[test]
+    fn test_verify_email_match_special_chars_in_email() {
+        let emails = vec!["user+tag@sub.example.com".to_string()];
+        assert!(verify_email_match(&emails, "user+tag@sub.example.com"));
+        assert!(verify_email_match(&emails, "USER+TAG@SUB.EXAMPLE.COM"));
+    }
+
+    #[test]
+    fn test_extract_email_from_uid_multiple_brackets() {
+        // Should take the first pair of < >
+        let result = extract_email_from_uid("Name <first@e.com> <second@e.com>");
+        assert_eq!(result, Some("first@e.com".to_string()));
+    }
+
+    #[test]
+    fn test_extract_email_from_uid_empty_string() {
+        assert_eq!(extract_email_from_uid(""), None);
+    }
+
+    #[test]
     fn test_parse_gpg_key_serialized_bytes_not_empty() {
         let parsed = parse_gpg_public_key(TEST_ED25519_GPG_KEY).unwrap();
         assert!(!parsed.public_key_bytes.is_empty());

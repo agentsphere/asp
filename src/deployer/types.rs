@@ -965,4 +965,145 @@ mod tests {
             Some("panic_count")
         );
     }
+
+    #[test]
+    fn metric_gate_custom_name() {
+        let json = serde_json::json!({
+            "metric": "custom",
+            "name": "custom/latency_p99",
+            "condition": "lt",
+            "threshold": 200.0,
+            "aggregation": "max",
+            "window": 300,
+        });
+        let gate: MetricGate = serde_json::from_value(json).unwrap();
+        assert_eq!(gate.metric, "custom");
+        assert_eq!(gate.name.as_deref(), Some("custom/latency_p99"));
+        assert_eq!(gate.aggregation, "max");
+        assert_eq!(gate.window, 300);
+    }
+
+    #[test]
+    fn release_health_unknown_roundtrip() {
+        let h: ReleaseHealth = "unknown".parse().unwrap();
+        assert_eq!(h.as_str(), "unknown");
+        assert_eq!(h.to_string(), "unknown");
+    }
+
+    #[test]
+    fn release_health_unknown_parse_errors() {
+        assert!("bogus".parse::<ReleaseHealth>().is_err());
+    }
+
+    #[test]
+    fn analysis_verdict_parse_errors() {
+        assert!("bogus".parse::<AnalysisVerdict>().is_err());
+    }
+
+    #[test]
+    fn release_phase_parse_unknown_returns_none() {
+        assert!(ReleasePhase::parse("unknown_phase").is_none());
+        assert!(ReleasePhase::parse("").is_none());
+    }
+
+    #[test]
+    fn promoting_cannot_hold() {
+        assert!(!ReleasePhase::Promoting.can_transition_to(ReleasePhase::Holding));
+    }
+
+    #[test]
+    fn release_health_all_variants_serde() {
+        for (s, variant) in [
+            ("unknown", ReleaseHealth::Unknown),
+            ("healthy", ReleaseHealth::Healthy),
+            ("degraded", ReleaseHealth::Degraded),
+            ("unhealthy", ReleaseHealth::Unhealthy),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, format!("\"{s}\""));
+            let parsed: ReleaseHealth = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn canary_config_full_roundtrip() {
+        let config = CanaryRolloutConfig {
+            stable_service: "api-stable".into(),
+            canary_service: "api-canary".into(),
+            steps: vec![10, 50, 100],
+            interval: 60,
+            min_requests: 500,
+            max_failures: 5,
+            progress_gates: vec![
+                MetricGate {
+                    metric: "error_rate".into(),
+                    name: None,
+                    condition: "lt".into(),
+                    threshold: 0.01,
+                    aggregation: "avg".into(),
+                    window: 120,
+                },
+                MetricGate {
+                    metric: "custom".into(),
+                    name: Some("latency_p99".into()),
+                    condition: "lt".into(),
+                    threshold: 200.0,
+                    aggregation: "max".into(),
+                    window: 300,
+                },
+            ],
+            rollback_triggers: vec![],
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        let parsed: CanaryRolloutConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.stable_service, "api-stable");
+        assert_eq!(parsed.canary_service, "api-canary");
+        assert_eq!(parsed.steps, vec![10, 50, 100]);
+        assert_eq!(parsed.interval, 60);
+        assert_eq!(parsed.min_requests, 500);
+        assert_eq!(parsed.max_failures, 5);
+        assert_eq!(parsed.progress_gates.len(), 2);
+        assert_eq!(
+            parsed.progress_gates[1].name.as_deref(),
+            Some("latency_p99")
+        );
+    }
+
+    #[test]
+    fn ab_test_config_custom_duration() {
+        let json = serde_json::json!({
+            "control_service": "ctrl",
+            "treatment_service": "treat",
+            "match": { "headers": {} },
+            "success_metric": "conversion_rate",
+            "success_condition": "gt",
+            "duration": 3600,
+            "min_samples": 50,
+        });
+        let config: AbTestRolloutConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.duration, 3600);
+        assert_eq!(config.min_samples, 50);
+    }
+
+    #[test]
+    fn ab_test_match_empty_headers() {
+        let json = serde_json::json!({ "headers": {} });
+        let m: AbTestMatch = serde_json::from_value(json).unwrap();
+        assert!(m.headers.is_empty());
+    }
+
+    #[test]
+    fn ab_test_match_multiple_headers() {
+        let json = serde_json::json!({
+            "headers": {
+                "x-experiment": "treatment",
+                "x-variant": "B"
+            }
+        });
+        let m: AbTestMatch = serde_json::from_value(json).unwrap();
+        assert_eq!(m.headers.len(), 2);
+        assert_eq!(m.headers.get("x-experiment"), Some(&"treatment".into()));
+        assert_eq!(m.headers.get("x-variant"), Some(&"B".into()));
+    }
 }

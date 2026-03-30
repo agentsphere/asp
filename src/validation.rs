@@ -1114,6 +1114,222 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // is_private_ip — IPv6 edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ipv6_unique_local_is_private() {
+        let ip: IpAddr = "fd00::1".parse().unwrap();
+        assert!(is_private_ip(ip), "fd00::/8 should be private");
+    }
+
+    #[test]
+    fn ipv6_link_local_is_private() {
+        let ip: IpAddr = "fe80::1".parse().unwrap();
+        assert!(is_private_ip(ip), "fe80::/10 should be private");
+    }
+
+    #[test]
+    fn ipv6_loopback_is_private() {
+        let ip: IpAddr = "::1".parse().unwrap();
+        assert!(is_private_ip(ip), "::1 should be private");
+    }
+
+    #[test]
+    fn ipv6_unspecified_is_private() {
+        let ip: IpAddr = "::".parse().unwrap();
+        assert!(is_private_ip(ip), ":: should be private");
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_private_is_private() {
+        // ::ffff:10.0.0.1 is an IPv4-mapped IPv6 address
+        let ip: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
+        assert!(
+            is_private_ip(ip),
+            "IPv4-mapped private IPv6 should be private"
+        );
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_public_is_not_private() {
+        let ip: IpAddr = "::ffff:8.8.8.8".parse().unwrap();
+        assert!(
+            !is_private_ip(ip),
+            "IPv4-mapped public IPv6 should not be private"
+        );
+    }
+
+    #[test]
+    fn ipv6_global_unicast_is_not_private() {
+        let ip: IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(
+            !is_private_ip(ip),
+            "global unicast IPv6 should not be private"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // check_ssrf_url — additional edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn check_ssrf_url_rejects_ipv6_private_bracket() {
+        // IPv6 literal in URL with brackets
+        assert!(check_ssrf_url("http://[::1]:8080/hook", &["http", "https"]).is_err());
+    }
+
+    #[test]
+    fn check_ssrf_url_rejects_invalid_url() {
+        assert!(check_ssrf_url("http:// invalid", &["http", "https"]).is_err());
+    }
+
+    #[test]
+    fn check_ssrf_url_rejects_metadata_google() {
+        assert!(
+            check_ssrf_url(
+                "http://metadata.google.internal/computeMetadata/v1/",
+                &["http", "https"]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn check_ssrf_url_rejects_169_254_169_254() {
+        assert!(
+            check_ssrf_url(
+                "http://169.254.169.254/latest/meta-data/",
+                &["http", "https"]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn check_ssrf_url_invalid_url_rejected() {
+        assert!(check_ssrf_url("not a url at all", &["http", "https"]).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // check_pipeline_image — tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn check_pipeline_image_allows_dollar_sign() {
+        assert!(check_pipeline_image("$REGISTRY/$PROJECT/app:$SHA").is_ok());
+    }
+
+    #[test]
+    fn check_pipeline_image_rejects_semicolon() {
+        assert!(check_pipeline_image("img;rm -rf /").is_err());
+    }
+
+    #[test]
+    fn check_pipeline_image_rejects_backtick() {
+        assert!(check_pipeline_image("`evil`").is_err());
+    }
+
+    #[test]
+    fn check_pipeline_image_rejects_empty() {
+        assert!(check_pipeline_image("").is_err());
+    }
+
+    #[test]
+    fn check_pipeline_image_rejects_too_long() {
+        assert!(check_pipeline_image(&"a".repeat(501)).is_err());
+    }
+
+    #[test]
+    fn check_pipeline_image_rejects_no_alphanumeric() {
+        assert!(check_pipeline_image("$/$/:").is_err());
+    }
+
+    #[test]
+    fn check_pipeline_image_valid_with_template_vars() {
+        assert!(check_pipeline_image("gcr.io/$PROJECT/app:$TAG").is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // check_setup_commands — edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn check_setup_commands_empty_list_ok() {
+        assert!(check_setup_commands(&[]).is_ok());
+    }
+
+    #[test]
+    fn check_setup_commands_max_commands() {
+        assert!(check_setup_commands(&vec!["cmd".into(); 20]).is_ok());
+    }
+
+    #[test]
+    fn check_setup_commands_over_max() {
+        assert!(check_setup_commands(&vec!["cmd".into(); 21]).is_err());
+    }
+
+    #[test]
+    fn check_setup_commands_max_length_per_command() {
+        assert!(check_setup_commands(&["a".repeat(2000)]).is_ok());
+    }
+
+    #[test]
+    fn check_setup_commands_over_max_length_per_command() {
+        assert!(check_setup_commands(&["a".repeat(2001)]).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // check_container_image — additional edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn check_container_image_rejects_dollar_sign() {
+        // Unlike pipeline image, container image rejects $
+        assert!(check_container_image("$REGISTRY/img:v1").is_err());
+    }
+
+    #[test]
+    fn check_container_image_with_sha_digest() {
+        assert!(check_container_image("gcr.io/project/image@sha256:abc123def456").is_ok());
+    }
+
+    #[test]
+    fn check_container_image_localhost_port() {
+        assert!(check_container_image("localhost:5000/myimage:v1").is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // check_url — edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn check_url_rejects_ftp() {
+        assert!(check_url("ftp://example.com/file").is_err());
+    }
+
+    #[test]
+    fn check_url_rejects_empty() {
+        assert!(check_url("").is_err());
+    }
+
+    #[test]
+    fn check_url_accepts_http() {
+        assert!(check_url("http://example.com").is_ok());
+    }
+
+    #[test]
+    fn check_url_accepts_https() {
+        assert!(check_url("https://example.com").is_ok());
+    }
+
+    #[test]
+    fn check_url_rejects_too_long() {
+        let long = format!("https://example.com/{}", "a".repeat(2040));
+        assert!(check_url(&long).is_err());
+    }
+
+    // -----------------------------------------------------------------------
     // proptest — LFS OID roundtrip
     // -----------------------------------------------------------------------
 

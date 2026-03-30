@@ -269,4 +269,157 @@ spec:
         };
         assert!(render(template, &vars).is_err());
     }
+
+    #[test]
+    fn render_gateway_url_var() {
+        let template = "url: {{ gateway_url }}";
+        let vars = RenderVars {
+            image_ref: "img:v1".into(),
+            project_name: "app".into(),
+            environment: "staging".into(),
+            values: serde_json::json!({}),
+            platform_api_url: "http://platform:8080".into(),
+            stable_image: None,
+            canary_image: None,
+            commit_sha: None,
+            app_image: None,
+            gateway_url: Some("http://envoy-gw.gw-system.svc.cluster.local:80".into()),
+        };
+        let result = render(template, &vars).unwrap();
+        assert!(result.contains("url: http://envoy-gw.gw-system.svc.cluster.local:80"));
+    }
+
+    #[test]
+    fn render_platform_api_url_var() {
+        let template = "endpoint: {{ platform_api_url }}";
+        let vars = RenderVars {
+            image_ref: "img:v1".into(),
+            project_name: "app".into(),
+            environment: "staging".into(),
+            values: serde_json::json!({}),
+            platform_api_url: "http://platform.platform.svc.cluster.local:8080".into(),
+            stable_image: None,
+            canary_image: None,
+            commit_sha: None,
+            app_image: None,
+            gateway_url: None,
+        };
+        let result = render(template, &vars).unwrap();
+        assert!(result.contains("endpoint: http://platform.platform.svc.cluster.local:8080"));
+    }
+
+    #[test]
+    fn render_empty_template() {
+        let vars = RenderVars {
+            image_ref: "img:v1".into(),
+            project_name: "app".into(),
+            environment: "staging".into(),
+            values: serde_json::json!({}),
+            platform_api_url: "http://platform:8080".into(),
+            stable_image: None,
+            canary_image: None,
+            commit_sha: None,
+            app_image: None,
+            gateway_url: None,
+        };
+        let result = render("", &vars).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn render_plain_text_no_vars() {
+        let template = "apiVersion: v1\nkind: ConfigMap";
+        let vars = RenderVars {
+            image_ref: "img:v1".into(),
+            project_name: "app".into(),
+            environment: "staging".into(),
+            values: serde_json::json!({}),
+            platform_api_url: "http://platform:8080".into(),
+            stable_image: None,
+            canary_image: None,
+            commit_sha: None,
+            app_image: None,
+            gateway_url: None,
+        };
+        let result = render(template, &vars).unwrap();
+        assert_eq!(result, template);
+    }
+
+    #[test]
+    fn render_conditional_template() {
+        let template = "{% if stable_image %}stable: {{ stable_image }}{% endif %}";
+        let vars = RenderVars {
+            image_ref: "img:v1".into(),
+            project_name: "app".into(),
+            environment: "staging".into(),
+            values: serde_json::json!({}),
+            platform_api_url: "http://platform:8080".into(),
+            stable_image: Some("img:v0".into()),
+            canary_image: None,
+            commit_sha: None,
+            app_image: None,
+            gateway_url: None,
+        };
+        let result = render(template, &vars).unwrap();
+        assert!(result.contains("stable: img:v0"));
+    }
+
+    #[test]
+    fn render_conditional_template_none() {
+        let template =
+            "{% if stable_image %}stable: {{ stable_image }}{% else %}no stable{% endif %}";
+        let vars = RenderVars {
+            image_ref: "img:v1".into(),
+            project_name: "app".into(),
+            environment: "staging".into(),
+            values: serde_json::json!({}),
+            platform_api_url: "http://platform:8080".into(),
+            stable_image: None,
+            canary_image: None,
+            commit_sha: None,
+            app_image: None,
+            gateway_url: None,
+        };
+        let result = render(template, &vars).unwrap();
+        assert!(result.contains("no stable"));
+    }
+
+    #[test]
+    fn split_yaml_empty_string() {
+        let docs = split_yaml_documents("");
+        assert!(docs.is_empty());
+    }
+
+    #[test]
+    fn split_yaml_whitespace_only() {
+        let docs = split_yaml_documents("  \n\n  ");
+        assert!(docs.is_empty());
+    }
+
+    #[test]
+    fn split_yaml_multiple_separators() {
+        let yaml = "apiVersion: v1\nkind: A\n---\n---\napiVersion: v1\nkind: B\n---\n---\n---\napiVersion: v1\nkind: C";
+        let docs = split_yaml_documents(yaml);
+        assert_eq!(docs.len(), 3);
+    }
+
+    #[test]
+    fn render_values_object_access() {
+        let template = "port: {{ values.service.port }}\ntype: {{ values.service.type }}";
+        let vars = RenderVars {
+            image_ref: "img:v1".into(),
+            project_name: "app".into(),
+            environment: "staging".into(),
+            values: serde_json::json!({"service": {"port": 443, "type": "LoadBalancer"}}),
+            platform_api_url: "http://platform:8080".into(),
+            stable_image: None,
+            canary_image: None,
+            commit_sha: None,
+            app_image: None,
+            gateway_url: None,
+        };
+        let result = render(template, &vars).unwrap();
+        assert!(result.contains("port: 443"));
+        assert!(result.contains("type: LoadBalancer"));
+    }
 }

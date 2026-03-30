@@ -470,4 +470,234 @@ mod tests {
         assert_eq!(event.kind, ProgressKind::Error);
         assert!(event.message.contains("Rate limit"));
     }
+
+    // -- Additional cli_message_to_progress edge cases --
+
+    #[test]
+    fn cli_message_to_progress_system_with_model() {
+        let msg = CliMessage::System(crate::agent::claude_cli::messages::SystemMessage {
+            subtype: "init".into(),
+            session_id: "sess-123".into(),
+            model: Some("claude-opus-4-20250514".into()),
+            tools: Some(vec!["Read".into(), "Write".into()]),
+            claude_code_version: Some("2.1.0".into()),
+        });
+        let event = cli_message_to_progress(&msg).unwrap();
+        assert_eq!(event.kind, ProgressKind::Milestone);
+        assert!(event.message.contains("claude-opus-4-20250514"));
+        let meta = event.metadata.unwrap();
+        assert_eq!(meta["session_id"], "sess-123");
+        assert_eq!(meta["claude_code_version"], "2.1.0");
+    }
+
+    #[test]
+    fn cli_message_to_progress_system_no_model() {
+        let msg = CliMessage::System(crate::agent::claude_cli::messages::SystemMessage {
+            subtype: "init".into(),
+            session_id: "sess-abc".into(),
+            model: None,
+            tools: None,
+            claude_code_version: None,
+        });
+        let event = cli_message_to_progress(&msg).unwrap();
+        assert!(event.message.contains("default"));
+    }
+
+    #[test]
+    fn cli_message_to_progress_assistant_empty_content() {
+        let msg = CliMessage::Assistant(crate::agent::claude_cli::messages::AssistantMessage {
+            message: crate::agent::claude_cli::messages::AssistantContent {
+                content: vec![],
+                model: None,
+                usage: None,
+            },
+            session_id: None,
+        });
+        let event = cli_message_to_progress(&msg);
+        assert!(event.is_none(), "empty content should produce no event");
+    }
+
+    #[test]
+    fn cli_message_to_progress_assistant_multiple_tool_calls() {
+        let msg = CliMessage::Assistant(crate::agent::claude_cli::messages::AssistantMessage {
+            message: crate::agent::claude_cli::messages::AssistantContent {
+                content: vec![
+                    serde_json::json!({"type": "tool_use", "name": "Read", "id": "t1", "input": {}}),
+                    serde_json::json!({"type": "tool_use", "name": "Write", "id": "t2", "input": {}}),
+                ],
+                model: None,
+                usage: None,
+            },
+            session_id: None,
+        });
+        let event = cli_message_to_progress(&msg).unwrap();
+        assert_eq!(event.kind, ProgressKind::ToolCall);
+        assert!(event.message.contains("Read"));
+        assert!(event.message.contains("Write"));
+        assert!(event.message.contains(", "));
+    }
+
+    #[test]
+    fn cli_message_to_progress_assistant_unknown_block_type() {
+        let msg = CliMessage::Assistant(crate::agent::claude_cli::messages::AssistantMessage {
+            message: crate::agent::claude_cli::messages::AssistantContent {
+                content: vec![serde_json::json!({"type": "unknown_type", "data": "something"})],
+                model: None,
+                usage: None,
+            },
+            session_id: None,
+        });
+        let event = cli_message_to_progress(&msg);
+        assert!(
+            event.is_none(),
+            "unknown block type should produce no event"
+        );
+    }
+
+    #[test]
+    fn cli_message_to_progress_user_empty_content() {
+        let msg = CliMessage::User(crate::agent::claude_cli::messages::UserMessage {
+            message: crate::agent::claude_cli::messages::UserContent { content: vec![] },
+            session_id: None,
+        });
+        let event = cli_message_to_progress(&msg);
+        assert!(
+            event.is_none(),
+            "empty user content should produce no event"
+        );
+    }
+
+    #[test]
+    fn cli_message_to_progress_user_non_tool_result() {
+        let msg = CliMessage::User(crate::agent::claude_cli::messages::UserMessage {
+            message: crate::agent::claude_cli::messages::UserContent {
+                content: vec![serde_json::json!({"type": "text", "text": "user message"})],
+            },
+            session_id: None,
+        });
+        let event = cli_message_to_progress(&msg);
+        assert!(
+            event.is_none(),
+            "non-tool_result user content should produce no event"
+        );
+    }
+
+    #[test]
+    fn cli_message_to_progress_result_success_no_result_text() {
+        let msg = CliMessage::Result(crate::agent::claude_cli::messages::ResultMessage {
+            subtype: "success".into(),
+            session_id: "s1".into(),
+            is_error: false,
+            result: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            usage: None,
+            structured_output: None,
+        });
+        let event = cli_message_to_progress(&msg).unwrap();
+        assert_eq!(event.kind, ProgressKind::Completed);
+        assert_eq!(event.message, "Agent completed successfully");
+    }
+
+    #[test]
+    fn cli_message_to_progress_result_error_no_result_text() {
+        let msg = CliMessage::Result(crate::agent::claude_cli::messages::ResultMessage {
+            subtype: "error".into(),
+            session_id: "s1".into(),
+            is_error: true,
+            result: None,
+            total_cost_usd: None,
+            duration_ms: None,
+            num_turns: None,
+            usage: None,
+            structured_output: None,
+        });
+        let event = cli_message_to_progress(&msg).unwrap();
+        assert_eq!(event.kind, ProgressKind::Error);
+        assert_eq!(event.message, "Agent completed with error");
+    }
+
+    #[test]
+    fn cli_message_to_progress_result_metadata_includes_cost() {
+        let msg = CliMessage::Result(crate::agent::claude_cli::messages::ResultMessage {
+            subtype: "success".into(),
+            session_id: "s1".into(),
+            is_error: false,
+            result: Some("done".into()),
+            total_cost_usd: Some(0.05),
+            duration_ms: Some(1234),
+            num_turns: Some(3),
+            usage: None,
+            structured_output: None,
+        });
+        let event = cli_message_to_progress(&msg).unwrap();
+        let meta = event.metadata.unwrap();
+        assert_eq!(meta["total_cost_usd"], 0.05);
+        assert_eq!(meta["duration_ms"], 1234);
+        assert_eq!(meta["num_turns"], 3);
+        assert_eq!(meta["is_error"], false);
+    }
+
+    // -- Session mode --
+
+    #[test]
+    fn session_mode_debug() {
+        let s = format!("{:?}", SessionMode::Persistent);
+        assert!(s.contains("Persistent"));
+        let s = format!("{:?}", SessionMode::OneShot);
+        assert!(s.contains("OneShot"));
+    }
+
+    #[test]
+    fn session_mode_clone() {
+        let mode = SessionMode::Persistent;
+        let cloned = mode;
+        assert_eq!(cloned, SessionMode::Persistent);
+    }
+
+    #[test]
+    fn session_mode_eq() {
+        assert_eq!(SessionMode::OneShot, SessionMode::OneShot);
+        assert_eq!(SessionMode::Persistent, SessionMode::Persistent);
+        assert_ne!(SessionMode::OneShot, SessionMode::Persistent);
+    }
+
+    // -- CliSessionHandle get nonexistent --
+
+    #[tokio::test]
+    async fn get_nonexistent_session_returns_none() {
+        let mgr = CliSessionManager::new(10);
+        assert!(mgr.get(Uuid::new_v4()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn remove_nonexistent_session_returns_none() {
+        let mgr = CliSessionManager::new(10);
+        assert!(mgr.remove(Uuid::new_v4()).await.is_none());
+    }
+
+    // -- Concurrent limit edge cases --
+
+    #[tokio::test]
+    async fn concurrent_limit_zero_rejects_all() {
+        let mgr = CliSessionManager::new(0);
+        let result = mgr
+            .register(Uuid::new_v4(), Uuid::new_v4(), SessionMode::OneShot)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn concurrent_limit_one_allows_one() {
+        let mgr = CliSessionManager::new(1);
+        let result = mgr
+            .register(Uuid::new_v4(), Uuid::new_v4(), SessionMode::OneShot)
+            .await;
+        assert!(result.is_ok());
+        let result2 = mgr
+            .register(Uuid::new_v4(), Uuid::new_v4(), SessionMode::OneShot)
+            .await;
+        assert!(result2.is_err());
+    }
 }

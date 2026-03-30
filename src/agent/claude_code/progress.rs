@@ -200,4 +200,103 @@ mod tests {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#;
         assert!(extract_tokens(line).is_none());
     }
+
+    #[test]
+    fn parse_error_event_missing_message() {
+        // error without message field falls back to "unknown error"
+        let line = r#"{"type":"error","error":{}}"#;
+        let event = parse_line(line).unwrap();
+        assert_eq!(event.kind, ProgressKind::Error);
+        assert_eq!(event.message, "unknown error");
+    }
+
+    #[test]
+    fn parse_error_event_no_error_object() {
+        // error without "error" key
+        let line = r#"{"type":"error"}"#;
+        let event = parse_line(line).unwrap();
+        assert_eq!(event.message, "unknown error");
+    }
+
+    #[test]
+    fn parse_result_event_no_cost_no_usage() {
+        let line = r#"{"type":"result","result":"Done"}"#;
+        let event = parse_line(line).unwrap();
+        assert_eq!(event.kind, ProgressKind::Completed);
+        let meta = event.metadata.unwrap();
+        assert!(meta["cost"].is_null());
+        assert!(meta["usage"].is_null());
+    }
+
+    #[test]
+    fn parse_assistant_unknown_block_type() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"image","data":"..."}]}}"#;
+        let result = parse_line(line);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_thinking_empty_text() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"thinking"}]}}"#;
+        let event = parse_line(line).unwrap();
+        assert_eq!(event.kind, ProgressKind::Thinking);
+        assert!(event.message.is_empty());
+    }
+
+    #[test]
+    fn parse_text_empty() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text"}]}}"#;
+        let event = parse_line(line).unwrap();
+        assert_eq!(event.kind, ProgressKind::Text);
+        assert!(event.message.is_empty());
+    }
+
+    #[test]
+    fn parse_tool_use_no_name() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","input":{}}]}}"#;
+        let event = parse_line(line).unwrap();
+        assert_eq!(event.kind, ProgressKind::ToolCall);
+        assert!(event.message.contains("unknown"));
+    }
+
+    #[test]
+    fn extract_tokens_invalid_json() {
+        assert!(extract_tokens("not json").is_none());
+    }
+
+    #[test]
+    fn extract_tokens_no_usage_field() {
+        let line = r#"{"type":"result","result":"done"}"#;
+        assert!(extract_tokens(line).is_none());
+    }
+
+    #[test]
+    fn extract_tokens_no_total_tokens() {
+        let line = r#"{"type":"result","usage":{"input_tokens":100}}"#;
+        assert!(extract_tokens(line).is_none());
+    }
+
+    #[test]
+    fn parse_missing_type_returns_none() {
+        let line = r#"{"message":"no type field"}"#;
+        assert!(parse_line(line).is_none());
+    }
+
+    #[test]
+    fn parse_assistant_no_message_returns_none() {
+        let line = r#"{"type":"assistant"}"#;
+        assert!(parse_line(line).is_none());
+    }
+
+    #[test]
+    fn parse_assistant_no_content_returns_none() {
+        let line = r#"{"type":"assistant","message":{}}"#;
+        assert!(parse_line(line).is_none());
+    }
+
+    #[test]
+    fn parse_assistant_content_not_array_returns_none() {
+        let line = r#"{"type":"assistant","message":{"content":"not an array"}}"#;
+        assert!(parse_line(line).is_none());
+    }
 }

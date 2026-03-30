@@ -243,12 +243,27 @@ async fn preview_proxy(
         }));
     }
 
-    // HTTP proxy path
-    proxy_http(req, &target_url).await
+    // HTTP proxy path — inject <base> so absolute paths resolve through the proxy
+    let base = format!("/preview/{session_id}/");
+    proxy_http_with_base(req, &target_url, Some(&base)).await
 }
 
 /// Forward an HTTP request to the backend preview service.
+#[allow(dead_code)]
 async fn proxy_http(req: Request, target_url: &str) -> Result<Response, ApiError> {
+    proxy_http_with_base(req, target_url, None).await
+}
+
+/// Forward an HTTP request, optionally injecting a `<base>` tag into HTML responses.
+///
+/// When `base_href` is `Some`, HTML responses get `<base href="...">` injected after
+/// `<head>` so that absolute paths (e.g. `/static/style.css`) resolve relative to the
+/// proxy prefix instead of the platform root.
+async fn proxy_http_with_base(
+    req: Request,
+    target_url: &str,
+    base_href: Option<&str>,
+) -> Result<Response, ApiError> {
     let method = req.method().clone();
     let forwarded_headers = strip_request_headers(req.headers());
 
@@ -279,6 +294,39 @@ async fn proxy_http(req: Request, target_url: &str) -> Result<Response, ApiError
     let status =
         StatusCode::from_u16(backend_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let resp_headers = strip_response_headers(backend_resp.headers());
+
+    // Inject <base> tag into HTML responses for correct path resolution in iframes
+    let is_html = resp_headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.contains("text/html"));
+
+    if let (true, Some(href)) = (is_html, base_href) {
+        let bytes = backend_resp
+            .bytes()
+            .await
+            .map_err(|e| ApiError::BadGateway(format!("failed to read response: {e}")))?;
+        let html = String::from_utf8_lossy(&bytes);
+        let base_tag = format!("<base href=\"{href}\">");
+        // Inject after <head> or <head ...> tag
+        let modified = if let Some(pos) = html.find("<head>") {
+            format!("{}{base_tag}{}", &html[..pos + 6], &html[pos + 6..])
+        } else if let Some(pos) = html.find("<head ") {
+            // Find the closing > of the <head ...> tag
+            if let Some(end) = html[pos..].find('>') {
+                let insert = pos + end + 1;
+                format!("{}{base_tag}{}", &html[..insert], &html[insert..])
+            } else {
+                html.into_owned()
+            }
+        } else {
+            html.into_owned()
+        };
+        let mut response = Response::new(Body::from(modified));
+        *response.status_mut() = status;
+        *response.headers_mut() = resp_headers;
+        return Ok(response);
+    }
 
     let body = Body::from_stream(backend_resp.bytes_stream());
     let mut response = Response::new(body);
@@ -490,7 +538,8 @@ async fn deploy_preview_proxy(
         }));
     }
 
-    proxy_http(req, &target_url).await
+    let base = format!("/deploy-preview/{project_id}/{service_name}/");
+    proxy_http_with_base(req, &target_url, Some(&base)).await
 }
 
 #[cfg(test)]
@@ -695,5 +744,194 @@ mod tests {
             url,
             "http://my-svc.my-app-prod.svc.cluster.local:8000/index.html"
         );
+    }
+
+    // -- is_websocket_upgrade --
+
+    #[test]
+    fn test_is_websocket_upgrade_true() {
+        let mut headers = HeaderMap::new();
+        headers.insert("upgrade", "websocket".parse().unwrap());
+        assert!(is_websocket_upgrade(&headers));
+    }
+
+    #[test]
+    fn test_is_websocket_upgrade_case_insensitive() {
+        let mut headers = HeaderMap::new();
+        headers.insert("upgrade", "WebSocket".parse().unwrap());
+        assert!(is_websocket_upgrade(&headers));
+    }
+
+    #[test]
+    fn test_is_websocket_upgrade_false_no_header() {
+        let headers = HeaderMap::new();
+        assert!(!is_websocket_upgrade(&headers));
+    }
+
+    #[test]
+    fn test_is_websocket_upgrade_false_wrong_value() {
+        let mut headers = HeaderMap::new();
+        headers.insert("upgrade", "h2c".parse().unwrap());
+        assert!(!is_websocket_upgrade(&headers));
+    }
+
+    // -- strip_response_headers additional blocked headers --
+
+    #[test]
+    fn test_strip_response_headers_cors_headers() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("access-control-allow-credentials", "true".parse().unwrap());
+        headers.insert("access-control-allow-methods", "GET, POST".parse().unwrap());
+        headers.insert(
+            "access-control-allow-headers",
+            "Content-Type".parse().unwrap(),
+        );
+        headers.insert("access-control-expose-headers", "X-Custom".parse().unwrap());
+        headers.insert(
+            "content-security-policy-report-only",
+            "default-src 'self'".parse().unwrap(),
+        );
+        headers.insert("x-safe", "keep".parse().unwrap());
+
+        let stripped = strip_response_headers(&headers);
+        assert!(stripped.get("access-control-allow-credentials").is_none());
+        assert!(stripped.get("access-control-allow-methods").is_none());
+        assert!(stripped.get("access-control-allow-headers").is_none());
+        assert!(stripped.get("access-control-expose-headers").is_none());
+        assert!(
+            stripped
+                .get("content-security-policy-report-only")
+                .is_none()
+        );
+        assert_eq!(stripped.get("x-safe").unwrap(), "keep");
+    }
+
+    // -- build_target_url with empty query --
+
+    #[test]
+    fn test_build_target_url_with_empty_query() {
+        let url = build_target_url("my-svc", "my-ns", "path", Some(""), None, None);
+        // Empty query should not append ?
+        assert_eq!(url, "http://my-svc.my-ns.svc.cluster.local:8000/path");
+    }
+
+    // -- axum_to_tungstenite message types --
+
+    #[test]
+    fn test_axum_to_tungstenite_text() {
+        let msg = Message::Text("hello".into());
+        let ts = axum_to_tungstenite(msg);
+        assert!(ts.is_text());
+        assert_eq!(ts.to_text().unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_axum_to_tungstenite_binary() {
+        let data: bytes::Bytes = vec![1u8, 2, 3].into();
+        let msg = Message::Binary(data.clone());
+        let ts = axum_to_tungstenite(msg);
+        assert!(ts.is_binary());
+    }
+
+    #[test]
+    fn test_axum_to_tungstenite_ping() {
+        let data: bytes::Bytes = vec![42u8].into();
+        let msg = Message::Ping(data);
+        let ts = axum_to_tungstenite(msg);
+        assert!(ts.is_ping());
+    }
+
+    #[test]
+    fn test_axum_to_tungstenite_pong() {
+        let data: bytes::Bytes = vec![0u8].into();
+        let msg = Message::Pong(data);
+        let ts = axum_to_tungstenite(msg);
+        assert!(ts.is_pong());
+    }
+
+    #[test]
+    fn test_axum_to_tungstenite_close_with_frame() {
+        let msg = Message::Close(Some(axum::extract::ws::CloseFrame {
+            code: 1000,
+            reason: "normal".into(),
+        }));
+        let ts = axum_to_tungstenite(msg);
+        assert!(ts.is_close());
+    }
+
+    #[test]
+    fn test_axum_to_tungstenite_close_without_frame() {
+        let msg = Message::Close(None);
+        let ts = axum_to_tungstenite(msg);
+        assert!(ts.is_close());
+    }
+
+    // -- tungstenite_to_axum message types --
+
+    #[test]
+    fn test_tungstenite_to_axum_text() {
+        use tokio_tungstenite::tungstenite::Message as TsMsg;
+        let ts = TsMsg::Text("world".into());
+        let axum_msg = tungstenite_to_axum(ts).expect("should convert");
+        match axum_msg {
+            Message::Text(t) => assert_eq!(t.as_str(), "world"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_tungstenite_to_axum_binary() {
+        use tokio_tungstenite::tungstenite::Message as TsMsg;
+        let data: Vec<u8> = vec![4, 5, 6];
+        let ts = TsMsg::Binary(data.clone().into());
+        let axum_msg = tungstenite_to_axum(ts).expect("should convert");
+        match axum_msg {
+            Message::Binary(d) => assert_eq!(d.as_ref(), &data),
+            other => panic!("expected Binary, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_tungstenite_to_axum_ping() {
+        use tokio_tungstenite::tungstenite::Message as TsMsg;
+        let data: Vec<u8> = vec![7];
+        let ts = TsMsg::Ping(data.into());
+        let axum_msg = tungstenite_to_axum(ts).expect("should convert");
+        assert!(matches!(axum_msg, Message::Ping(_)));
+    }
+
+    #[test]
+    fn test_tungstenite_to_axum_pong() {
+        use tokio_tungstenite::tungstenite::Message as TsMsg;
+        let data: Vec<u8> = vec![8];
+        let ts = TsMsg::Pong(data.into());
+        let axum_msg = tungstenite_to_axum(ts).expect("should convert");
+        assert!(matches!(axum_msg, Message::Pong(_)));
+    }
+
+    #[test]
+    fn test_tungstenite_to_axum_close_with_frame() {
+        use tokio_tungstenite::tungstenite::Message as TsMsg;
+        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+        let ts = TsMsg::Close(Some(CloseFrame {
+            code: CloseCode::Normal,
+            reason: "bye".into(),
+        }));
+        let axum_msg = tungstenite_to_axum(ts).expect("should convert");
+        match axum_msg {
+            Message::Close(Some(frame)) => {
+                assert_eq!(frame.reason.as_str(), "bye");
+            }
+            other => panic!("expected Close with frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_tungstenite_to_axum_close_without_frame() {
+        use tokio_tungstenite::tungstenite::Message as TsMsg;
+        let ts = TsMsg::Close(None);
+        let axum_msg = tungstenite_to_axum(ts).expect("should convert");
+        assert!(matches!(axum_msg, Message::Close(None)));
     }
 }

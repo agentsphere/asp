@@ -1000,4 +1000,428 @@ mod tests {
     fn validate_path_rejects_null() {
         assert!(validate_path("src/\0main.rs").is_err());
     }
+
+    // -- no_signature / bad_signature helpers --
+
+    #[test]
+    fn no_signature_helper() {
+        let info = no_signature();
+        assert_eq!(info.status, SignatureStatus::NoSignature);
+        assert!(info.signer_key_id.is_none());
+        assert!(info.signer_fingerprint.is_none());
+        assert!(info.signer_name.is_none());
+    }
+
+    #[test]
+    fn bad_signature_helper_no_key_info() {
+        let info = bad_signature(None, None);
+        assert_eq!(info.status, SignatureStatus::BadSignature);
+        assert!(info.signer_key_id.is_none());
+        assert!(info.signer_fingerprint.is_none());
+    }
+
+    #[test]
+    fn bad_signature_helper_with_key_info() {
+        let info = bad_signature(Some("ABC123".into()), Some("DEADBEEF".into()));
+        assert_eq!(info.status, SignatureStatus::BadSignature);
+        assert_eq!(info.signer_key_id.as_deref(), Some("ABC123"));
+        assert_eq!(info.signer_fingerprint.as_deref(), Some("DEADBEEF"));
+        assert!(info.signer_name.is_none());
+    }
+
+    // -- parse_branches: additional edge cases --
+
+    #[test]
+    fn parse_branches_multiple_tabs() {
+        let output = "feat/multi\tshort1\t2026-03-01T00:00:00Z\n";
+        let branches = parse_branches(output);
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].name, "feat/multi");
+        assert_eq!(branches[0].sha, "short1");
+    }
+
+    #[test]
+    fn parse_branches_only_name() {
+        // Only one tab-separated field — should still parse (sha empty, date empty)
+        let output = "lonely\n";
+        let branches = parse_branches(output);
+        // splitn(3, '\t') on "lonely" gives ["lonely"], so sha = None → filter_map returns None
+        // Actually: parts.next() = Some("lonely"), parts.next() = None → None returned
+        // This depends on implementation... let's check:
+        // The code does: name = parts.next()?.to_owned(), sha = parts.next()?.to_owned()
+        // Since there's no second tab, sha returns None, so the entire entry is skipped.
+        assert!(branches.is_empty(), "line without tab should be skipped");
+    }
+
+    // -- parse_ls_tree: additional edge cases --
+
+    #[test]
+    fn parse_ls_tree_symlink_mode() {
+        let output = "120000 blob abc1234     25\tsrc/link\n";
+        let entries = parse_ls_tree(output);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].mode, "120000");
+        assert_eq!(entries[0].entry_type, "blob");
+        assert_eq!(entries[0].name, "src/link");
+    }
+
+    #[test]
+    fn parse_ls_tree_submodule() {
+        let output = "160000 commit abc1234      -\texternal/dep\n";
+        let entries = parse_ls_tree(output);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].mode, "160000");
+        assert_eq!(entries[0].entry_type, "commit");
+        assert!(entries[0].size.is_none());
+    }
+
+    // -- parse_log: field boundaries --
+
+    #[test]
+    fn parse_log_exactly_8_fields() {
+        let output = "sha1\0msg\0author\0a@e.com\02026-01-01\0committer\0c@e.com\02026-01-01\n";
+        let commits = parse_log(output);
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].sha, "sha1");
+        assert_eq!(commits[0].message, "msg");
+        assert_eq!(commits[0].author_name, "author");
+        assert_eq!(commits[0].author_email, "a@e.com");
+        assert_eq!(commits[0].committer_name, "committer");
+        assert_eq!(commits[0].committer_email, "c@e.com");
+    }
+
+    // -- TreeQuery / BlobQuery / CommitsQuery deserialization --
+
+    #[test]
+    fn tree_query_defaults() {
+        let q: TreeQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(q.git_ref, "HEAD");
+        assert_eq!(q.path, "");
+    }
+
+    #[test]
+    fn blob_query_defaults() {
+        let q: BlobQuery = serde_json::from_value(serde_json::json!({"path": "file.rs"})).unwrap();
+        assert_eq!(q.git_ref, "HEAD");
+        assert_eq!(q.path, "file.rs");
+    }
+
+    #[test]
+    fn commits_query_defaults() {
+        let q: CommitsQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(q.git_ref, "HEAD");
+        assert!(q.limit.is_none());
+        assert!(!q.verify_signatures);
+    }
+
+    #[test]
+    fn commits_query_with_all_fields() {
+        let q: CommitsQuery = serde_json::from_value(serde_json::json!({
+            "ref": "develop",
+            "limit": 50,
+            "verify_signatures": true
+        }))
+        .unwrap();
+        assert_eq!(q.git_ref, "develop");
+        assert_eq!(q.limit, Some(50));
+        assert!(q.verify_signatures);
+    }
+
+    // -- default_ref --
+
+    #[test]
+    fn default_ref_is_head() {
+        assert_eq!(default_ref(), "HEAD");
+    }
+
+    // -- TreeEntry serialization --
+
+    #[test]
+    fn tree_entry_serialization() {
+        let entry = TreeEntry {
+            name: "README.md".into(),
+            entry_type: "blob".into(),
+            mode: "100644".into(),
+            size: Some(1234),
+            sha: "abc123".into(),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["name"], "README.md");
+        assert_eq!(json["entry_type"], "blob");
+        assert_eq!(json["mode"], "100644");
+        assert_eq!(json["size"], 1234);
+        assert_eq!(json["sha"], "abc123");
+    }
+
+    #[test]
+    fn tree_entry_null_size() {
+        let entry = TreeEntry {
+            name: "src".into(),
+            entry_type: "tree".into(),
+            mode: "040000".into(),
+            size: None,
+            sha: "def456".into(),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert!(json["size"].is_null());
+    }
+
+    // -- BlobResponse serialization --
+
+    #[test]
+    fn blob_response_utf8() {
+        let resp = BlobResponse {
+            path: "src/main.rs".into(),
+            size: 42,
+            content: "fn main() {}".into(),
+            encoding: "utf-8".into(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["encoding"], "utf-8");
+        assert_eq!(json["size"], 42);
+    }
+
+    // -- BranchInfo serialization --
+
+    #[test]
+    fn branch_info_serialization() {
+        let info = BranchInfo {
+            name: "feature/x".into(),
+            sha: "abc".into(),
+            updated_at: "2026-01-01".into(),
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["name"], "feature/x");
+    }
+
+    // -- CommitInfo serialization --
+
+    #[test]
+    fn commit_info_no_signature() {
+        let info = CommitInfo {
+            sha: "abc".into(),
+            message: "test".into(),
+            author_name: "A".into(),
+            author_email: "a@e".into(),
+            authored_at: "d".into(),
+            committer_name: "C".into(),
+            committer_email: "c@e".into(),
+            committed_at: "d".into(),
+            signature: None,
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        // signature field should be absent (skip_serializing_if = "Option::is_none")
+        assert!(json.get("signature").is_none());
+    }
+
+    // -- extract_author_email: edge cases --
+
+    #[test]
+    fn extract_author_email_multiple_author_lines() {
+        // Only the first author line should match
+        let raw = b"tree abc\nauthor First <first@e.com> 1 +0\nauthor Second <second@e.com> 1 +0\n";
+        let email = extract_author_email_from_commit(raw);
+        assert_eq!(email.as_deref(), Some("first@e.com"));
+    }
+
+    #[test]
+    fn extract_author_email_empty_brackets() {
+        let raw = b"tree abc\nauthor Name <> 1 +0\n";
+        let email = extract_author_email_from_commit(raw);
+        // <> yields empty string between brackets
+        assert_eq!(email.as_deref(), Some(""));
+    }
+
+    // -- parse_ls_tree: additional coverage --
+
+    #[test]
+    fn parse_ls_tree_executable_file() {
+        let output = "100755 blob abc1234 5678\tscripts/deploy.sh\n";
+        let entries = parse_ls_tree(output);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].mode, "100755");
+        assert_eq!(entries[0].name, "scripts/deploy.sh");
+        assert_eq!(entries[0].size, Some(5678));
+    }
+
+    #[test]
+    fn parse_ls_tree_large_size() {
+        let output = "100644 blob abc1234 99999999\tlarge-file.bin\n";
+        let entries = parse_ls_tree(output);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].size, Some(99999999));
+    }
+
+    #[test]
+    fn parse_ls_tree_zero_size() {
+        let output = "100644 blob abc1234      0\tempty-file\n";
+        let entries = parse_ls_tree(output);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].size, Some(0));
+    }
+
+    #[test]
+    fn parse_ls_tree_mixed_valid_invalid() {
+        let output = "100644 blob abc1234 1234\tvalid.txt\nbad line without tab\n100644 blob def5678 5678\talso-valid.rs\n";
+        let entries = parse_ls_tree(output);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "valid.txt");
+        assert_eq!(entries[1].name, "also-valid.rs");
+    }
+
+    #[test]
+    fn parse_ls_tree_filename_with_spaces() {
+        let output = "100644 blob abc1234 100\tfile with spaces.txt\n";
+        let entries = parse_ls_tree(output);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "file with spaces.txt");
+    }
+
+    // -- parse_branches: additional coverage --
+
+    #[test]
+    fn parse_branches_special_chars_in_name() {
+        let output = "feature/JIRA-1234\tabc1234\t2026-01-01T00:00:00Z\n";
+        let branches = parse_branches(output);
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].name, "feature/JIRA-1234");
+    }
+
+    // -- parse_log: additional coverage --
+
+    #[test]
+    fn parse_log_message_with_null_bytes() {
+        // splitn(8, '\0') means 8th field gets everything remaining
+        let output = "sha1\0msg with \0 inside\0author\0a@e\0date1\0cn\0ce\0date2\n";
+        // This has 9 null-separated fields; splitn(8, ...) stops at 8
+        let commits = parse_log(output);
+        // After splitn(8), we get exactly 8 parts. parts[1] = "msg with "
+        assert_eq!(commits.len(), 1);
+    }
+
+    // -- validate_git_ref: comprehensive rejection --
+
+    #[test]
+    fn validate_ref_accepts_sha_like() {
+        assert!(validate_git_ref("abc123def456abc123def456abc123def456abc12a").is_ok());
+    }
+
+    #[test]
+    fn validate_ref_accepts_tags_with_dots() {
+        assert!(validate_git_ref("v1.0.0-rc.1+build.123").is_ok());
+    }
+
+    // -- validate_path: comprehensive --
+
+    #[test]
+    fn validate_path_accepts_deep_paths() {
+        assert!(validate_path("a/b/c/d/e/f/g/h.txt").is_ok());
+    }
+
+    #[test]
+    fn validate_path_rejects_middle_traversal() {
+        assert!(validate_path("src/../../../etc/passwd").is_err());
+    }
+
+    // -- BlobResponse: base64 encoding --
+
+    #[test]
+    fn blob_response_base64() {
+        let resp = BlobResponse {
+            path: "image.png".into(),
+            size: 100,
+            content: "iVBORw0KGgo=".into(),
+            encoding: "base64".into(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["encoding"], "base64");
+        assert_eq!(json["path"], "image.png");
+    }
+
+    // -- CommitInfo: with signature --
+
+    #[test]
+    fn commit_info_with_signature() {
+        let info = CommitInfo {
+            sha: "abc".into(),
+            message: "test".into(),
+            author_name: "A".into(),
+            author_email: "a@e".into(),
+            authored_at: "d".into(),
+            committer_name: "C".into(),
+            committer_email: "c@e".into(),
+            committed_at: "d".into(),
+            signature: Some(SignatureInfo {
+                status: SignatureStatus::Verified,
+                signer_key_id: Some("KEY123".into()),
+                signer_fingerprint: Some("FP456".into()),
+                signer_name: Some("Alice".into()),
+            }),
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert!(json.get("signature").is_some());
+        assert_eq!(json["signature"]["signer_key_id"], "KEY123");
+    }
+
+    // -- TreeEntry debug --
+
+    #[test]
+    fn tree_entry_debug() {
+        let entry = TreeEntry {
+            name: "test".into(),
+            entry_type: "blob".into(),
+            mode: "100644".into(),
+            size: Some(42),
+            sha: "abc".into(),
+        };
+        let debug = format!("{entry:?}");
+        assert!(debug.contains("TreeEntry"));
+        assert!(debug.contains("test"));
+    }
+
+    // -- BlobResponse debug --
+
+    #[test]
+    fn blob_response_debug() {
+        let resp = BlobResponse {
+            path: "main.rs".into(),
+            size: 10,
+            content: "hello".into(),
+            encoding: "utf-8".into(),
+        };
+        let debug = format!("{resp:?}");
+        assert!(debug.contains("BlobResponse"));
+    }
+
+    // -- CommitInfo debug --
+
+    #[test]
+    fn commit_info_debug() {
+        let info = CommitInfo {
+            sha: "abc".into(),
+            message: "test".into(),
+            author_name: "A".into(),
+            author_email: "a@e".into(),
+            authored_at: "d".into(),
+            committer_name: "C".into(),
+            committer_email: "c@e".into(),
+            committed_at: "d".into(),
+            signature: None,
+        };
+        let debug = format!("{info:?}");
+        assert!(debug.contains("CommitInfo"));
+    }
+
+    // -- BranchInfo debug --
+
+    #[test]
+    fn branch_info_debug() {
+        let info = BranchInfo {
+            name: "main".into(),
+            sha: "abc".into(),
+            updated_at: "2026".into(),
+        };
+        let debug = format!("{info:?}");
+        assert!(debug.contains("BranchInfo"));
+    }
 }

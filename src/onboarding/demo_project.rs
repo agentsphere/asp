@@ -896,4 +896,140 @@ mod tests {
             .unwrap();
         assert!(f.content.contains("app-v0-2"));
     }
+
+    #[test]
+    fn pr2_template_has_traffic_generator() {
+        let files = demo_pr2_template_files();
+        let f = files
+            .iter()
+            .find(|f| f.path == "deploy/traffic-generator.yaml")
+            .unwrap();
+        assert!(!f.content.is_empty());
+    }
+
+    #[test]
+    fn pr2_template_paths_unique() {
+        let files = demo_pr2_template_files();
+        let mut paths: Vec<&str> = files.iter().map(|f| f.path).collect();
+        let len_before = paths.len();
+        paths.sort_unstable();
+        paths.dedup();
+        assert_eq!(paths.len(), len_before, "duplicate template paths in PR2");
+    }
+
+    #[test]
+    fn pr1_template_no_empty_content_except_init_py() {
+        let files = demo_pr1_template_files();
+        for f in &files {
+            if f.path == "app/__init__.py" {
+                assert!(f.content.is_empty(), "__init__.py should be empty");
+            } else {
+                assert!(!f.content.is_empty(), "{} should have content", f.path);
+            }
+        }
+    }
+
+    #[test]
+    fn pr1_template_has_dockerfile_dev() {
+        let files = demo_pr1_template_files();
+        let f = files.iter().find(|f| f.path == "Dockerfile.dev").unwrap();
+        assert!(!f.content.is_empty());
+    }
+
+    #[test]
+    fn pr1_template_has_dockerfile_test() {
+        let files = demo_pr1_template_files();
+        let f = files.iter().find(|f| f.path == "Dockerfile.test").unwrap();
+        assert!(!f.content.is_empty());
+    }
+
+    #[test]
+    fn pr1_template_has_requirements() {
+        let files = demo_pr1_template_files();
+        let f = files.iter().find(|f| f.path == "requirements.txt").unwrap();
+        assert!(f.content.contains("fastapi") || f.content.contains("uvicorn"));
+    }
+
+    #[test]
+    fn pr1_template_has_cart_py() {
+        let files = demo_pr1_template_files();
+        let f = files.iter().find(|f| f.path == "app/cart.py").unwrap();
+        assert!(!f.content.is_empty());
+    }
+
+    #[test]
+    fn pr1_template_has_db_py() {
+        let files = demo_pr1_template_files();
+        let f = files.iter().find(|f| f.path == "app/db.py").unwrap();
+        assert!(!f.content.is_empty());
+    }
+
+    #[test]
+    fn pr1_template_has_html_templates() {
+        let files = demo_pr1_template_files();
+        let html_files: Vec<_> = files
+            .iter()
+            .filter(|f| f.path.contains("templates/") && f.path.ends_with(".html"))
+            .collect();
+        assert!(
+            html_files.len() >= 4,
+            "should have at least 4 HTML templates"
+        );
+    }
+
+    #[test]
+    fn pr1_template_has_static_css() {
+        let files = demo_pr1_template_files();
+        let f = files
+            .iter()
+            .find(|f| f.path == "app/static/style.css")
+            .unwrap();
+        assert!(!f.content.is_empty());
+    }
+
+    #[test]
+    fn pr1_template_has_deploy_variables() {
+        let files = demo_pr1_template_files();
+        let names: Vec<&str> = files.iter().map(|f| f.path).collect();
+        assert!(names.contains(&"deploy/variables_staging.yaml"));
+        assert!(names.contains(&"deploy/variables_prod.yaml"));
+    }
+
+    #[test]
+    fn phase1_template_paths_unique() {
+        let files = phase1_template_files();
+        let mut paths: Vec<&str> = files.iter().map(|f| f.path).collect();
+        let len_before = paths.len();
+        paths.sort_unstable();
+        paths.dedup();
+        assert_eq!(
+            paths.len(),
+            len_before,
+            "duplicate template paths in phase1"
+        );
+    }
+
+    #[test]
+    fn pr2_version_differs_from_pr1() {
+        let pr1_files = demo_pr1_template_files();
+        let pr2_files = demo_pr2_template_files();
+        let pr1_version = pr1_files.iter().find(|f| f.path == "VERSION").unwrap();
+        let pr2_version = pr2_files.iter().find(|f| f.path == "VERSION").unwrap();
+        assert_ne!(pr1_version.content, pr2_version.content);
+    }
+
+    #[test]
+    fn pr2_platform_yaml_differs_from_pr1() {
+        let pr1_files = demo_pr1_template_files();
+        let pr2_files = demo_pr2_template_files();
+        let pr1_yaml = pr1_files
+            .iter()
+            .find(|f| f.path == ".platform.yaml")
+            .unwrap();
+        let pr2_yaml = pr2_files
+            .iter()
+            .find(|f| f.path == ".platform.yaml")
+            .unwrap();
+        assert_ne!(pr1_yaml.content, pr2_yaml.content);
+    }
 }

@@ -428,4 +428,65 @@ mod tests {
         assert_eq!(event.kind, ProgressKind::Error);
         assert!(event.message.is_empty());
     }
+
+    #[test]
+    fn build_iframe_event_other_kind_empty_message() {
+        // The _ => String::new() branch for non-iframe ProgressKind
+        let id = Uuid::new_v4();
+        let event = build_iframe_event(ProgressKind::Text, "some-service", 9090, "http", id);
+        assert_eq!(event.kind, ProgressKind::Text);
+        assert!(event.message.is_empty());
+        // Metadata should still be populated
+        let meta = event.metadata.unwrap();
+        assert_eq!(meta["service_name"], "some-service");
+        assert_eq!(meta["port"], 9090);
+        assert_eq!(meta["port_name"], "http");
+    }
+
+    #[test]
+    fn build_iframe_event_completed_kind_empty_message() {
+        let id = Uuid::new_v4();
+        let event = build_iframe_event(ProgressKind::Completed, "svc", 80, "web", id);
+        assert!(event.message.is_empty());
+        assert_eq!(event.kind, ProgressKind::Completed);
+    }
+
+    #[test]
+    fn build_iframe_event_metadata_contains_preview_url() {
+        let id = Uuid::new_v4();
+        let event = build_iframe_event(
+            ProgressKind::IframeAvailable,
+            "preview-xyz",
+            8000,
+            "iframe",
+            id,
+        );
+        let meta = event.metadata.unwrap();
+        assert_eq!(meta["preview_url"], format!("/preview/{id}/"));
+    }
+
+    #[test]
+    fn extract_session_id_no_labels() {
+        let svc = Service {
+            metadata: ObjectMeta {
+                labels: None,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(extract_session_id(&svc), None);
+    }
+
+    #[test]
+    fn extract_iframe_ports_no_ports_in_spec() {
+        let svc = Service {
+            metadata: ObjectMeta::default(),
+            spec: Some(ServiceSpec {
+                ports: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(extract_iframe_ports(&svc).is_empty());
+    }
 }

@@ -262,4 +262,154 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert!(response.headers().contains_key("www-authenticate"));
     }
+
+    #[tokio::test]
+    async fn registry_auth_rejection_body_has_unauthorized_code() {
+        let response = RegistryAuthRejection.into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let www_auth = response
+            .headers()
+            .get("www-authenticate")
+            .expect("should have www-authenticate header");
+        assert_eq!(
+            www_auth.to_str().unwrap(),
+            r#"Basic realm="platform-registry""#
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json["errors"].is_array());
+        assert_eq!(json["errors"][0]["code"], "UNAUTHORIZED");
+        assert_eq!(json["errors"][0]["message"], "authentication required");
+    }
+
+    #[test]
+    fn registry_rate_limit_rejection_is_429() {
+        let response = RegistryRateLimitRejection.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(response.headers().contains_key("retry-after"));
+        assert_eq!(
+            response
+                .headers()
+                .get("retry-after")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "30"
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_rate_limit_rejection_body_has_toomanyrequests_code() {
+        let response = RegistryRateLimitRejection.into_response();
+        let bytes = axum::body::to_bytes(response.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json["errors"].is_array());
+        assert_eq!(json["errors"][0]["code"], "TOOMANYREQUESTS");
+        assert_eq!(json["errors"][0]["message"], "too many requests");
+    }
+
+    #[test]
+    fn registry_user_fields() {
+        let user = RegistryUser {
+            user_id: Uuid::nil(),
+            user_name: "alice".into(),
+            boundary_project_id: None,
+            boundary_workspace_id: None,
+            registry_tag_pattern: Some("myapp:*".into()),
+            token_scopes: Some(vec!["registry:push".into()]),
+        };
+        assert_eq!(user.user_name, "alice");
+        assert_eq!(user.registry_tag_pattern.as_deref(), Some("myapp:*"));
+        assert!(user.boundary_project_id.is_none());
+    }
+
+    #[test]
+    fn registry_user_debug() {
+        let user = RegistryUser {
+            user_id: Uuid::nil(),
+            user_name: "bob".into(),
+            boundary_project_id: None,
+            boundary_workspace_id: None,
+            registry_tag_pattern: None,
+            token_scopes: None,
+        };
+        let debug = format!("{user:?}");
+        assert!(debug.contains("bob"));
+    }
+
+    #[test]
+    fn registry_user_clone() {
+        let user = RegistryUser {
+            user_id: Uuid::nil(),
+            user_name: "charlie".into(),
+            boundary_project_id: Some(Uuid::nil()),
+            boundary_workspace_id: Some(Uuid::nil()),
+            registry_tag_pattern: Some("proj:*".into()),
+            token_scopes: Some(vec!["registry:pull".into()]),
+        };
+        let cloned = user.clone();
+        assert_eq!(cloned.user_id, user.user_id);
+        assert_eq!(cloned.user_name, user.user_name);
+        assert_eq!(cloned.registry_tag_pattern, user.registry_tag_pattern);
+        assert_eq!(cloned.token_scopes, user.token_scopes);
+    }
+
+    #[test]
+    fn registry_user_no_scopes() {
+        let user = RegistryUser {
+            user_id: Uuid::nil(),
+            user_name: "noauth".into(),
+            boundary_project_id: None,
+            boundary_workspace_id: None,
+            registry_tag_pattern: None,
+            token_scopes: None,
+        };
+        assert!(user.token_scopes.is_none());
+        assert!(user.registry_tag_pattern.is_none());
+    }
+
+    #[tokio::test]
+    async fn registry_auth_rejection_json_errors_array() {
+        let response = RegistryAuthRejection.into_response();
+        let bytes = axum::body::to_bytes(response.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // Verify the structure matches OCI spec
+        assert!(json["errors"].is_array());
+        assert_eq!(json["errors"].as_array().unwrap().len(), 1);
+        assert!(json["errors"][0]["detail"].is_object());
+    }
+
+    #[tokio::test]
+    async fn registry_rate_limit_rejection_json_structure() {
+        let response = RegistryRateLimitRejection.into_response();
+        let bytes = axum::body::to_bytes(response.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json["errors"].is_array());
+        assert!(json["errors"][0]["detail"].is_object());
+    }
+
+    #[test]
+    fn registry_user_with_all_boundaries() {
+        let pid = Uuid::new_v4();
+        let wid = Uuid::new_v4();
+        let user = RegistryUser {
+            user_id: Uuid::new_v4(),
+            user_name: "scoped".into(),
+            boundary_project_id: Some(pid),
+            boundary_workspace_id: Some(wid),
+            registry_tag_pattern: Some("myapp-dev:session-*".into()),
+            token_scopes: Some(vec!["registry:push".into(), "registry:pull".into()]),
+        };
+        assert_eq!(user.boundary_project_id, Some(pid));
+        assert_eq!(user.boundary_workspace_id, Some(wid));
+        assert_eq!(user.token_scopes.as_ref().unwrap().len(), 2);
+    }
 }

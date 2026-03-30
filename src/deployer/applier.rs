@@ -1356,4 +1356,664 @@ spec:
             matches!(err, DeployerError::ForbiddenManifest(msg) if msg.contains("hostNetwork"))
         );
     }
+
+    // -- validate_pod_spec: explicit false values should pass --
+
+    #[test]
+    fn validate_pod_spec_host_network_false_passes() {
+        let manifest = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "spec": { "template": { "spec": {
+                "hostNetwork": false,
+                "containers": [{ "name": "app", "image": "nginx" }]
+            }}}
+        });
+        assert!(validate_pod_spec(&manifest).is_ok());
+    }
+
+    #[test]
+    fn validate_pod_spec_host_pid_false_passes() {
+        let manifest = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "spec": { "template": { "spec": {
+                "hostPID": false,
+                "containers": [{ "name": "app", "image": "nginx" }]
+            }}}
+        });
+        assert!(validate_pod_spec(&manifest).is_ok());
+    }
+
+    #[test]
+    fn validate_pod_spec_host_ipc_false_passes() {
+        let manifest = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "spec": { "template": { "spec": {
+                "hostIPC": false,
+                "containers": [{ "name": "app", "image": "nginx" }]
+            }}}
+        });
+        assert!(validate_pod_spec(&manifest).is_ok());
+    }
+
+    #[test]
+    fn validate_pod_spec_privileged_false_passes() {
+        let manifest = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "spec": { "template": { "spec": {
+                "containers": [{
+                    "name": "app",
+                    "image": "nginx",
+                    "securityContext": { "privileged": false }
+                }]
+            }}}
+        });
+        assert!(validate_pod_spec(&manifest).is_ok());
+    }
+
+    #[test]
+    fn validate_pod_spec_safe_volumes_pass() {
+        let manifest = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "spec": { "template": { "spec": {
+                "containers": [{ "name": "app", "image": "nginx" }],
+                "volumes": [
+                    { "name": "config", "configMap": { "name": "app-config" } },
+                    { "name": "data", "emptyDir": {} },
+                    { "name": "secrets", "secret": { "secretName": "my-secret" } },
+                    { "name": "pvc", "persistentVolumeClaim": { "claimName": "data-pvc" } }
+                ]
+            }}}
+        });
+        assert!(validate_pod_spec(&manifest).is_ok());
+    }
+
+    #[test]
+    fn validate_pod_spec_no_containers_key_passes() {
+        // Pod spec with no containers array (unusual but shouldn't crash)
+        let manifest = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "spec": { "template": { "spec": {} }}
+        });
+        assert!(validate_pod_spec(&manifest).is_ok());
+    }
+
+    #[test]
+    fn validate_pod_spec_empty_containers_passes() {
+        let manifest = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "spec": { "template": { "spec": {
+                "containers": []
+            }}}
+        });
+        assert!(validate_pod_spec(&manifest).is_ok());
+    }
+
+    #[test]
+    fn validate_pod_spec_cronjob_privileged_rejected() {
+        let manifest = serde_json::json!({
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "spec": { "jobTemplate": { "spec": { "template": { "spec": {
+                "containers": [{
+                    "name": "evil",
+                    "image": "alpine",
+                    "securityContext": { "privileged": true }
+                }]
+            }}}}}
+        });
+        let err = validate_pod_spec(&manifest).unwrap_err();
+        assert!(matches!(err, DeployerError::ForbiddenManifest(msg) if msg.contains("privileged")));
+    }
+
+    #[test]
+    fn validate_pod_spec_cronjob_host_path_rejected() {
+        let manifest = serde_json::json!({
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "spec": { "jobTemplate": { "spec": { "template": { "spec": {
+                "containers": [{ "name": "app", "image": "alpine" }],
+                "volumes": [{ "name": "root", "hostPath": { "path": "/" } }]
+            }}}}}
+        });
+        let err = validate_pod_spec(&manifest).unwrap_err();
+        assert!(matches!(err, DeployerError::ForbiddenManifest(msg) if msg.contains("hostPath")));
+    }
+
+    #[test]
+    fn validate_pod_spec_cronjob_safe_passes() {
+        let manifest = serde_json::json!({
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "spec": { "jobTemplate": { "spec": { "template": { "spec": {
+                "containers": [{ "name": "backup", "image": "backup:latest" }]
+            }}}}}
+        });
+        assert!(validate_pod_spec(&manifest).is_ok());
+    }
+
+    #[test]
+    fn validate_pod_spec_cronjob_host_pid_rejected() {
+        let manifest = serde_json::json!({
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "spec": { "jobTemplate": { "spec": { "template": { "spec": {
+                "hostPID": true,
+                "containers": [{ "name": "cron", "image": "alpine" }]
+            }}}}}
+        });
+        let err = validate_pod_spec(&manifest).unwrap_err();
+        assert!(matches!(err, DeployerError::ForbiddenManifest(msg) if msg.contains("hostPID")));
+    }
+
+    #[test]
+    fn validate_pod_spec_cronjob_host_ipc_rejected() {
+        let manifest = serde_json::json!({
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "spec": { "jobTemplate": { "spec": { "template": { "spec": {
+                "hostIPC": true,
+                "containers": [{ "name": "cron", "image": "alpine" }]
+            }}}}}
+        });
+        let err = validate_pod_spec(&manifest).unwrap_err();
+        assert!(matches!(err, DeployerError::ForbiddenManifest(msg) if msg.contains("hostIPC")));
+    }
+
+    // -- extract_pod_spec --
+
+    #[test]
+    fn extract_pod_spec_deployment() {
+        let manifest = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "spec": { "template": { "spec": {
+                "containers": [{ "name": "app", "image": "nginx" }]
+            }}}
+        });
+        let spec = extract_pod_spec(&manifest);
+        assert!(spec.is_some());
+        assert!(spec.unwrap().get("containers").is_some());
+    }
+
+    #[test]
+    fn extract_pod_spec_cronjob() {
+        let manifest = serde_json::json!({
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "spec": { "jobTemplate": { "spec": { "template": { "spec": {
+                "containers": [{ "name": "cron", "image": "alpine" }]
+            }}}}}
+        });
+        let spec = extract_pod_spec(&manifest);
+        assert!(spec.is_some());
+        assert!(spec.unwrap().get("containers").is_some());
+    }
+
+    #[test]
+    fn extract_pod_spec_service_returns_none() {
+        let manifest = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Service",
+            "spec": { "ports": [{ "port": 80 }] }
+        });
+        assert!(extract_pod_spec(&manifest).is_none());
+    }
+
+    #[test]
+    fn extract_pod_spec_configmap_returns_none() {
+        let manifest = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": { "name": "cfg" },
+            "data": { "key": "value" }
+        });
+        assert!(extract_pod_spec(&manifest).is_none());
+    }
+
+    // -- kind_to_plural: comprehensive coverage --
+
+    #[test]
+    fn kind_to_plural_all_allowed() {
+        assert_eq!(kind_to_plural("Secret"), "secrets");
+        assert_eq!(kind_to_plural("ServiceAccount"), "serviceaccounts");
+        assert_eq!(
+            kind_to_plural("PodDisruptionBudget"),
+            "poddisruptionbudgets"
+        );
+        assert_eq!(kind_to_plural("Role"), "roles");
+        assert_eq!(kind_to_plural("RoleBinding"), "rolebindings");
+        assert_eq!(kind_to_plural("Job"), "jobs");
+        assert_eq!(kind_to_plural("CronJob"), "cronjobs");
+        assert_eq!(kind_to_plural("StatefulSet"), "statefulsets");
+        assert_eq!(kind_to_plural("DaemonSet"), "daemonsets");
+        assert_eq!(
+            kind_to_plural("PersistentVolumeClaim"),
+            "persistentvolumeclaims"
+        );
+        assert_eq!(kind_to_plural("NetworkPolicy"), "networkpolicies");
+        assert_eq!(kind_to_plural("HTTPRoute"), "httproutes");
+    }
+
+    #[test]
+    fn kind_to_plural_cluster_scoped() {
+        assert_eq!(kind_to_plural("Namespace"), "namespaces");
+        assert_eq!(kind_to_plural("ClusterRole"), "clusterroles");
+        assert_eq!(kind_to_plural("ClusterRoleBinding"), "clusterrolebindings");
+    }
+
+    // -- inject_env_from_secret: Job and DaemonSet kinds --
+
+    #[test]
+    fn inject_env_from_job() {
+        let yaml = "\
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migration
+spec:
+  template:
+    spec:
+      containers:
+        - name: migrate
+          image: migrate:latest";
+
+        let result = inject_env_from_secret(yaml, "job-secrets").unwrap();
+        let doc: serde_json::Value = serde_yaml::from_str(&result).unwrap();
+        let env_from = &doc["spec"]["template"]["spec"]["containers"][0]["envFrom"];
+        assert_eq!(env_from[0]["secretRef"]["name"], "job-secrets");
+    }
+
+    #[test]
+    fn inject_env_from_daemonset() {
+        let yaml = "\
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: log-collector
+spec:
+  template:
+    spec:
+      containers:
+        - name: collector
+          image: fluentd:latest";
+
+        let result = inject_env_from_secret(yaml, "ds-secrets").unwrap();
+        let doc: serde_json::Value = serde_yaml::from_str(&result).unwrap();
+        let env_from = &doc["spec"]["template"]["spec"]["containers"][0]["envFrom"];
+        assert_eq!(env_from[0]["secretRef"]["name"], "ds-secrets");
+    }
+
+    #[test]
+    fn inject_env_from_configmap_unchanged() {
+        let yaml = "\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  key: value";
+
+        let result = inject_env_from_secret(yaml, "app-secrets").unwrap();
+        let doc: serde_json::Value = serde_yaml::from_str(&result).unwrap();
+        assert_eq!(doc["kind"], "ConfigMap");
+        // ConfigMap should not get envFrom injected
+        assert!(doc.pointer("/spec/template").is_none());
+    }
+
+    #[test]
+    fn inject_env_from_multiple_containers() {
+        let yaml = "\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multi
+spec:
+  template:
+    spec:
+      containers:
+        - name: web
+          image: web:latest
+        - name: sidecar
+          image: proxy:latest";
+
+        let result = inject_env_from_secret(yaml, "multi-secrets").unwrap();
+        let doc: serde_json::Value = serde_yaml::from_str(&result).unwrap();
+        let containers = doc["spec"]["template"]["spec"]["containers"]
+            .as_array()
+            .unwrap();
+        // Both containers should get the envFrom injection
+        assert_eq!(
+            containers[0]["envFrom"][0]["secretRef"]["name"],
+            "multi-secrets"
+        );
+        assert_eq!(
+            containers[1]["envFrom"][0]["secretRef"]["name"],
+            "multi-secrets"
+        );
+    }
+
+    // -- build_tracked_inventory edge cases --
+
+    #[test]
+    fn build_tracked_inventory_comment_only_skipped() {
+        let manifests =
+            "# just a comment\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: svc";
+        let tracked = build_tracked_inventory(manifests, "default");
+        assert_eq!(tracked.len(), 1);
+        assert_eq!(tracked[0].name, "svc");
+    }
+
+    #[test]
+    fn build_tracked_inventory_multi_namespace() {
+        let manifests = "\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: custom-ns
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc";
+        let tracked = build_tracked_inventory(manifests, "default");
+        assert_eq!(tracked.len(), 2);
+        assert_eq!(tracked[0].namespace, "custom-ns");
+        assert_eq!(tracked[1].namespace, "default"); // falls back to parameter
+    }
+
+    // -- has_prune_disabled: edge cases --
+
+    #[test]
+    fn has_prune_disabled_wrong_value_returns_false() {
+        let mut obj = DynamicObject::new(
+            "test",
+            &ApiResource {
+                group: String::new(),
+                version: "v1".into(),
+                api_version: "v1".into(),
+                kind: "ConfigMap".into(),
+                plural: "configmaps".into(),
+            },
+        );
+        let mut annotations = std::collections::BTreeMap::new();
+        annotations.insert("platform.io/prune".into(), "enabled".into());
+        obj.metadata.annotations = Some(annotations);
+
+        assert!(!has_prune_disabled(&obj));
+    }
+
+    #[test]
+    fn has_prune_disabled_other_annotations_returns_false() {
+        let mut obj = DynamicObject::new(
+            "test",
+            &ApiResource {
+                group: String::new(),
+                version: "v1".into(),
+                api_version: "v1".into(),
+                kind: "ConfigMap".into(),
+                plural: "configmaps".into(),
+            },
+        );
+        let mut annotations = std::collections::BTreeMap::new();
+        annotations.insert("other/annotation".into(), "value".into());
+        obj.metadata.annotations = Some(annotations);
+
+        assert!(!has_prune_disabled(&obj));
+    }
+
+    // -- find_deployment_name: multiple deployments --
+
+    #[test]
+    fn find_deployment_name_returns_first() {
+        let applied = vec![
+            AppliedResource {
+                kind: "Deployment".into(),
+                name: "first".into(),
+            },
+            AppliedResource {
+                kind: "Deployment".into(),
+                name: "second".into(),
+            },
+        ];
+        assert_eq!(find_deployment_name(&applied), Some("first"));
+    }
+
+    #[test]
+    fn find_deployment_name_empty() {
+        let applied: Vec<AppliedResource> = vec![];
+        assert_eq!(find_deployment_name(&applied), None);
+    }
+
+    // -- parse_api_version: additional edge cases --
+
+    #[test]
+    fn parse_gateway_api_version() {
+        let (group, version) = parse_api_version("gateway.networking.k8s.io/v1");
+        assert_eq!(group, "gateway.networking.k8s.io");
+        assert_eq!(version, "v1");
+    }
+
+    #[test]
+    fn parse_batch_api_version() {
+        let (group, version) = parse_api_version("batch/v1");
+        assert_eq!(group, "batch");
+        assert_eq!(version, "v1");
+    }
+
+    #[test]
+    fn parse_rbac_api_version() {
+        let (group, version) = parse_api_version("rbac.authorization.k8s.io/v1");
+        assert_eq!(group, "rbac.authorization.k8s.io");
+        assert_eq!(version, "v1");
+    }
+
+    // -- inject_managed_labels: edge cases --
+
+    #[test]
+    fn inject_managed_labels_preserves_existing_metadata_fields() {
+        let deployment_id = Uuid::new_v4();
+        let mut doc = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "test",
+                "namespace": "default",
+                "annotations": { "note": "keep" }
+            }
+        });
+
+        inject_managed_labels(&mut doc, deployment_id);
+
+        // Original metadata preserved
+        assert_eq!(doc["metadata"]["name"], "test");
+        assert_eq!(doc["metadata"]["namespace"], "default");
+        assert_eq!(doc["metadata"]["annotations"]["note"], "keep");
+        // Labels added
+        let labels = doc["metadata"]["labels"].as_object().unwrap();
+        assert_eq!(labels["platform.io/managed-by"], "platform-deployer");
+    }
+
+    // -- api_resource_from_yaml: additional resource types --
+
+    #[test]
+    fn api_resource_from_configmap_yaml() {
+        let doc = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {"name": "test-cm"},
+            "data": {"key": "value"}
+        });
+
+        let (ar, obj) = api_resource_from_yaml(&doc).unwrap();
+        assert_eq!(ar.group, "");
+        assert_eq!(ar.kind, "ConfigMap");
+        assert_eq!(ar.plural, "configmaps");
+        assert_eq!(obj.metadata.name.as_deref(), Some("test-cm"));
+    }
+
+    #[test]
+    fn api_resource_from_cronjob_yaml() {
+        let doc = serde_json::json!({
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "metadata": {"name": "backup"},
+            "spec": { "schedule": "0 2 * * *" }
+        });
+
+        let (ar, _) = api_resource_from_yaml(&doc).unwrap();
+        assert_eq!(ar.group, "batch");
+        assert_eq!(ar.version, "v1");
+        assert_eq!(ar.kind, "CronJob");
+        assert_eq!(ar.plural, "cronjobs");
+    }
+
+    #[test]
+    fn api_resource_from_httproute_yaml() {
+        let doc = serde_json::json!({
+            "apiVersion": "gateway.networking.k8s.io/v1",
+            "kind": "HTTPRoute",
+            "metadata": {"name": "my-route"},
+            "spec": {}
+        });
+
+        let (ar, _) = api_resource_from_yaml(&doc).unwrap();
+        assert_eq!(ar.group, "gateway.networking.k8s.io");
+        assert_eq!(ar.kind, "HTTPRoute");
+        assert_eq!(ar.plural, "httproutes");
+    }
+
+    // -- validate_pod_spec: multiple containers with mixed security --
+
+    #[test]
+    fn validate_pod_spec_second_container_privileged_rejected() {
+        let manifest = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "spec": { "template": { "spec": {
+                "containers": [
+                    { "name": "safe", "image": "nginx", "securityContext": { "privileged": false } },
+                    { "name": "evil", "image": "alpine", "securityContext": { "privileged": true } }
+                ]
+            }}}
+        });
+        let err = validate_pod_spec(&manifest).unwrap_err();
+        assert!(matches!(err, DeployerError::ForbiddenManifest(msg) if msg.contains("privileged")));
+    }
+
+    #[test]
+    fn validate_pod_spec_multiple_safe_containers_pass() {
+        let manifest = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "spec": { "template": { "spec": {
+                "containers": [
+                    { "name": "app", "image": "nginx" },
+                    { "name": "sidecar", "image": "envoy" },
+                    { "name": "metrics", "image": "prom-exporter" }
+                ]
+            }}}
+        });
+        assert!(validate_pod_spec(&manifest).is_ok());
+    }
+
+    #[test]
+    fn validate_pod_spec_multiple_host_path_volumes_rejected() {
+        let manifest = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "spec": { "template": { "spec": {
+                "containers": [{ "name": "app", "image": "nginx" }],
+                "volumes": [
+                    { "name": "safe", "emptyDir": {} },
+                    { "name": "bad", "hostPath": { "path": "/var/log" } }
+                ]
+            }}}
+        });
+        let err = validate_pod_spec(&manifest).unwrap_err();
+        assert!(matches!(err, DeployerError::ForbiddenManifest(msg) if msg.contains("hostPath")));
+    }
+
+    // -- validate_pod_spec: StatefulSet and DaemonSet --
+
+    #[test]
+    fn validate_pod_spec_statefulset_privileged_rejected() {
+        let manifest = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "StatefulSet",
+            "spec": { "template": { "spec": {
+                "containers": [{
+                    "name": "db",
+                    "image": "postgres",
+                    "securityContext": { "privileged": true }
+                }]
+            }}}
+        });
+        let err = validate_pod_spec(&manifest).unwrap_err();
+        assert!(matches!(err, DeployerError::ForbiddenManifest(msg) if msg.contains("privileged")));
+    }
+
+    #[test]
+    fn validate_pod_spec_daemonset_host_network_rejected() {
+        let manifest = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "DaemonSet",
+            "spec": { "template": { "spec": {
+                "hostNetwork": true,
+                "containers": [{ "name": "collector", "image": "fluentd" }]
+            }}}
+        });
+        let err = validate_pod_spec(&manifest).unwrap_err();
+        assert!(
+            matches!(err, DeployerError::ForbiddenManifest(msg) if msg.contains("hostNetwork"))
+        );
+    }
+
+    // -- inject_env_from_to_container: edge cases --
+
+    #[test]
+    fn inject_env_from_to_container_no_existing_env_from() {
+        let mut container = serde_json::json!({
+            "name": "app",
+            "image": "nginx:latest"
+        });
+        inject_env_from_to_container(&mut container, "my-secret");
+        let env_from = container["envFrom"].as_array().unwrap();
+        assert_eq!(env_from.len(), 1);
+        assert_eq!(env_from[0]["secretRef"]["name"], "my-secret");
+    }
+
+    #[test]
+    fn inject_env_from_to_container_existing_configmap_ref() {
+        let mut container = serde_json::json!({
+            "name": "app",
+            "image": "nginx:latest",
+            "envFrom": [{ "configMapRef": { "name": "app-config" } }]
+        });
+        inject_env_from_to_container(&mut container, "my-secret");
+        let env_from = container["envFrom"].as_array().unwrap();
+        assert_eq!(env_from.len(), 2);
+        assert_eq!(env_from[0]["configMapRef"]["name"], "app-config");
+        assert_eq!(env_from[1]["secretRef"]["name"], "my-secret");
+    }
+
+    #[test]
+    fn inject_env_from_to_container_already_has_same_secret() {
+        let mut container = serde_json::json!({
+            "name": "app",
+            "image": "nginx:latest",
+            "envFrom": [{ "secretRef": { "name": "my-secret" } }]
+        });
+        inject_env_from_to_container(&mut container, "my-secret");
+        let env_from = container["envFrom"].as_array().unwrap();
+        // Should not duplicate
+        assert_eq!(env_from.len(), 1);
+    }
 }

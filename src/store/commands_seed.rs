@@ -126,4 +126,56 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn read_metadata_invalid_json() {
+        let dir = std::env::temp_dir().join(format!("cmd-seed-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let md_path = dir.join("bad.md");
+        std::fs::write(&md_path, "template").unwrap();
+        let json_path = dir.join("bad.json");
+        std::fs::write(&json_path, "not valid json {{{").unwrap();
+
+        let (desc, persistent) = read_metadata(&md_path);
+        assert!(desc.is_empty());
+        assert!(!persistent);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_metadata_json_with_defaults() {
+        let dir = std::env::temp_dir().join(format!("cmd-seed-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let md_path = dir.join("min.md");
+        std::fs::write(&md_path, "template").unwrap();
+        let json_path = dir.join("min.json");
+        // Empty object — uses serde defaults
+        std::fs::write(&json_path, "{}").unwrap();
+
+        let (desc, persistent) = read_metadata(&md_path);
+        assert!(desc.is_empty());
+        assert!(!persistent);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_metadata_only_description() {
+        let dir = std::env::temp_dir().join(format!("cmd-seed-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let md_path = dir.join("desc.md");
+        std::fs::write(&md_path, "template").unwrap();
+        let json_path = dir.join("desc.json");
+        std::fs::write(&json_path, r#"{"description": "A command"}"#).unwrap();
+
+        let (desc, persistent) = read_metadata(&md_path);
+        assert_eq!(desc, "A command");
+        assert!(!persistent);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

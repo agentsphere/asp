@@ -155,4 +155,132 @@ mod tests {
             DeployerError::ForbiddenManifest("privileged not allowed".into()).into();
         assert!(matches!(api, ApiError::BadRequest(msg) if msg.contains("privileged not allowed")));
     }
+
+    #[test]
+    fn commit_failed_maps_to_internal() {
+        let api: ApiError = DeployerError::CommitFailed("git error".into()).into();
+        assert!(matches!(api, ApiError::Internal(_)));
+    }
+
+    #[test]
+    fn revert_failed_maps_to_internal() {
+        let api: ApiError = DeployerError::RevertFailed("revert error".into()).into();
+        assert!(matches!(api, ApiError::Internal(_)));
+    }
+
+    #[test]
+    fn values_not_found_maps_to_bad_request() {
+        let api: ApiError = DeployerError::ValuesNotFound("staging.yaml".into()).into();
+        assert!(matches!(api, ApiError::BadRequest(msg) if msg.contains("staging.yaml")));
+    }
+
+    #[test]
+    fn apply_failed_maps_to_internal() {
+        let api: ApiError = DeployerError::ApplyFailed("kube error".into()).into();
+        assert!(matches!(api, ApiError::Internal(_)));
+    }
+
+    // -- Display trait tests --
+
+    #[test]
+    fn not_found_display() {
+        let err = DeployerError::NotFound;
+        assert_eq!(err.to_string(), "deployment not found");
+    }
+
+    #[test]
+    fn ops_repo_not_found_display() {
+        let err = DeployerError::OpsRepoNotFound("abc-123".into());
+        assert_eq!(err.to_string(), "ops repo not found: abc-123");
+    }
+
+    #[test]
+    fn sync_failed_display() {
+        let err = DeployerError::SyncFailed("connection refused".into());
+        assert_eq!(err.to_string(), "ops repo sync failed: connection refused");
+    }
+
+    #[test]
+    fn render_failed_display() {
+        let err = DeployerError::RenderFailed("missing variable".into());
+        assert_eq!(err.to_string(), "template render failed: missing variable");
+    }
+
+    #[test]
+    fn health_timeout_display() {
+        let err = DeployerError::HealthTimeout(300);
+        assert_eq!(err.to_string(), "health check timed out after 300s");
+    }
+
+    #[test]
+    fn no_previous_deployment_display() {
+        let err = DeployerError::NoPreviousDeployment;
+        assert_eq!(
+            err.to_string(),
+            "no previous successful deployment for rollback"
+        );
+    }
+
+    #[test]
+    fn commit_failed_display() {
+        let err = DeployerError::CommitFailed("git add failed".into());
+        assert_eq!(err.to_string(), "ops repo commit failed: git add failed");
+    }
+
+    #[test]
+    fn revert_failed_display() {
+        let err = DeployerError::RevertFailed("merge conflict".into());
+        assert_eq!(err.to_string(), "ops repo revert failed: merge conflict");
+    }
+
+    #[test]
+    fn values_not_found_display() {
+        let err = DeployerError::ValuesNotFound("staging.yaml at HEAD".into());
+        assert_eq!(
+            err.to_string(),
+            "values file not found: staging.yaml at HEAD"
+        );
+    }
+
+    #[test]
+    fn invalid_manifest_display() {
+        let err = DeployerError::InvalidManifest("missing kind".into());
+        assert_eq!(err.to_string(), "invalid manifest: missing kind");
+    }
+
+    #[test]
+    fn forbidden_manifest_display() {
+        let err = DeployerError::ForbiddenManifest("hostNetwork not allowed".into());
+        assert_eq!(
+            err.to_string(),
+            "forbidden manifest: hostNetwork not allowed"
+        );
+    }
+
+    #[test]
+    fn invalid_transition_display() {
+        let err = DeployerError::InvalidTransition("completed".into(), "pending".into());
+        assert_eq!(
+            err.to_string(),
+            "invalid phase transition: completed -> pending"
+        );
+    }
+
+    #[test]
+    fn gateway_error_display() {
+        let err = DeployerError::GatewayError("weights sum to 110".into());
+        assert_eq!(err.to_string(), "gateway API error: weights sum to 110");
+    }
+
+    #[test]
+    fn analysis_failed_display() {
+        let err = DeployerError::AnalysisFailed("metric query timeout".into());
+        assert_eq!(err.to_string(), "analysis failed: metric query timeout");
+    }
+
+    #[test]
+    fn apply_failed_display() {
+        let err = DeployerError::ApplyFailed("server rejected".into());
+        assert_eq!(err.to_string(), "manifest apply failed: server rejected");
+    }
 }

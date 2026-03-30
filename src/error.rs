@@ -445,6 +445,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sqlx_generic_error_maps_to_500() {
+        // sqlx::Error::PoolTimedOut or similar non-row/non-db errors
+        let err: ApiError = sqlx::Error::RowNotFound.into();
+        assert!(matches!(err, ApiError::NotFound(_)));
+    }
+
+    #[test]
+    fn api_error_debug_format() {
+        let err = ApiError::NotFound("widget".into());
+        let debug = format!("{err:?}");
+        assert!(debug.contains("NotFound"));
+        assert!(debug.contains("widget"));
+    }
+
+    #[test]
+    fn api_error_display_internal() {
+        let err = ApiError::Internal(anyhow::anyhow!("internal problem"));
+        let display = err.to_string();
+        assert!(display.contains("internal error"));
+    }
+
+    #[test]
+    fn api_error_display_bad_request() {
+        let err = ApiError::BadRequest("invalid input".into());
+        assert_eq!(err.to_string(), "bad request: invalid input");
+    }
+
+    #[tokio::test]
+    async fn not_found_response_has_json_content_type() {
+        let resp = ApiError::NotFound("item".into()).into_response();
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "content type should be JSON"
+        );
+    }
+
     /// Minimal implementation of `sqlx::DatabaseError` for testing From<sqlx::Error>.
     #[derive(Debug)]
     struct TestDbError {

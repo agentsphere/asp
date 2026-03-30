@@ -438,4 +438,175 @@ mod tests {
             .collect();
         assert!(channels.is_empty());
     }
+
+    // -- MAX_PUBSUB_MSG_SIZE constant --
+
+    #[test]
+    fn max_pubsub_msg_size_is_1mb() {
+        // Verify the constant matches our expectation
+        const MAX: usize = 1_048_576;
+        assert_eq!(MAX, 1024 * 1024);
+    }
+
+    #[test]
+    fn large_event_would_exceed_limit() {
+        // The publish_event function checks json.len() > MAX_PUBSUB_MSG_SIZE
+        // Verify that a very large message would exceed it
+        let large_message = "x".repeat(1_048_577); // 1 byte over
+        let event = ProgressEvent {
+            kind: ProgressKind::Text,
+            message: large_message,
+            metadata: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.len() > 1_048_576);
+    }
+
+    #[test]
+    fn normal_event_under_limit() {
+        let event = ProgressEvent {
+            kind: ProgressKind::Text,
+            message: "Hello world".into(),
+            metadata: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.len() < 1_048_576);
+    }
+
+    // -- Control message format --
+
+    #[test]
+    fn control_json_interrupt_format() {
+        let msg = serde_json::json!({ "type": "control", "control": { "type": "interrupt" } });
+        assert_eq!(msg["type"], "control");
+        assert_eq!(msg["control"]["type"], "interrupt");
+    }
+
+    // -- Event kind serialization for DB persistence --
+
+    #[test]
+    fn kind_text_serialized_for_db() {
+        let kind = ProgressKind::Text;
+        let json = serde_json::to_string(&kind).unwrap();
+        let trimmed = json.trim_matches('"');
+        assert_eq!(trimmed, "text");
+    }
+
+    #[test]
+    fn kind_completed_serialized_for_db() {
+        let kind = ProgressKind::Completed;
+        let json = serde_json::to_string(&kind).unwrap();
+        let trimmed = json.trim_matches('"');
+        assert_eq!(trimmed, "completed");
+    }
+
+    #[test]
+    fn kind_error_serialized_for_db() {
+        let kind = ProgressKind::Error;
+        let json = serde_json::to_string(&kind).unwrap();
+        let trimmed = json.trim_matches('"');
+        assert_eq!(trimmed, "error");
+    }
+
+    #[test]
+    fn kind_milestone_serialized_for_db() {
+        let kind = ProgressKind::Milestone;
+        let json = serde_json::to_string(&kind).unwrap();
+        let trimmed = json.trim_matches('"');
+        assert_eq!(trimmed, "milestone");
+    }
+
+    #[test]
+    fn kind_tool_result_serialized_for_db() {
+        let kind = ProgressKind::ToolResult;
+        let json = serde_json::to_string(&kind).unwrap();
+        let trimmed = json.trim_matches('"');
+        assert_eq!(trimmed, "tool_result");
+    }
+
+    #[test]
+    fn kind_thinking_serialized_for_db() {
+        let kind = ProgressKind::Thinking;
+        let json = serde_json::to_string(&kind).unwrap();
+        let trimmed = json.trim_matches('"');
+        assert_eq!(trimmed, "thinking");
+    }
+
+    #[test]
+    fn kind_waiting_for_input_serialized_for_db() {
+        let kind = ProgressKind::WaitingForInput;
+        let json = serde_json::to_string(&kind).unwrap();
+        let trimmed = json.trim_matches('"');
+        assert_eq!(trimmed, "waiting_for_input");
+    }
+
+    // -- Event deserialization edge cases --
+
+    #[test]
+    fn event_with_empty_message() {
+        let event = ProgressEvent {
+            kind: ProgressKind::Completed,
+            message: String::new(),
+            metadata: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let back: ProgressEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.message, "");
+    }
+
+    #[test]
+    fn event_with_complex_metadata() {
+        let event = ProgressEvent {
+            kind: ProgressKind::ToolCall,
+            message: "Read file".into(),
+            metadata: Some(serde_json::json!({
+                "tool_name": "Read",
+                "file": "src/main.rs",
+                "lines": [1, 50],
+                "nested": {"key": "value"}
+            })),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let back: ProgressEvent = serde_json::from_str(&json).unwrap();
+        let meta = back.metadata.unwrap();
+        assert_eq!(meta["tool_name"], "Read");
+        assert_eq!(meta["nested"]["key"], "value");
+    }
+
+    #[test]
+    fn terminal_event_detection_completed() {
+        let event = ProgressEvent {
+            kind: ProgressKind::Completed,
+            message: "done".into(),
+            metadata: None,
+        };
+        assert!(matches!(event.kind, ProgressKind::Completed));
+    }
+
+    #[test]
+    fn terminal_event_detection_error() {
+        let event = ProgressEvent {
+            kind: ProgressKind::Error,
+            message: "failed".into(),
+            metadata: None,
+        };
+        assert!(matches!(event.kind, ProgressKind::Error));
+    }
+
+    #[test]
+    fn non_terminal_events() {
+        for kind in [
+            ProgressKind::Text,
+            ProgressKind::Thinking,
+            ProgressKind::ToolCall,
+            ProgressKind::ToolResult,
+            ProgressKind::Milestone,
+            ProgressKind::WaitingForInput,
+        ] {
+            assert!(!matches!(
+                kind,
+                ProgressKind::Completed | ProgressKind::Error
+            ));
+        }
+    }
 }

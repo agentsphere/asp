@@ -537,4 +537,105 @@ mod tests {
             "\"unknown\""
         );
     }
+
+    #[test]
+    fn background_task_health_serialization() {
+        let task = BackgroundTaskHealth {
+            name: "test-task".into(),
+            status: SubsystemStatus::Degraded,
+            last_heartbeat: Some(Utc::now()),
+            success_count: 10,
+            failure_count: 2,
+            last_error: Some("timeout".into()),
+        };
+        let json = serde_json::to_value(&task).unwrap();
+        assert_eq!(json["name"], "test-task");
+        assert_eq!(json["status"], "degraded");
+        assert_eq!(json["success_count"], 10);
+        assert_eq!(json["failure_count"], 2);
+        assert_eq!(json["last_error"], "timeout");
+    }
+
+    #[test]
+    fn pod_failure_summary_serialization() {
+        let summary = PodFailureSummary {
+            total_failed_24h: 5,
+            agent_failures: 3,
+            pipeline_failures: 2,
+            recent_failures: vec![RecentPodFailure {
+                id: Uuid::nil(),
+                project_id: Some(Uuid::nil()),
+                project_name: Some("demo".into()),
+                pod_name: Some("demo-pod-abc".into()),
+                kind: "agent".into(),
+                error: Some("OOMKilled".into()),
+                failed_at: Utc::now(),
+            }],
+        };
+        let json = serde_json::to_value(&summary).unwrap();
+        assert_eq!(json["total_failed_24h"], 5);
+        assert_eq!(json["agent_failures"], 3);
+        assert_eq!(json["pipeline_failures"], 2);
+        assert_eq!(json["recent_failures"].as_array().unwrap().len(), 1);
+        assert_eq!(json["recent_failures"][0]["kind"], "agent");
+        assert_eq!(json["recent_failures"][0]["error"], "OOMKilled");
+    }
+
+    #[test]
+    fn health_snapshot_serialization() {
+        let snap = HealthSnapshot::default();
+        let json = serde_json::to_value(&snap).unwrap();
+        assert_eq!(json["overall"], "unknown");
+        assert_eq!(json["uptime_seconds"], 0);
+        assert!(json["subsystems"].is_array());
+        assert!(json["background_tasks"].is_array());
+    }
+
+    #[test]
+    fn task_registry_heartbeat_updates_last_beat_utc() {
+        let registry = TaskRegistry::new();
+        let before = Utc::now();
+        registry.heartbeat("task");
+        let snap = registry.snapshot();
+        let hb = snap[0].last_heartbeat.unwrap();
+        assert!(hb >= before, "last_heartbeat should be after test start");
+    }
+
+    #[test]
+    fn subsystem_status_worst_degraded_unknown() {
+        assert_eq!(
+            SubsystemStatus::Degraded.worst(SubsystemStatus::Unknown),
+            SubsystemStatus::Degraded
+        );
+    }
+
+    #[test]
+    fn subsystem_status_copy_clone() {
+        let s = SubsystemStatus::Healthy;
+        let s2 = s;
+        let s3 = s.clone();
+        assert_eq!(s, s2);
+        assert_eq!(s, s3);
+    }
+
+    #[test]
+    fn subsystem_status_debug() {
+        let debug = format!("{:?}", SubsystemStatus::Unhealthy);
+        assert_eq!(debug, "Unhealthy");
+    }
+
+    #[test]
+    fn recent_pod_failure_debug() {
+        let failure = RecentPodFailure {
+            id: Uuid::nil(),
+            project_id: None,
+            project_name: None,
+            pod_name: None,
+            kind: "pipeline".into(),
+            error: None,
+            failed_at: Utc::now(),
+        };
+        let debug = format!("{failure:?}");
+        assert!(debug.contains("pipeline"));
+    }
 }

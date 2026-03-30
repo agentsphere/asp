@@ -2677,10 +2677,16 @@ async fn execute_gitops_sync_inner(
     if let Some(ref pf) = platform_file
         && !pf.flags.is_empty()
     {
-        let flag_defs: Vec<(String, serde_json::Value)> = pf
+        let flag_defs: Vec<(String, serde_json::Value, Option<String>)> = pf
             .flags
             .iter()
-            .map(|f| (f.key.clone(), f.default_value.clone()))
+            .map(|f| {
+                (
+                    f.key.clone(),
+                    f.default_value.clone(),
+                    f.description.clone(),
+                )
+            })
             .collect();
         let flag_event = crate::store::eventbus::PlatformEvent::FlagsRegistered {
             project_id,
@@ -6435,5 +6441,288 @@ mod tests {
             "push",
         );
         assert_eq!(find_env(&vars, "STEP_NAME"), Some(String::new()));
+    }
+
+    // -- DEFAULT_STEP_TIMEOUT_SECS --
+
+    #[test]
+    fn default_step_timeout_is_900_seconds() {
+        assert_eq!(DEFAULT_STEP_TIMEOUT_SECS, 900);
+    }
+
+    // -- PipelineMeta construction and Debug --
+
+    #[test]
+    fn pipeline_meta_debug() {
+        let meta = PipelineMeta {
+            git_ref: "refs/heads/main".into(),
+            commit_sha: Some("abc123".into()),
+            version: Some("1.0.0".into()),
+            project_name: "test-project".into(),
+            repo_clone_url: "http://platform:8080/owner/repo.git".into(),
+            git_auth_token: "secret-token".into(),
+            namespace: "test-ns-dev".into(),
+            trigger_type: "push".into(),
+            namespace_slug: "test-ns".into(),
+            otlp_token: Some("otlp-token".into()),
+            git_secret_name: "pl-git-12345678".into(),
+        };
+        let debug = format!("{meta:?}");
+        assert!(debug.contains("test-project"));
+        assert!(debug.contains("refs/heads/main"));
+    }
+
+    #[test]
+    fn pipeline_meta_without_optional_fields() {
+        let meta = PipelineMeta {
+            git_ref: "main".into(),
+            commit_sha: None,
+            version: None,
+            project_name: "app".into(),
+            repo_clone_url: "http://platform:8080/user/app.git".into(),
+            git_auth_token: "tok".into(),
+            namespace: "app-dev".into(),
+            trigger_type: "api".into(),
+            namespace_slug: "app".into(),
+            otlp_token: None,
+            git_secret_name: "pl-git-00000000".into(),
+        };
+        assert!(meta.commit_sha.is_none());
+        assert!(meta.version.is_none());
+        assert!(meta.otlp_token.is_none());
+    }
+
+    // -- StepRow construction and fields --
+
+    #[test]
+    fn step_row_all_fields() {
+        let row = StepRow {
+            id: Uuid::new_v4(),
+            step_order: 2,
+            name: "deploy".into(),
+            image: "registry.io/app:latest".into(),
+            commands: vec!["deploy.sh".into(), "verify.sh".into()],
+            condition_events: vec!["push".into()],
+            condition_branches: vec!["main".into(), "release/*".into()],
+            deploy_test: Some(serde_json::json!({"test_image": "test:v1"})),
+            depends_on: vec!["build".into(), "test".into()],
+            environment: Some(serde_json::json!({"ENV": "production"})),
+            gate: true,
+            step_type: "deploy_test".into(),
+            step_config: Some(serde_json::json!({"timeout": 300})),
+        };
+        assert_eq!(row.step_order, 2);
+        assert_eq!(row.name, "deploy");
+        assert!(row.gate);
+        assert_eq!(row.commands.len(), 2);
+        assert_eq!(row.depends_on.len(), 2);
+        assert!(row.deploy_test.is_some());
+        assert!(row.environment.is_some());
+        assert!(row.step_config.is_some());
+    }
+
+    // -- TestNamespaceGuard: verify field semantics --
+
+    #[test]
+    fn test_namespace_guard_namespace_format() {
+        // Verify the expected namespace format for deploy-test
+        let pipeline_id = Uuid::parse_str("12345678-1234-1234-1234-123456789abc").unwrap();
+        let ns_name = format!("{}-test-{}", "my-project", &pipeline_id.to_string()[..8]);
+        assert_eq!(ns_name, "my-project-test-12345678");
+    }
+
+    // -- build_env_vars_core: verify all standard vars present --
+
+    #[test]
+    fn env_vars_core_has_expected_count_without_optional() {
+        let vars = build_env_vars_core(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "main",
+            None,
+            "test",
+            None,
+            None,
+            "push",
+        );
+        // Without commit_sha, registry_url: should have 9 vars
+        // PROJECT_ID, PROJECT_NAME, PIPELINE_ID, STEP_NAME, COMMIT_REF,
+        // COMMIT_BRANCH, PROJECT, PIPELINE_TRIGGER, VERSION
+        assert_eq!(vars.len(), 9, "expected 9 vars, got: {vars:?}");
+    }
+
+    #[test]
+    fn env_vars_core_has_expected_count_with_all_optional() {
+        let vars = build_env_vars_core(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            "refs/heads/main",
+            Some("abc1234"),
+            "build",
+            Some("registry.io:5000"),
+            Some("1.0.0"),
+            "push",
+        );
+        // With commit_sha (+3: COMMIT_SHA, SHORT_SHA, IMAGE_TAG), registry (+2: REGISTRY, DOCKER_CONFIG):
+        // 9 + 3 + 2 = 14
+        assert_eq!(vars.len(), 14, "expected 14 vars, got: {vars:?}");
+    }
+
+    // -- is_reserved_pipeline_env_var: case sensitivity --
+
+    #[test]
+    fn reserved_pipeline_env_var_case_sensitive() {
+        // Reserved vars are exact match — lowercase should not be blocked
+        assert!(!is_reserved_pipeline_env_var("pipeline_id"));
+        assert!(!is_reserved_pipeline_env_var("commit_sha"));
+        assert!(!is_reserved_pipeline_env_var("path")); // lowercase path is not PATH
+    }
+
+    // -- build_volumes_and_mounts: verify all combinations --
+
+    #[test]
+    fn build_volumes_and_mounts_all_three_volumes() {
+        let (volumes, mounts) = build_volumes_and_mounts(Some("reg"), Some("git"));
+        // workspace + docker-config + git-auth
+        assert_eq!(volumes.len(), 3);
+        assert_eq!(volumes[0].name, "workspace");
+        assert_eq!(volumes[1].name, "docker-config");
+        assert_eq!(volumes[2].name, "git-auth");
+        // step mounts: workspace + docker-config (git-auth is only for init container)
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[0].name, "workspace");
+        assert_eq!(mounts[1].name, "docker-config");
+    }
+
+    // -- pod spec labels validation --
+
+    #[test]
+    fn build_pod_spec_labels_use_correct_keys() {
+        let pipeline_id = Uuid::new_v4();
+        let project_id = Uuid::new_v4();
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id,
+            project_id,
+            step_name: "My Step",
+            image: "alpine:3.19",
+            commands: &["true".into()],
+            env_vars: &[],
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            git_ref: "main",
+            registry_secret: None,
+            git_secret_name: None,
+            step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
+        });
+
+        let labels = pod.metadata.labels.unwrap();
+        assert_eq!(labels.len(), 3);
+        assert!(labels.contains_key("platform.io/pipeline"));
+        assert!(labels.contains_key("platform.io/project"));
+        assert!(labels.contains_key("platform.io/step"));
+        // step label should be slugified
+        assert_eq!(labels["platform.io/step"], "my-step");
+    }
+
+    // -- init container name is "clone" --
+
+    #[test]
+    fn build_pod_spec_init_container_named_clone() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["true".into()],
+            env_vars: &[],
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            git_ref: "main",
+            registry_secret: None,
+            git_secret_name: None,
+            step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
+        });
+
+        let spec = pod.spec.unwrap();
+        let init = &spec.init_containers.as_ref().unwrap()[0];
+        assert_eq!(init.name, "clone");
+    }
+
+    // -- step container name is "step" --
+
+    #[test]
+    fn build_pod_spec_step_container_named_step() {
+        let pod = build_pod_spec(&PodSpecParams {
+            pod_name: "pl-test",
+            pipeline_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            step_name: "test",
+            image: "alpine:3.19",
+            commands: &["true".into()],
+            env_vars: &[],
+            repo_clone_url: "http://platform:8080/owner/test.git",
+            git_ref: "main",
+            registry_secret: None,
+            git_secret_name: None,
+            step_type: "command",
+            git_clone_image: "alpine/git:2.47.2",
+        });
+
+        let spec = pod.spec.unwrap();
+        assert_eq!(spec.containers[0].name, "step");
+    }
+
+    // -- PipelineStatus integration with executor logic --
+
+    #[test]
+    fn pipeline_status_pending_to_failure_valid() {
+        // Executor marks pipeline as failed when it can't execute
+        assert!(PipelineStatus::Pending.can_transition_to(PipelineStatus::Failure));
+    }
+
+    #[test]
+    fn pipeline_status_running_to_cancelled_valid() {
+        // cancel_pipeline transitions from Running → Cancelled
+        assert!(PipelineStatus::Running.can_transition_to(PipelineStatus::Cancelled));
+    }
+
+    #[test]
+    fn pipeline_status_cancelled_is_terminal() {
+        assert!(PipelineStatus::Cancelled.is_terminal());
+    }
+
+    #[test]
+    fn pipeline_status_success_cannot_transition() {
+        assert!(!PipelineStatus::Success.can_transition_to(PipelineStatus::Failure));
+        assert!(!PipelineStatus::Success.can_transition_to(PipelineStatus::Running));
+        assert!(!PipelineStatus::Success.can_transition_to(PipelineStatus::Cancelled));
+    }
+
+    // -- extract_branch vs build_env_vars_core consistency --
+
+    #[test]
+    fn extract_branch_and_env_vars_core_consistent() {
+        let git_ref = "refs/heads/feature/deep";
+        let branch_from_extract = extract_branch(git_ref);
+        let vars = build_env_vars_core(
+            Uuid::nil(),
+            Uuid::nil(),
+            "proj",
+            git_ref,
+            None,
+            "test",
+            None,
+            None,
+            "push",
+        );
+        let branch_from_env = find_env(&vars, "COMMIT_BRANCH").unwrap();
+        assert_eq!(
+            branch_from_extract, branch_from_env,
+            "extract_branch and build_env_vars_core should produce the same branch"
+        );
     }
 }

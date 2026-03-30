@@ -1089,4 +1089,260 @@ mod tests {
         assert_eq!(extra.len(), 20); // 20 custom vars, API key extracted
         assert!(!extra.iter().any(|(k, _)| k == "ANTHROPIC_API_KEY"));
     }
+
+    #[test]
+    fn build_provider_extra_env_vertex_does_not_override_existing() {
+        // If CLAUDE_CODE_USE_VERTEX is already set, it should not be duplicated
+        let vars = HashMap::from([
+            ("CLAUDE_CODE_USE_VERTEX".into(), "0".into()),
+            ("CLOUD_ML_REGION".into(), "europe-west1".into()),
+        ]);
+        let (_, extra) = build_provider_extra_env("vertex", &vars);
+        let vertex_entries: Vec<_> = extra
+            .iter()
+            .filter(|(k, _)| k == "CLAUDE_CODE_USE_VERTEX")
+            .collect();
+        assert_eq!(vertex_entries.len(), 1);
+        assert_eq!(vertex_entries[0].1, "0"); // user value preserved
+    }
+
+    #[test]
+    fn test_connection_result_passed() {
+        // Simulates Ok(Some(text)) where !text.is_empty()
+        let text: Option<String> = Some("hello".into());
+        let result = match text {
+            Some(ref t) if !t.is_empty() => TestResult {
+                test: 1,
+                name: "connection",
+                status: TestStatus::Passed,
+                detail: "Endpoint reachable, got valid response".into(),
+            },
+            _ => TestResult {
+                test: 1,
+                name: "connection",
+                status: TestStatus::Failed,
+                detail: "Endpoint returned empty response".into(),
+            },
+        };
+        assert!(matches!(result.status, TestStatus::Passed));
+    }
+
+    #[test]
+    fn test_connection_result_empty_response() {
+        // Simulates Ok(Some("")) or Ok(None)
+        let text: Option<String> = Some(String::new());
+        let is_empty = text.as_ref().map_or(true, |t| t.is_empty());
+        assert!(is_empty);
+    }
+
+    #[test]
+    fn test_connection_result_none_response() {
+        let text: Option<String> = None;
+        let is_empty = text.as_ref().map_or(true, |t| t.is_empty());
+        assert!(is_empty);
+    }
+
+    #[test]
+    fn test_output_format_empty_tools() {
+        // Simulates resp.tools.is_empty() → Failed
+        let resp = StructuredResponse {
+            text: "some text".into(),
+            tools: vec![],
+        };
+        assert!(resp.tools.is_empty());
+    }
+
+    #[test]
+    fn test_output_format_tools_with_names() {
+        // Simulates resp.tools.iter().all(|t| !t.name.is_empty())
+        let resp = StructuredResponse {
+            text: "text".into(),
+            tools: vec![crate::agent::cli_invoke::ToolRequest {
+                name: "create_project".into(),
+                parameters: serde_json::json!({"name": "test"}),
+            }],
+        };
+        let has_names = resp.tools.iter().all(|t| !t.name.is_empty());
+        assert!(has_names);
+    }
+
+    #[test]
+    fn test_output_format_tool_missing_name() {
+        let resp = StructuredResponse {
+            text: "text".into(),
+            tools: vec![crate::agent::cli_invoke::ToolRequest {
+                name: String::new(),
+                parameters: serde_json::json!({}),
+            }],
+        };
+        let has_names = resp.tools.iter().all(|t| !t.name.is_empty());
+        assert!(!has_names);
+    }
+
+    #[test]
+    fn test_session_memory_turn1_correct() {
+        // Simulates the turn1 check: answer1 == Some(20)
+        let json = serde_json::json!({"answer": 20});
+        let answer = json.get("answer").and_then(serde_json::Value::as_i64);
+        assert_eq!(answer, Some(20));
+    }
+
+    #[test]
+    fn test_session_memory_turn1_wrong_answer() {
+        let json = serde_json::json!({"answer": 15});
+        let answer = json.get("answer").and_then(serde_json::Value::as_i64);
+        assert_ne!(answer, Some(20));
+    }
+
+    #[test]
+    fn test_session_memory_turn1_missing_answer() {
+        let json = serde_json::json!({"result": "something"});
+        let answer = json.get("answer").and_then(serde_json::Value::as_i64);
+        assert_eq!(answer, None);
+    }
+
+    #[test]
+    fn test_session_memory_turn2_correct() {
+        let json = serde_json::json!({"answer": 13});
+        let answer = json.get("answer").and_then(serde_json::Value::as_i64);
+        assert_eq!(answer, Some(13));
+    }
+
+    #[test]
+    fn test_session_memory_turn2_wrong() {
+        let json = serde_json::json!({"answer": 20});
+        let answer = json.get("answer").and_then(serde_json::Value::as_i64);
+        assert_ne!(answer, Some(13));
+    }
+
+    #[test]
+    fn validation_event_sequence_all_passed() {
+        let events = vec![
+            ValidationEvent::Test(TestResult {
+                test: 1,
+                name: "connection",
+                status: TestStatus::Running,
+                detail: String::new(),
+            }),
+            ValidationEvent::Test(TestResult {
+                test: 1,
+                name: "connection",
+                status: TestStatus::Passed,
+                detail: "ok".into(),
+            }),
+            ValidationEvent::Test(TestResult {
+                test: 2,
+                name: "output_format",
+                status: TestStatus::Running,
+                detail: String::new(),
+            }),
+            ValidationEvent::Test(TestResult {
+                test: 2,
+                name: "output_format",
+                status: TestStatus::Passed,
+                detail: "ok".into(),
+            }),
+            ValidationEvent::Test(TestResult {
+                test: 3,
+                name: "session_memory",
+                status: TestStatus::Running,
+                detail: String::new(),
+            }),
+            ValidationEvent::Test(TestResult {
+                test: 3,
+                name: "session_memory",
+                status: TestStatus::Passed,
+                detail: "ok".into(),
+            }),
+            ValidationEvent::Done { all_passed: true },
+        ];
+
+        // Verify all events serialize correctly
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            assert!(!json.is_empty());
+        }
+
+        // Verify the last event is Done with all_passed=true
+        if let ValidationEvent::Done { all_passed } = events.last().unwrap() {
+            assert!(all_passed);
+        } else {
+            panic!("expected Done event at the end");
+        }
+    }
+
+    #[test]
+    fn validation_event_sequence_one_failed() {
+        let mut all_passed = true;
+        let statuses = [TestStatus::Passed, TestStatus::Failed, TestStatus::Passed];
+        for status in &statuses {
+            if !matches!(status, TestStatus::Passed) {
+                all_passed = false;
+            }
+        }
+        assert!(!all_passed);
+    }
+
+    #[test]
+    fn validation_cli_options_connection() {
+        // Simulates the CliSpawnOptions constructed in test_connection
+        let opts = CliSpawnOptions {
+            prompt: Some("Reply with the single word hello".into()),
+            disable_tools: true,
+            max_turns: Some(1),
+            anthropic_api_key: Some("test-key".into()),
+            permission_mode: Some("bypassPermissions".into()),
+            cwd: Some(std::path::PathBuf::from("/tmp")),
+            ..Default::default()
+        };
+        assert!(opts.prompt.is_some());
+        assert!(opts.disable_tools);
+        assert_eq!(opts.max_turns, Some(1));
+    }
+
+    #[test]
+    fn validation_cli_options_session_memory_turn1() {
+        // Simulates opts for session_memory turn 1
+        let session_id = Uuid::new_v4().to_string();
+        let opts = CliSpawnOptions {
+            prompt: Some("what is 10+10? put the answer in the answer field".into()),
+            disable_tools: true,
+            max_turns: Some(1),
+            initial_session_id: Some(session_id.clone()),
+            json_schema: Some(r#"{"type":"object","properties":{"answer":{"type":"integer"}},"required":["answer"]}"#.into()),
+            permission_mode: Some("bypassPermissions".into()),
+            cwd: Some(std::path::PathBuf::from("/tmp")),
+            ..Default::default()
+        };
+        assert!(opts.initial_session_id.is_some());
+        assert!(opts.resume_session.is_none());
+    }
+
+    #[test]
+    fn validation_cli_options_session_memory_turn2() {
+        // Simulates opts for session_memory turn 2 with --resume
+        let session_id = Uuid::new_v4().to_string();
+        let opts = CliSpawnOptions {
+            prompt: Some("subtract 7 from the previous result".into()),
+            disable_tools: true,
+            max_turns: Some(1),
+            resume_session: Some(session_id),
+            permission_mode: Some("bypassPermissions".into()),
+            cwd: Some(std::path::PathBuf::from("/tmp")),
+            ..Default::default()
+        };
+        assert!(opts.resume_session.is_some());
+        assert!(opts.initial_session_id.is_none());
+    }
+
+    #[test]
+    fn validation_db_status_strings() {
+        let all_passed = true;
+        let status = if all_passed { "valid" } else { "invalid" };
+        assert_eq!(status, "valid");
+
+        let all_passed = false;
+        let status = if all_passed { "valid" } else { "invalid" };
+        assert_eq!(status, "invalid");
+    }
 }

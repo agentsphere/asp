@@ -376,4 +376,159 @@ mod tests {
         let email = crate::git::browser::extract_author_email_from_commit(raw);
         assert_eq!(email, Some("alice@example.com".to_owned()));
     }
+
+    // -- validate_commit_sha edge cases --
+
+    #[test]
+    fn test_validate_commit_sha_exactly_7_chars() {
+        assert!(validate_commit_sha("abcdef1"));
+    }
+
+    #[test]
+    fn test_validate_commit_sha_exactly_64_chars() {
+        assert!(validate_commit_sha(&"a".repeat(64)));
+    }
+
+    #[test]
+    fn test_validate_commit_sha_6_chars() {
+        assert!(!validate_commit_sha("abcde1"));
+    }
+
+    #[test]
+    fn test_validate_commit_sha_mixed_case_hex() {
+        assert!(validate_commit_sha("AbCdEf1234567"));
+    }
+
+    #[test]
+    fn test_validate_commit_sha_with_non_hex_g() {
+        assert!(!validate_commit_sha("ghijklm"));
+    }
+
+    #[test]
+    fn test_validate_commit_sha_with_spaces() {
+        assert!(!validate_commit_sha("abc def1"));
+    }
+
+    // -- SignatureStatus serde roundtrip --
+
+    #[test]
+    fn test_signature_status_serde_roundtrip() {
+        for status in &[
+            SignatureStatus::Verified,
+            SignatureStatus::UnverifiedSigner,
+            SignatureStatus::BadSignature,
+            SignatureStatus::NoSignature,
+        ] {
+            let json = serde_json::to_string(status).unwrap();
+            let parsed: SignatureStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(*status, parsed);
+        }
+    }
+
+    // -- SignatureInfo serde roundtrip --
+
+    #[test]
+    fn test_signature_info_serde_roundtrip() {
+        let info = SignatureInfo {
+            status: SignatureStatus::Verified,
+            signer_key_id: Some("KEY123".into()),
+            signer_fingerprint: Some("FP456".into()),
+            signer_name: Some("Alice".into()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: SignatureInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.status, SignatureStatus::Verified);
+        assert_eq!(parsed.signer_key_id, Some("KEY123".into()));
+    }
+
+    // -- parse_commit_gpgsig: edge cases --
+
+    #[test]
+    fn test_parse_commit_gpgsig_empty_input() {
+        let result = parse_commit_gpgsig(b"");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_commit_gpgsig_no_newline_before_gpgsig() {
+        // gpgsig at the very start (no leading newline) should NOT be found
+        // because parse_commit_gpgsig looks for "\ngpgsig "
+        let raw =
+            b"gpgsig -----BEGIN PGP SIGNATURE-----\n -----END PGP SIGNATURE-----\n\nmessage\n";
+        let result = parse_commit_gpgsig(raw);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_commit_signed_data_ends_with_newline() {
+        let result = parse_commit_gpgsig(RAW_COMMIT_WITH_SIG.as_bytes()).unwrap();
+        let signed = String::from_utf8(result.signed_data).unwrap();
+        assert!(
+            signed.ends_with('\n'),
+            "signed data should end with newline"
+        );
+    }
+
+    // -- verify_signature: invalid armor --
+
+    #[test]
+    fn test_verify_signature_invalid_armor() {
+        use pgp::composed::{Deserializable, SignedPublicKey};
+        let (key, _) = SignedPublicKey::from_string(TEST_SIGNER_PUBLIC_KEY).unwrap();
+        let result = verify_signature("not a valid signature", b"data", &key);
+        assert!(!result);
+    }
+
+    // -- extract_signing_key_id: empty armor --
+
+    #[test]
+    fn test_extract_signing_key_id_empty_string() {
+        let result = extract_signing_key_id("");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_signing_key_id_partial_armor() {
+        let result = extract_signing_key_id("-----BEGIN PGP SIGNATURE-----\ntruncated");
+        assert!(result.is_none());
+    }
+
+    // -- SignatureStatus equality --
+
+    #[test]
+    fn test_signature_status_equality() {
+        assert_eq!(SignatureStatus::Verified, SignatureStatus::Verified);
+        assert_ne!(SignatureStatus::Verified, SignatureStatus::BadSignature);
+        assert_ne!(
+            SignatureStatus::NoSignature,
+            SignatureStatus::UnverifiedSigner
+        );
+    }
+
+    // -- SignatureInfo Debug + Clone --
+
+    #[test]
+    fn test_signature_info_debug() {
+        let info = SignatureInfo {
+            status: SignatureStatus::Verified,
+            signer_key_id: None,
+            signer_fingerprint: None,
+            signer_name: None,
+        };
+        let debug = format!("{info:?}");
+        assert!(debug.contains("Verified"));
+    }
+
+    #[test]
+    fn test_signature_info_clone() {
+        let info = SignatureInfo {
+            status: SignatureStatus::BadSignature,
+            signer_key_id: Some("key".into()),
+            signer_fingerprint: Some("fp".into()),
+            signer_name: Some("name".into()),
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.status, info.status);
+        assert_eq!(cloned.signer_key_id, info.signer_key_id);
+    }
 }

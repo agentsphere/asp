@@ -130,4 +130,53 @@ mod tests {
         // Git will fail, which defaults to not blocking
         assert!(!is_force_push(Path::new("/nonexistent/repo.git"), &old, &new).await);
     }
+
+    #[tokio::test]
+    async fn force_push_both_zero_shas() {
+        let zero = "0".repeat(40);
+        assert!(!is_force_push(Path::new("/nonexistent"), &zero, &zero).await);
+    }
+
+    #[test]
+    fn branch_protection_struct_debug() {
+        let rule = BranchProtection {
+            id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            pattern: "main".into(),
+            require_pr: true,
+            block_force_push: true,
+            required_approvals: 2,
+            dismiss_stale_reviews: true,
+            required_checks: vec!["ci".into()],
+            require_up_to_date: true,
+            allow_admin_bypass: false,
+            merge_methods: vec!["merge".into()],
+        };
+        let debug = format!("{rule:?}");
+        assert!(debug.contains("main"));
+        assert!(debug.contains("require_pr: true"));
+        assert!(debug.contains("block_force_push: true"));
+        assert!(debug.contains("required_approvals: 2"));
+    }
+
+    #[test]
+    fn branch_protection_clone() {
+        let rule = BranchProtection {
+            id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            pattern: "release/*".into(),
+            require_pr: false,
+            block_force_push: false,
+            required_approvals: 0,
+            dismiss_stale_reviews: false,
+            required_checks: vec![],
+            require_up_to_date: false,
+            allow_admin_bypass: true,
+            merge_methods: vec!["squash".into(), "rebase".into()],
+        };
+        let cloned = rule.clone();
+        assert_eq!(cloned.pattern, rule.pattern);
+        assert_eq!(cloned.allow_admin_bypass, rule.allow_admin_bypass);
+        assert_eq!(cloned.merge_methods, rule.merge_methods);
+    }
 }

@@ -1840,7 +1840,7 @@ async fn publish_all_event_variants(pool: PgPool) {
         },
         platform::store::eventbus::PlatformEvent::FlagsRegistered {
             project_id: Uuid::new_v4(),
-            flags: vec![("flag1".into(), serde_json::json!(true))],
+            flags: vec![("flag1".into(), serde_json::json!(true), None)],
         },
     ];
 

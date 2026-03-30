@@ -1210,4 +1210,51 @@ mod tests {
         assert!(formatted.contains("Build me a REST API"));
         assert!(formatted.contains("Manager Agent"));
     }
+
+    #[test]
+    fn loop_outcome_eq_reflexive() {
+        assert_eq!(LoopOutcome::Completed, LoopOutcome::Completed);
+        assert_eq!(LoopOutcome::WaitingForInput, LoopOutcome::WaitingForInput);
+        assert_eq!(LoopOutcome::Cancelled, LoopOutcome::Cancelled);
+    }
+
+    #[test]
+    fn parse_create_project_input_unicode_name_rejected() {
+        let input = serde_json::json!({"name": "my-приложение"});
+        let result = parse_create_project_input(&input);
+        assert!(result.is_err(), "unicode name should be rejected");
+    }
+
+    #[test]
+    fn parse_uuid_field_object_value() {
+        let input = serde_json::json!({"project_id": {"id": "abc"}});
+        let result = parse_uuid_field(&input, "project_id");
+        assert!(result.is_err(), "object value should fail as_str()");
+    }
+
+    #[test]
+    fn parse_create_project_input_name_with_dots() {
+        let input = serde_json::json!({"name": "my.app"});
+        let result = parse_create_project_input(&input);
+        assert!(result.is_ok(), "dots should be allowed in names");
+    }
+
+    #[test]
+    fn parse_create_project_input_name_with_hyphens() {
+        let input = serde_json::json!({"name": "my-awesome-app"});
+        let result = parse_create_project_input(&input);
+        assert!(result.is_ok(), "hyphens should be allowed in names");
+    }
+
+    #[test]
+    fn max_tool_rounds_at_least_reasonable() {
+        assert!(
+            MAX_TOOL_ROUNDS >= 5,
+            "should allow enough rounds for tool execution"
+        );
+        assert!(
+            MAX_TOOL_ROUNDS <= 100,
+            "should have a reasonable upper bound"
+        );
+    }
 }

@@ -484,3 +484,68 @@ async fn cleanup_upload(state: &AppState, upload_id: &Uuid, session: &UploadSess
     let key = upload_key(upload_id);
     let _: Result<(), _> = fred::interfaces::KeysInterface::del::<(), _>(&state.valkey, &key).await;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upload_key_format() {
+        let id = Uuid::nil();
+        let key = upload_key(&id);
+        assert_eq!(key, format!("registry:upload:{id}"));
+        assert!(key.starts_with("registry:upload:"));
+    }
+
+    #[test]
+    fn upload_key_unique_per_uuid() {
+        let id1 = Uuid::nil();
+        let id2 = Uuid::from_u128(1);
+        assert_ne!(upload_key(&id1), upload_key(&id2));
+    }
+
+    #[test]
+    fn header_val_valid_string() {
+        let val = header_val("sha256:abc123");
+        assert_eq!(val.to_str().unwrap(), "sha256:abc123");
+    }
+
+    #[test]
+    fn header_val_empty_string() {
+        let val = header_val("");
+        assert_eq!(val.to_str().unwrap(), "");
+    }
+
+    #[test]
+    fn header_val_with_special_chars() {
+        let val = header_val("/v2/myapp/blobs/sha256:abc");
+        assert_eq!(val.to_str().unwrap(), "/v2/myapp/blobs/sha256:abc");
+    }
+
+    #[test]
+    fn header_val_invalid_header_returns_empty() {
+        // Header values cannot contain control chars like \n
+        let val = header_val("bad\nvalue");
+        assert_eq!(val.to_str().unwrap(), "");
+    }
+
+    #[test]
+    fn upload_query_digest_none() {
+        let q: UploadQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(q.digest.is_none());
+    }
+
+    #[test]
+    fn upload_query_digest_some() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let q: UploadQuery = serde_json::from_value(serde_json::json!({"digest": digest})).unwrap();
+        assert_eq!(q.digest.as_deref(), Some(digest.as_str()));
+    }
+
+    #[test]
+    fn upload_query_debug() {
+        let q = UploadQuery { digest: None };
+        let debug = format!("{q:?}");
+        assert!(debug.contains("UploadQuery"));
+    }
+}
