@@ -663,7 +663,7 @@ Multi-step user journey across multiple endpoints?
 
 **Coverage target**: 100% on unit + integration (diff-only enforcement via `just cov-diff-check`). E2E covers critical user journeys only.
 
-**LLM rule**: No real LLM calls in unit/integration/E2E. Mock CLI via `CLAUDE_CLI_PATH=tests/fixtures/mock-claude-cli.sh`. Separate `just test-llm` for real Anthropic API.
+**LLM rule**: No real LLM calls in unit/integration/E2E. Mock CLI via `CLAUDE_CLI_PATH=cli/claude-mock/claude`. Separate `just test-llm` for real Anthropic API.
 
 ### Test helpers — integration (`tests/helpers/mod.rs`)
 
@@ -712,7 +712,7 @@ state.pipeline_notify.notify_one();  // wake executor after trigger
 
 **Git repos under `/tmp/platform-e2e/`** — shared mount between host and cluster node.
 
-**Mock CLI for integration tests** — `test_state_with_cli(pool, true)` sets `CLAUDE_CLI_PATH` to `tests/fixtures/mock-claude-cli.sh` and enables `cli_spawn_enabled`. The mock script exits instantly with canned NDJSON.
+**Mock CLI for integration tests** — `test_state_with_cli(pool, true)` sets `CLAUDE_CLI_PATH` to `cli/claude-mock/claude` and enables `cli_spawn_enabled`. The mock script exits instantly with canned NDJSON.
 
 ### When to write tests first (TDD)
 

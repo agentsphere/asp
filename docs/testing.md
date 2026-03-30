@@ -55,7 +55,7 @@ All tests use [cargo-nextest](https://nexte.st/) as the test runner.
 
 **Coverage target**: 100% on unit + integration (diff-only enforcement via `just cov-diff-check`). E2E covers critical user journeys only.
 
-**LLM mocking strategy**: No real LLM calls in unit/integration/E2E. Integration tests use `CLAUDE_CLI_PATH=tests/fixtures/mock-claude-cli.sh` (set automatically by `test_state()`). The mock script exits instantly with canned NDJSON. Separate `just test-llm` for real Anthropic API protocol tests.
+**LLM mocking strategy**: No real LLM calls in unit/integration/E2E. Integration tests use `CLAUDE_CLI_PATH=cli/claude-mock/claude` (set automatically by `test_state()`). The mock script exits instantly with canned NDJSON. Separate `just test-llm` for real Anthropic API protocol tests.
 
 **Frontend-Backend integration testing** is covered in a dedicated guide: [`docs/fe-be-testing.md`](fe-be-testing.md). It describes three tiers that prevent type drift between the Rust API and the Preact UI: ts-rs auto-generated types, API contract integration tests, and Playwright browser E2E tests.
 
@@ -94,7 +94,7 @@ just test-doc           # cargo test --doc (doc examples)
 
 **Integration tests can be async.** If a handler kicks off a background task (executor, reconciler, pod), the integration test spawns that task and polls/waits for the outcome. The test is still "integration" because it validates one endpoint's complete behavior — the async worker is an implementation detail.
 
-**Mock CLI in integration tests**: `test_state()` always sets `CLAUDE_CLI_PATH` to `tests/fixtures/mock-claude-cli.sh`. Tests that need the CLI subprocess path set `cli_spawn_enabled: true` via `test_state_with_cli(pool, true)`. The mock script exits instantly with canned NDJSON — no external dependency, no runtime cost.
+**Mock CLI in integration tests**: `test_state()` always sets `CLAUDE_CLI_PATH` to `cli/claude-mock/claude`. Tests that need the CLI subprocess path set `cli_spawn_enabled: true` via `test_state_with_cli(pool, true)`. The mock script exits instantly with canned NDJSON — no external dependency, no runtime cost.
 
 **Run**:
 ```bash
@@ -409,7 +409,7 @@ For all test types, additionally:
 |---|---|
 | `PLATFORM_PIPELINE_NAMESPACE` | `{namespace}-pipelines` |
 | `PLATFORM_AGENT_NAMESPACE` | `{namespace}-agents` |
-| `CLAUDE_CLI_PATH` | `{project_dir}/tests/fixtures/mock-claude-cli.sh` |
+| `CLAUDE_CLI_PATH` | `{project_dir}/cli/claude-mock/claude` |
 
 ### Cleaning up stale namespaces
 

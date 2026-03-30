@@ -699,8 +699,16 @@ async fn verify_oauth_token(
     }))
 }
 
-/// Try to find `claude` binary on PATH.
+/// Find the Claude CLI binary path.
+///
+/// Checks `CLAUDE_CLI_PATH` env var first (set by test harness to point at the
+/// mock CLI in `cli/claude-mock/claude`), then falls back to `which claude`.
 fn which_claude() -> Option<String> {
+    if let Ok(p) = std::env::var("CLAUDE_CLI_PATH")
+        && !p.is_empty()
+    {
+        return Some(p);
+    }
     std::process::Command::new("which")
         .arg("claude")
         .output()

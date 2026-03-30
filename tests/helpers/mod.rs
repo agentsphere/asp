@@ -53,7 +53,7 @@ pub fn init_test_tracing() {
 ///
 /// Wrapper around `test_state()` that optionally enables CLI subprocess spawning.
 /// `CLAUDE_CLI_PATH` must be set externally (by `hack/test-in-cluster.sh`) to point
-/// to `tests/fixtures/mock-claude-cli.sh`.
+/// to `cli/claude-mock/claude` (unified mock covering --print and setup-token modes).
 ///
 /// - `cli_spawn_enabled = false` — tests that don't exercise CLI subprocess flow
 /// - `cli_spawn_enabled = true` — tests that trigger the mock CLI subprocess

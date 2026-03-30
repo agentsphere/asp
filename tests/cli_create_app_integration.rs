@@ -4,7 +4,7 @@
 //! permissions, rate limiting, session metadata, and error handling.
 //!
 //! Mock-CLI tests use `CLAUDE_CLI_PATH` (set automatically by `test_state()`)
-//! pointing to `tests/fixtures/mock-claude-cli.sh`. Tests that exercise the
+//! pointing to `cli/claude-mock/claude`. Tests that exercise the
 //! CLI subprocess flow use `test_state_with_cli()` which enables `cli_spawn_enabled`.
 
 mod helpers;

@@ -172,7 +172,7 @@ Key state machines:
 Key patterns:
 - `#[sqlx::test]` for per-test DB isolation
 - `test_state(pool)` builds full `AppState` with real infra
-- Mock CLI via `CLAUDE_CLI_PATH=tests/fixtures/mock-claude-cli.sh`
+- Mock CLI via `CLAUDE_CLI_PATH=cli/claude-mock/claude`
 - No FLUSHDB — all Valkey keys are UUID-scoped
 - 100% diff coverage enforcement on changed lines
 
