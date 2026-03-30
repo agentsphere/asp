@@ -4051,15 +4051,24 @@ async fn rolling_back_transitions_to_rolled_back(pool: PgPool) {
             .unwrap();
     assert_eq!(weight, 0, "traffic weight should be 0 after rollback");
 
-    // Verify history
-    let (count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM release_history WHERE release_id = $1 AND action = 'rolled_back'",
-    )
-    .bind(release_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert!(count >= 1, "rolled_back history should exist");
+    // Verify history — poll because history INSERT runs after the phase UPDATE
+    let hist_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(5000);
+    loop {
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM release_history WHERE release_id = $1 AND action = 'rolled_back'",
+        )
+        .bind(release_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if count >= 1 {
+            break;
+        }
+        if tokio::time::Instant::now() > hist_deadline {
+            panic!("rolled_back history should exist");
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
 
     drop(tx);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
@@ -5012,7 +5021,16 @@ async fn create_release_with_values_and_pipeline(pool: PgPool) {
     let project_id = create_project(&app, &admin_token, "rel-vals", "private").await;
     setup_deployment(&pool, project_id, "production", "app:base").await;
 
+    // Insert a pipeline row so the FK constraint on deploy_releases.pipeline_id is satisfied
     let pipeline_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO pipelines (id, project_id, trigger, git_ref, status) VALUES ($1, $2, 'api', 'main', 'success')",
+    )
+    .bind(pipeline_id)
+    .bind(project_id)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let (status, body) = helpers::post_json(
         &app,
@@ -6216,7 +6234,7 @@ async fn promote_staging_succeeds(pool: PgPool) {
     platform::deployer::ops_repo::write_file_to_repo(
         &ops_path,
         "staging",
-        "staging/values.yaml",
+        "values/staging.yaml",
         "image_ref: app:v2\nreplicas: 3\n",
     )
     .await
@@ -8346,7 +8364,7 @@ async fn promote_staging_fires_audit(pool: PgPool) {
     platform::deployer::ops_repo::write_file_to_repo(
         &ops_path,
         "staging",
-        "staging/values.yaml",
+        "values/staging.yaml",
         "image_ref: app:v3\nreplicas: 2\n",
     )
     .await

@@ -438,12 +438,12 @@ async fn save_custom_provider(
     Ok(())
 }
 
-/// Create a team workspace named "Team" if one doesn't already exist.
+/// Create a team workspace named "team" if one doesn't already exist.
 async fn create_team_workspace(state: &AppState, owner_id: Uuid) -> Result<(), ApiError> {
     let exists: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(
             SELECT 1 FROM workspaces
-            WHERE owner_id = $1 AND name != (SELECT name FROM users WHERE id = $1)
+            WHERE owner_id = $1 AND name = 'team'
         ) as "exists!""#,
     )
     .bind(owner_id)

@@ -836,11 +836,11 @@ async fn post_auto_bump_comment(
         use sqlx::Row as _;
         let mr_id: Uuid = mr_row.get("id");
         let _ = sqlx::query(
-            "INSERT INTO mr_comments (merge_request_id, author_id, body) \
-             VALUES ($1, (SELECT owner_id FROM projects WHERE id = $2), $3)",
+            "INSERT INTO comments (project_id, mr_id, author_id, body) \
+             VALUES ($1, $2, (SELECT owner_id FROM projects WHERE id = $1), $3)",
         )
-        .bind(mr_id)
         .bind(project_id)
+        .bind(mr_id)
         .bind(&comment)
         .execute(pool)
         .await;

@@ -3,6 +3,7 @@ use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
 use axum::{Json, Router};
+use fred::interfaces::ClientLike;
 use fred::interfaces::EventInterface;
 use fred::interfaces::PubsubInterface;
 use serde::Serialize;
@@ -91,8 +92,13 @@ async fn health_sse(
 
     let channel = "health:stream";
 
-    // Dedicated subscriber connection for this SSE stream
+    // Dedicated subscriber connection for this SSE stream.
+    // clone_new() creates an unconnected client — init() establishes the connection.
     let subscriber = state.valkey.next().clone_new();
+    subscriber
+        .init()
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
     subscriber
         .subscribe(channel)
         .await

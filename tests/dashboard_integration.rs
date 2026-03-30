@@ -94,6 +94,9 @@ async fn list_audit_log(pool: PgPool) {
     // Creating a project should write an audit entry
     create_project(&app, &admin_token, "audit-proj", "private").await;
 
+    // Audit logging is fire-and-forget (tokio::spawn), so give it a moment to flush
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
     let (status, body) = helpers::get_json(&app, &admin_token, "/api/audit-log").await;
 
     assert_eq!(status, StatusCode::OK);

@@ -1395,13 +1395,12 @@ async fn update_settings_startup_creates_workspace(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     let admin_id = helpers::admin_user_id(&pool).await;
-    let ws_before: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM workspaces WHERE owner_id = $1 AND name != (SELECT name FROM users WHERE id = $1)",
-    )
-    .bind(admin_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let ws_before: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM workspaces WHERE owner_id = $1 AND name = 'team'")
+            .bind(admin_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(ws_before.0, 0, "solo should not have team workspace");
 
     // Upgrade to startup via PATCH

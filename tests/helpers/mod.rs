@@ -84,10 +84,14 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
     // Ensure a rustls CryptoProvider is installed (needed by reqwest/fred)
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    // Bootstrap seed data
-    platform::store::bootstrap::run(&pool, Some("testpassword"), true)
-        .await
-        .expect("bootstrap failed");
+    // Bootstrap seed data (retry once on transient DB pool errors)
+    if let Err(e) = platform::store::bootstrap::run(&pool, Some("testpassword"), true).await {
+        tracing::warn!(error = %e, "bootstrap failed on first attempt, retrying");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        platform::store::bootstrap::run(&pool, Some("testpassword"), true)
+            .await
+            .expect("bootstrap failed on retry");
+    }
 
     // Connect to real Valkey — no FLUSHDB needed. All Valkey keys are UUID-scoped
     // (permission cache, upload sessions, WebAuthn challenges) and never collide
