@@ -188,75 +188,182 @@ When a tool requires confirmation:
 When creating a manager session, the token carries the user's own permissions:
 
 ```rust
-// 1. Resolve user's effective permissions (all projects + workspace)
+// 1. Resolve user's effective permissions (global — no project filter)
 let user_perms = resolver::effective_permissions(pool, valkey, user_id, None).await?;
 
 // 2. Create API token with those permissions as scopes
 let scopes: Vec<String> = user_perms.iter().map(|p| p.as_str().to_owned()).collect();
 
-// 3. Token has workspace boundary but NO project boundary
-//    — manager needs cross-project access within the workspace
+// 3. Token has NO workspace or project boundary — manager is global
+//    The user's RBAC permissions are the only constraint.
 sqlx::query!(
-    "INSERT INTO api_tokens (user_id, name, token_hash, scopes, scope_workspace_id, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6)",
+    "INSERT INTO api_tokens (user_id, name, token_hash, scopes, expires_at)
+     VALUES ($1, $2, $3, $4, $5)",
     agent_user_id,
     format!("manager-session-{session_id}"),
     token_hash,
     &scopes,
-    workspace_id,  // workspace boundary
     Utc::now() + Duration::hours(4),  // 4h lifetime
 );
 ```
 
 **Key difference from agent identity tokens:**
 - Agent tokens: project-scoped, role-filtered (role_perms ∩ spawner_perms)
-- Manager tokens: workspace-scoped, user-permissions-as-is (no role intersection — the user IS the authority)
+- Manager tokens: **no boundary** (global), user-permissions-as-is (no role intersection — the user IS the authority)
 
-### Confirmation implementation
+The manager is a global UI element (dashboard, settings, health) — workspace scoping would break cross-workspace project management and platform-level operations. The user's own RBAC permissions are the only limit.
 
-**UI-level gate (MVP approach):**
+### Confirmation implementation: MCP-level gate
 
-The UI intercepts `tool_use` events from the SSE stream. Based on the current mode and the tool's action type, it either:
-- **auto**: lets the tool execute (no UI interruption)
-- **ask**: pauses the stream, shows approval dialog, sends approval/denial message to session
-- **deny**: sends a "tool denied in plan mode" message back to the session
+**Why not UI-level interception:**
 
-The mode + action classification lives entirely in the frontend. MCP servers always execute — the gate is in the UI before the user's approval message reaches the CLI stdin. This keeps MCP servers simple and the confirmation logic in one place.
+When Claude CLI runs with `--output-format stream-json` and MCP tools, the tool execution happens *inside* the CLI process: Claude decides to call a tool → CLI invokes MCP server → server executes → result returns to Claude → we see the `tool_use` event in the NDJSON stream *after* execution. The UI cannot pause mid-tool-call — by the time we see the event, the action has already happened.
 
-```typescript
-// Frontend: action type classification
-const ACTION_TYPE: Record<string, 'READ' | 'CREATE' | 'UPDATE' | 'DELETE' | 'DEPLOY'> = {
-  'list_projects': 'READ',
-  'get_project': 'READ',
-  'query_logs': 'READ',
-  // ...
-  'create_project': 'CREATE',
-  'spawn_agent': 'CREATE',
-  // ...
-  'update_project': 'UPDATE',
-  'toggle_flag': 'UPDATE',
-  // ...
-  'delete_project': 'DELETE',
-  // ...
-  'promote_staging': 'DEPLOY',
-  'rollback_release': 'DEPLOY',
+**The gate must live in the MCP servers.**
+
+**How it works:**
+
+Each MCP server receives the current permission mode via environment variable `MANAGER_MODE` (set when spawning the MCP process as part of the manager session's MCP config). The mode can be updated mid-session by writing to a shared file or Valkey key that the MCP server reads on each tool call.
+
+Every tool call goes through a gate function before executing:
+
+```javascript
+// mcp/lib/gate.js — shared by all MCP servers
+
+const ACTION_TYPES = {
+  // READ — auto in all modes
+  list_projects: 'READ', get_project: 'READ', query_logs: 'READ',
+  list_pipelines: 'READ', staging_status: 'READ', /* ... */
+
+  // CREATE
+  create_project: 'CREATE', spawn_agent: 'CREATE', trigger_pipeline: 'CREATE',
+  create_issue: 'CREATE', create_flag: 'CREATE', /* ... */
+
+  // UPDATE
+  update_project: 'UPDATE', toggle_flag: 'UPDATE', stop_session: 'UPDATE',
+  cancel_pipeline: 'UPDATE', assign_role: 'UPDATE', /* ... */
+
+  // DELETE
+  delete_project: 'DELETE', delete_flag: 'DELETE', deactivate_user: 'DELETE',
+  delete_secret: 'DELETE', /* ... */
+
+  // DEPLOY
+  promote_staging: 'DEPLOY', promote_release: 'DEPLOY',
+  rollback_release: 'DEPLOY', resume_release: 'DEPLOY',
 };
 
-// Mode matrix: what needs confirmation?
-const MODE_MATRIX: Record<Mode, Record<ActionType, 'auto' | 'ask' | 'deny'>> = {
+const MODE_MATRIX = {
   plan:       { READ: 'auto', CREATE: 'deny',  UPDATE: 'deny',  DELETE: 'deny',  DEPLOY: 'deny'  },
   guided:     { READ: 'auto', CREATE: 'ask',   UPDATE: 'ask',   DELETE: 'ask',   DEPLOY: 'ask'   },
   auto_read:  { READ: 'auto', CREATE: 'ask',   UPDATE: 'ask',   DELETE: 'ask',   DEPLOY: 'ask'   },
   auto_write: { READ: 'auto', CREATE: 'auto',  UPDATE: 'auto',  DELETE: 'ask',   DEPLOY: 'ask'   },
   full_auto:  { READ: 'auto', CREATE: 'auto',  UPDATE: 'auto',  DELETE: 'auto',  DEPLOY: 'auto'  },
 };
+
+export function gate(toolName, mode) {
+  const actionType = ACTION_TYPES[toolName] || 'UPDATE'; // unknown tools default to UPDATE
+  const decision = MODE_MATRIX[mode]?.[actionType] || 'ask';
+  return decision; // 'auto' | 'ask' | 'deny'
+}
 ```
 
-**Future: MCP-level gate (Option A):**
+**Each MCP server wraps its tool handler:**
 
-When we want the confirmation to be part of the conversation context (so Claude can reason about denied actions, adjust its plan, etc.), move the gate into the MCP servers. Each tool checks a `confirmation_mode` header and returns `{ status: "confirmation_required", ... }` instead of executing. Claude then asks the user explicitly and re-calls with `{ confirmed: true }`.
+```javascript
+import { gate } from '../lib/gate.js';
 
-This is more work but gives better conversation quality. Implement after MVP is stable.
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args = {} } = request.params;
+  const mode = readCurrentMode(); // from env, file, or Valkey
+
+  const decision = gate(name, mode);
+
+  if (decision === 'deny') {
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          status: 'denied',
+          reason: `Action "${name}" is not available in ${mode} mode. ` +
+                  `Describe what you would do instead as a plan step.`,
+          action_type: ACTION_TYPES[name],
+        })
+      }]
+    };
+  }
+
+  if (decision === 'ask') {
+    // Check if this tool was already approved for this session
+    if (!isApproved(name, args)) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            status: 'confirmation_required',
+            tool: name,
+            action_type: ACTION_TYPES[name],
+            summary: buildSummary(name, args), // human-readable description
+            params: args,
+            message: 'Please ask the user to confirm this action. ' +
+                     'When they approve, call this tool again with ' +
+                     '{ "confirmed": true } added to the parameters.',
+          })
+        }]
+      };
+    }
+  }
+
+  // 'auto' or approved — execute the actual tool
+  // ... existing tool logic ...
+});
+```
+
+**Confirmation round-trip:**
+
+```
+1. Claude calls: mcp__platform-deploy__promote_staging({ project_id: "..." })
+2. MCP gate returns: { status: "confirmation_required", summary: "Promote staging → prod" }
+3. Claude sees the result and writes to the user:
+   "I'd like to promote staging to production. Shall I proceed?"
+4. User types: "yes" (or clicks an [Approve] button that sends "yes")
+5. Claude calls again: mcp__platform-deploy__promote_staging({ project_id: "...", confirmed: true })
+6. MCP gate sees confirmed=true → executes
+7. Result returns: { status: "success", ... }
+```
+
+**Advantages of MCP-level gate:**
+- Works correctly with `--output-format stream-json` (no race condition)
+- Claude sees denied/confirmation results and can reason about them
+- In Plan mode, Claude gets explicit "denied" results and naturally writes plan steps
+- The confirmation becomes part of the conversation (auditable in message history)
+- Mode changes take effect on next tool call (read from shared state)
+- No UI-level tool interception needed (simpler frontend)
+
+**How mode changes propagate to running MCP servers:**
+
+When the user changes mode in the UI dropdown:
+1. UI calls `POST /api/manager/sessions/{id}/mode` with `{ mode: "auto_write" }`
+2. Backend writes mode to Valkey: `SET manager:{session_id}:mode "auto_write"`
+3. MCP servers read `readCurrentMode()` on each tool call:
+   ```javascript
+   function readCurrentMode() {
+     // Read from Valkey via platform API, or from a mode file
+     // Falls back to 'auto_read' if not set
+   }
+   ```
+
+This avoids restarting MCP servers on mode change. The mode is a lightweight lookup per tool call.
+
+**How "Approve for session" works:**
+
+When the user approves a tool for the session, the UI calls:
+`POST /api/manager/sessions/{id}/approve` with `{ tool: "create_project" }`
+
+Backend stores in Valkey: `SADD manager:{session_id}:approved "create_project"`
+
+MCP `isApproved()` checks: `SISMEMBER manager:{session_id}:approved "create_project"`
+
+Only allowed for CREATE/UPDATE actions. DELETE/DEPLOY always ask (never session-approved).
 
 ## Phase 1: Backend — Manager Session
 
