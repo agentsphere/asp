@@ -28,8 +28,8 @@ async fn insert_pipeline(
 ) -> Uuid {
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO pipelines (id, project_id, trigger, git_ref, status, triggered_by, definition)
-         VALUES ($1, $2, $3, $4, $5, $6, '{}'::jsonb)",
+        "INSERT INTO pipelines (id, project_id, trigger, git_ref, status, triggered_by)
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(id)
     .bind(project_id)

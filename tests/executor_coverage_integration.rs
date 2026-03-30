@@ -298,7 +298,7 @@ async fn executor_fires_build_webhook(pool: PgPool) {
 
     // Insert a webhook directly (SSRF blocks localhost URLs via the API)
     sqlx::query(
-        "INSERT INTO webhooks (id, project_id, url, events, is_active)
+        "INSERT INTO webhooks (id, project_id, url, events, active)
          VALUES ($1, $2, 'https://httpbin.org/post', '{build}', true)",
     )
     .bind(Uuid::new_v4())

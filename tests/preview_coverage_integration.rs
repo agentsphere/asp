@@ -133,8 +133,7 @@ async fn proxy_owner_running_session_reaches_proxy(pool: PgPool) {
     .await;
 
     // This should reach the proxy layer and fail to connect (502 Bad Gateway)
-    let (status, _) =
-        helpers::get_json(&app, &admin_token, &format!("/preview/{session_id}")).await;
+    let status = helpers::get_status(&app, &admin_token, &format!("/preview/{session_id}")).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
 }
 
@@ -155,7 +154,7 @@ async fn proxy_with_subpath_reaches_proxy(pool: PgPool) {
     )
     .await;
 
-    let (status, _) = helpers::get_json(
+    let status = helpers::get_status(
         &app,
         &admin_token,
         &format!("/preview/{session_id}/index.html"),

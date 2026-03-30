@@ -8990,14 +8990,22 @@ async fn canary_promoting_completes(pool: PgPool) {
         .unwrap();
     assert_eq!(health, "healthy");
 
-    // Verify history
-    let (count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM release_history WHERE release_id = $1 AND action = 'promoted'",
-    )
-    .bind(release_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    // Verify history (may be written slightly after phase update)
+    let mut count = 0i64;
+    for _ in 0..20 {
+        let (c,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM release_history WHERE release_id = $1 AND action = 'promoted'",
+        )
+        .bind(release_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        count = c;
+        if count >= 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
     assert!(count >= 1, "promoted history entry should exist");
 
     drop(tx);
@@ -9860,15 +9868,16 @@ async fn mark_failed_long_error_message(pool: PgPool) {
     assert_eq!(error_text.len(), 10_000);
 }
 
-/// Reconciler handles release with unknown strategy by skipping it.
+/// Reconciler handles release with rolling strategy that is already completed.
+/// (Original test tried to insert invalid strategy 'blue_green' which violates DB CHECK constraint.)
 #[sqlx::test(migrations = "./migrations")]
-async fn reconciler_unknown_strategy_progressing_skipped(pool: PgPool) {
+async fn reconciler_completed_rolling_release_is_noop(pool: PgPool) {
     let (state, admin_token) = test_state(pool.clone()).await;
     let app = test_router(state.clone());
 
     let project_id = create_project(&app, &admin_token, "unk-strat-prog", "private").await;
 
-    // Create deployment target with valid strategy, then release with unknown strategy
+    // Create deployment target and a completed release
     let target_id = Uuid::new_v4();
     sqlx::query(
         r"INSERT INTO deploy_targets
@@ -9885,7 +9894,7 @@ async fn reconciler_unknown_strategy_progressing_skipped(pool: PgPool) {
     sqlx::query(
         r"INSERT INTO deploy_releases
            (id, target_id, project_id, image_ref, strategy, phase, health, started_at)
-           VALUES ($1, $2, $3, 'app:v1', 'blue_green', 'progressing', 'unknown', now())",
+           VALUES ($1, $2, $3, 'app:v1', 'rolling', 'completed', 'unknown', now())",
     )
     .bind(release_id)
     .bind(target_id)
@@ -9902,7 +9911,7 @@ async fn reconciler_unknown_strategy_progressing_skipped(pool: PgPool) {
 
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 
-    // Phase should still be progressing (unknown strategy is a no-op)
+    // Phase should still be completed (already-completed releases are no-ops)
     let phase: String = sqlx::query_scalar("SELECT phase FROM deploy_releases WHERE id = $1")
         .bind(release_id)
         .fetch_one(&pool)

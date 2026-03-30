@@ -1089,9 +1089,9 @@ async fn flags_registered_creates_flags(pool: PgPool) {
         "type": "FlagsRegistered",
         "project_id": project_id,
         "flags": [
-            ["dark_mode", false],
-            ["beta_feature", true],
-            ["max_retries", 3]
+            ["dark_mode", false, null],
+            ["beta_feature", true, null],
+            ["max_retries", 3, null]
         ],
     });
 
@@ -1126,7 +1126,7 @@ async fn flags_registered_idempotent(pool: PgPool) {
     let event = serde_json::json!({
         "type": "FlagsRegistered",
         "project_id": project_id,
-        "flags": [["feature_x", true]],
+        "flags": [["feature_x", true, null]],
     });
 
     // Register twice
@@ -1158,7 +1158,7 @@ async fn flags_registered_prunes_stale_flags(pool: PgPool) {
     let event1 = serde_json::json!({
         "type": "FlagsRegistered",
         "project_id": project_id,
-        "flags": [["flag_a", true], ["flag_b", false], ["flag_c", true]],
+        "flags": [["flag_a", true, null], ["flag_b", false, null], ["flag_c", true, null]],
     });
     platform::store::eventbus::handle_event(&state, &event1.to_string())
         .await
@@ -1176,7 +1176,7 @@ async fn flags_registered_prunes_stale_flags(pool: PgPool) {
     let event2 = serde_json::json!({
         "type": "FlagsRegistered",
         "project_id": project_id,
-        "flags": [["flag_a", true]],
+        "flags": [["flag_a", true, null]],
     });
     platform::store::eventbus::handle_event(&state, &event2.to_string())
         .await

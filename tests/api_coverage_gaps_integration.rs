@@ -90,8 +90,8 @@ async fn insert_pipeline(
 ) -> Uuid {
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO pipelines (id, project_id, trigger, git_ref, status, triggered_by, definition)
-         VALUES ($1, $2, $3, $4, $5, $6, '{}'::jsonb)",
+        "INSERT INTO pipelines (id, project_id, trigger, git_ref, status, triggered_by)
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(id)
     .bind(project_id)
@@ -1457,8 +1457,8 @@ async fn download_agent_runner_binary_not_found(pool: PgPool) {
     let app = helpers::test_router(state);
 
     // Config points to a temp dir that doesn't contain the binary
-    let (status, _) =
-        helpers::get_json(&app, &admin_token, "/api/downloads/agent-runner?arch=amd64").await;
+    let status =
+        helpers::get_status(&app, &admin_token, "/api/downloads/agent-runner?arch=amd64").await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
@@ -1468,6 +1468,6 @@ async fn download_mcp_servers_not_found(pool: PgPool) {
     let (state, admin_token) = helpers::test_state(pool).await;
     let app = helpers::test_router(state);
 
-    let (status, _) = helpers::get_json(&app, &admin_token, "/api/downloads/mcp-servers").await;
+    let status = helpers::get_status(&app, &admin_token, "/api/downloads/mcp-servers").await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }

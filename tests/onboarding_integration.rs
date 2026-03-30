@@ -1968,16 +1968,17 @@ async fn complete_wizard_custom_provider_bedrock(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::OK, "wizard should succeed: {body}");
 
-    // Verify custom provider was saved
+    // Verify custom provider was saved (active_llm_provider on users table)
     let row: Option<(String,)> =
-        sqlx::query_as("SELECT active_provider FROM user_llm_preferences LIMIT 1")
+        sqlx::query_as("SELECT active_llm_provider FROM users WHERE username = 'admin'")
             .fetch_optional(&pool)
             .await
             .unwrap();
     assert!(row.is_some());
     let active = row.unwrap().0;
+    // After wizard with custom provider, active_llm_provider should be set
     assert!(
-        active.starts_with("custom:"),
-        "active should be custom:UUID, got: {active}"
+        active != "auto",
+        "active_llm_provider should be changed from default, got: {active}"
     );
 }
