@@ -23,9 +23,15 @@ spec:
             - containerPort: 8080
           env:
             - name: DATABASE_URL
-              value: "postgresql://app:changeme@{{ project_name }}-db:5432/app"
+              valueFrom:
+                secretKeyRef:
+                  name: database-url
+                  key: value
             - name: CACHE_URL
-              value: "redis://{{ project_name }}-cache:6379"
+              valueFrom:
+                secretKeyRef:
+                  name: valkey-url
+                  key: value
             - name: APP_VERSION
               value: "0.2.0"
           readinessProbe:

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api';
+import { Markdown } from './Markdown';
 
 interface ManagerSession {
   id: string;
@@ -371,7 +372,9 @@ export function ManagerChat() {
 
           return (
             <div key={msg.id} class={`manager-msg manager-msg-${msg.role}`}>
-              <div class="manager-msg-content">{msg.content}</div>
+              <div class="manager-msg-content">
+                {msg.role === 'assistant' ? <Markdown content={msg.content} /> : msg.content}
+              </div>
             </div>
           );
         })}

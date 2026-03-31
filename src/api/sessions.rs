@@ -57,6 +57,13 @@ pub struct SpawnChildRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ManagerSpawnRequest {
+    pub project_id: Uuid,
+    pub prompt: String,
+    pub allowed_child_roles: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct UpdateSessionRequest {
     pub project_id: Option<Uuid>,
 }
@@ -124,6 +131,7 @@ use super::helpers::ListResponse;
 // Router
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_lines)] // route declarations only
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -220,6 +228,14 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/manager/sessions/{id}/approved_tools",
             axum::routing::get(list_approved_tools),
+        )
+        .route(
+            "/api/manager/sessions/{id}/spawn",
+            axum::routing::post(manager_spawn_child),
+        )
+        .route(
+            "/api/manager/sessions/{id}/children",
+            axum::routing::get(manager_list_children),
         )
 }
 
@@ -1636,6 +1652,175 @@ async fn list_approved_tools(
     let tools: Vec<String> = state.valkey.next().smembers(&key).await.unwrap_or_default();
 
     Ok(Json(serde_json::json!({"tools": tools})))
+}
+
+/// Validate a manager spawn request: check project exists and user has permission.
+async fn validate_manager_spawn(
+    state: &AppState,
+    auth: &AuthUser,
+    project_id: Uuid,
+    parent_id: Uuid,
+) -> Result<crate::agent::provider::AgentSession, ApiError> {
+    // Verify the target project exists
+    let project_exists = sqlx::query_scalar!(
+        "SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1 AND is_active = true) as \"exists!\"",
+        project_id,
+    )
+    .fetch_one(&state.pool)
+    .await?;
+    if !project_exists {
+        return Err(ApiError::NotFound("project".into()));
+    }
+
+    // Check agent:spawn permission on the target project
+    let allowed = resolver::has_permission_scoped(
+        &state.pool,
+        &state.valkey,
+        auth.user_id,
+        Some(project_id),
+        Permission::AgentSpawn,
+        auth.token_scopes.as_deref(),
+    )
+    .await
+    .map_err(ApiError::Internal)?;
+    if !allowed {
+        return Err(ApiError::NotFound("project".into()));
+    }
+
+    // Fetch parent (manager) session — must exist and belong to this user
+    let parent = service::fetch_session(&state.pool, parent_id)
+        .await
+        .map_err(ApiError::from)?;
+    if parent.project_id.is_some() {
+        return Err(ApiError::BadRequest(
+            "use the project spawn endpoint for project-scoped sessions".into(),
+        ));
+    }
+    if parent.user_id != auth.user_id {
+        return Err(ApiError::NotFound("session".into()));
+    }
+    if parent.spawn_depth >= MAX_SPAWN_DEPTH {
+        return Err(ApiError::BadRequest(format!(
+            "spawn depth limit reached (max {MAX_SPAWN_DEPTH})"
+        )));
+    }
+
+    Ok(parent)
+}
+
+/// Spawn a child agent from a manager session into a specific project.
+///
+/// Manager sessions have no project context, so the target `project_id`
+/// is provided in the request body rather than derived from the parent.
+async fn manager_spawn_child(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ManagerSpawnRequest>,
+) -> Result<(StatusCode, Json<SessionResponse>), ApiError> {
+    validation::check_length("prompt", &body.prompt, 1, 100_000)?;
+
+    let project_id = body.project_id;
+    let parent = validate_manager_spawn(&state, &auth, project_id, id).await?;
+
+    // Create child session scoped to the target project
+    let child_id = Uuid::new_v4();
+    let child_depth = parent.spawn_depth + 1;
+    let allowed_roles = body.allowed_child_roles.as_deref();
+
+    sqlx::query!(
+        r#"
+        INSERT INTO agent_sessions (id, project_id, user_id, prompt, provider, parent_session_id, spawn_depth, allowed_child_roles)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "#,
+        child_id,
+        project_id,
+        parent.user_id,
+        body.prompt,
+        parent.provider,
+        id,
+        child_depth,
+        allowed_roles as Option<&[String]>,
+    )
+    .execute(&state.pool)
+    .await?;
+
+    send_audit(
+        &state.audit_tx,
+        AuditEntry {
+            actor_id: auth.user_id,
+            actor_name: auth.user_name.clone(),
+            action: "agent_session.manager_spawn".into(),
+            resource: "agent_session".into(),
+            resource_id: Some(child_id),
+            project_id: Some(project_id),
+            detail: Some(serde_json::json!({
+                "parent_session_id": id,
+                "spawn_depth": child_depth,
+            })),
+            ip_addr: auth.ip_addr.clone(),
+        },
+    );
+
+    let child = service::fetch_session(&state.pool, child_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(session_to_response(&child, false)),
+    ))
+}
+
+/// List child sessions spawned from a manager session (across all projects).
+async fn manager_list_children(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ListResponse<SessionResponse>>, ApiError> {
+    // Verify the manager session exists and belongs to this user
+    let parent = service::fetch_session(&state.pool, id)
+        .await
+        .map_err(ApiError::from)?;
+    if parent.user_id != auth.user_id {
+        return Err(ApiError::NotFound("session".into()));
+    }
+
+    let children = sqlx::query!(
+        r#"
+        SELECT id, project_id, user_id, agent_user_id, prompt, status, branch, pod_name,
+               provider, cost_tokens, created_at, finished_at, spawn_depth, execution_mode
+        FROM agent_sessions
+        WHERE parent_session_id = $1
+        ORDER BY created_at
+        "#,
+        id,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    let items: Vec<SessionResponse> = children
+        .into_iter()
+        .map(|r| SessionResponse {
+            id: r.id,
+            project_id: r.project_id,
+            user_id: r.user_id,
+            agent_user_id: r.agent_user_id,
+            prompt: truncate_prompt(&r.prompt, 200),
+            status: r.status,
+            branch: r.branch,
+            pod_name: r.pod_name,
+            provider: r.provider,
+            cost_tokens: r.cost_tokens,
+            created_at: r.created_at,
+            finished_at: r.finished_at,
+            browser_enabled: false,
+            execution_mode: r.execution_mode,
+        })
+        .collect();
+
+    let total = i64::try_from(items.len()).unwrap_or(i64::MAX);
+    Ok(Json(ListResponse { items, total }))
 }
 
 /// Read the current permission mode for a manager session from Valkey.

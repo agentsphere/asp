@@ -13,6 +13,7 @@ import { apiGet, apiPost, apiPatch, apiDelete, PROJECT_ID } from "../lib/client.
 import { gateCheck } from '../lib/gate.js';
 
 const SESSION_ID = process.env.SESSION_ID || "";
+const MANAGER_MODE = process.env.MANAGER_MODE || "";
 const ENV_DEV_PATH = "/workspace/.env.dev";
 
 /** Append a secret to .env.dev so the agent can source it for app dev. */
@@ -60,7 +61,8 @@ const TOOLS = [
     name: "spawn_agent",
     description:
       "Spawn a child agent session to work on a sub-task. " +
-      "The child inherits your project context and runs in its own pod. " +
+      "The child runs in its own pod scoped to a project. " +
+      "Manager agents must pass project_id; project-scoped agents inherit theirs. " +
       "Requires agent:spawn permission.",
     inputSchema: {
       type: "object",
@@ -68,6 +70,10 @@ const TOOLS = [
         prompt: {
           type: "string",
           description: "The task description / prompt for the child agent",
+        },
+        project_id: {
+          type: "string",
+          description: "Target project UUID. Required for manager agents (no default project). Project-scoped agents can omit this.",
         },
         allowed_child_roles: {
           type: "array",
@@ -252,17 +258,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     case "spawn_agent": {
       if (!SESSION_ID) throw new Error("SESSION_ID not set — cannot spawn child agents");
-      if (!PROJECT_ID) throw new Error("PROJECT_ID not set — cannot spawn child agents");
-      const payload = { prompt: args.prompt };
+      const targetProject = args.project_id || PROJECT_ID;
+      if (!targetProject) throw new Error("project_id is required — pass it as a parameter or set PROJECT_ID");
+      const payload = { prompt: args.prompt, project_id: targetProject };
       if (args.allowed_child_roles) payload.allowed_child_roles = args.allowed_child_roles;
-      const data = await apiPost(
-        `/api/projects/${PROJECT_ID}/sessions/${SESSION_ID}/spawn`,
-        { body: payload },
-      );
+      // Manager agents use the manager spawn endpoint; project-scoped agents use the project endpoint
+      const endpoint = MANAGER_MODE
+        ? `/api/manager/sessions/${SESSION_ID}/spawn`
+        : `/api/projects/${targetProject}/sessions/${SESSION_ID}/spawn`;
+      const data = await apiPost(endpoint, { body: payload });
       return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
     }
     case "list_children": {
       if (!SESSION_ID) throw new Error("SESSION_ID not set");
+      // Manager agents use the manager children endpoint (no project required)
+      if (MANAGER_MODE) {
+        const data = await apiGet(`/api/manager/sessions/${SESSION_ID}/children`);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      }
       if (!PROJECT_ID) throw new Error("PROJECT_ID not set");
       const data = await apiGet(
         `/api/projects/${PROJECT_ID}/sessions/${SESSION_ID}/children`,

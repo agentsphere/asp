@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use k8s_openapi::api::core::v1::Secret;
 use kube::Api;
-use kube::api::PostParams;
+use kube::api::{DeleteParams, PostParams};
 use sqlx::Row;
 use tracing::Instrument;
 use uuid::Uuid;
@@ -827,14 +827,19 @@ pub async fn mark_failed(state: &AppState, release: &PendingRelease, message: &s
     .await;
 }
 
-/// Query deploy-scoped secrets, decrypt, inject OTEL config, create K8s Secret.
+/// Convert a secret key name to a K8s-safe secret name.
+fn secret_name_from_key(name: &str) -> String {
+    name.to_lowercase().replace('_', "-")
+}
+
+/// Create individual K8s Secrets for each user-defined project secret.
 #[tracing::instrument(skip(state, release), fields(project_id = %release.project_id, %namespace))]
-async fn inject_project_secrets(
+async fn create_user_secrets(
     state: &AppState,
     release: &PendingRelease,
     namespace: &str,
-) -> Option<String> {
-    let mut env_data: BTreeMap<String, String> = BTreeMap::new();
+) -> Vec<String> {
+    let mut created: Vec<String> = Vec::new();
 
     // Query secrets scoped to this environment (staging/prod) or 'all'.
     // Maps environment name to scope: staging→staging, production→prod.
@@ -863,7 +868,11 @@ async fn inject_project_secrets(
             match crate::secrets::engine::decrypt(&encrypted, &mk, None) {
                 Ok(val) => {
                     if let Ok(s) = String::from_utf8(val) {
-                        env_data.insert(name, s);
+                        let k8s_name = secret_name_from_key(&name);
+                        let data = BTreeMap::from([("value".to_string(), s)]);
+                        apply_k8s_secret(state, namespace, &k8s_name, &release.project_id, &data)
+                            .await;
+                        created.push(k8s_name);
                     }
                 }
                 Err(e) => {
@@ -873,14 +882,25 @@ async fn inject_project_secrets(
         }
     }
 
-    // Inject OTEL env vars
+    created
+}
+
+/// Create the platform secret containing OTEL + platform env vars.
+#[tracing::instrument(skip(state, release), fields(project_id = %release.project_id, %namespace))]
+async fn inject_platform_secret(
+    state: &AppState,
+    release: &PendingRelease,
+    namespace: &str,
+) -> Option<String> {
+    let mut env_data: BTreeMap<String, String> = BTreeMap::new();
+
     inject_otel_env_vars(state, release, &mut env_data).await;
 
     if env_data.is_empty() {
         return None;
     }
 
-    let secret_name = format!("{namespace}-{}-secrets", env_suffix(&release.environment));
+    let secret_name = format!("{namespace}-{}-platform", env_suffix(&release.environment));
     apply_k8s_secret(
         state,
         namespace,
@@ -890,6 +910,39 @@ async fn inject_project_secrets(
     )
     .await;
     Some(secret_name)
+}
+
+/// Query deploy-scoped secrets, decrypt, inject OTEL config, create K8s Secrets.
+///
+/// Creates individual K8s Secrets per user secret, plus one platform secret
+/// for OTEL/platform vars. Deletes the legacy combined secret if it exists.
+/// Returns the platform secret name (for envFrom injection by the caller).
+#[tracing::instrument(skip(state, release), fields(project_id = %release.project_id, %namespace))]
+async fn inject_project_secrets(
+    state: &AppState,
+    release: &PendingRelease,
+    namespace: &str,
+) -> Option<String> {
+    // Create individual K8s Secrets for each user secret
+    let _user_secrets = create_user_secrets(state, release, namespace).await;
+
+    // Create the platform secret (OTEL + platform vars)
+    let platform_name = inject_platform_secret(state, release, namespace).await;
+
+    // Delete the old combined secret if it exists
+    let old_name = format!("{namespace}-{}-secrets", env_suffix(&release.environment));
+    let api: Api<Secret> = Api::namespaced(state.kube.clone(), namespace);
+    match api.delete(&old_name, &DeleteParams::default()).await {
+        Ok(_) => tracing::info!(%old_name, "deleted legacy combined secret"),
+        Err(kube::Error::Api(resp)) if resp.code == 404 => {
+            // Not found — nothing to clean up
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, %old_name, "failed to delete legacy combined secret");
+        }
+    }
+
+    platform_name
 }
 
 /// Inject OTEL environment variables into the secret data.
@@ -928,6 +981,7 @@ async fn inject_otel_env_vars(
             state.config.platform_api_url.clone(),
         );
         env_data.insert("PLATFORM_PROJECT_ID".into(), release.project_id.to_string());
+        env_data.insert("OTEL_API_TOKEN".into(), otel_token.clone());
     }
 }
 
@@ -2067,6 +2121,28 @@ mod tests {
         let obj_json = serde_json::json!({"key": "value"});
         let result = serde_json::from_value::<Vec<applier::TrackedResource>>(obj_json);
         assert!(result.is_err());
+    }
+
+    // -- secret_name_from_key --
+
+    #[test]
+    fn secret_name_from_key_basic() {
+        assert_eq!(secret_name_from_key("DATABASE_URL"), "database-url");
+    }
+
+    #[test]
+    fn secret_name_from_key_single_word() {
+        assert_eq!(secret_name_from_key("HOSTNAME"), "hostname");
+    }
+
+    #[test]
+    fn secret_name_from_key_multi_underscore() {
+        assert_eq!(secret_name_from_key("MY_DB_URL"), "my-db-url");
+    }
+
+    #[test]
+    fn secret_name_from_key_already_lowercase() {
+        assert_eq!(secret_name_from_key("my-secret"), "my-secret");
     }
 
     #[test]

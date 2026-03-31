@@ -1,3 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ project_name }}-db-otel-config
+data:
+  config.yaml: |
+    receivers:
+      postgresql:
+        endpoint: localhost:5432
+        username: app
+        password: changeme
+        databases: [app]
+        collection_interval: 15s
+    processors:
+      resource:
+        attributes:
+          - key: platform.project_id
+            value: "${env:PLATFORM_PROJECT_ID}"
+            action: upsert
+          - key: service.name
+            value: "{{ project_name }}-postgres"
+            action: upsert
+    exporters:
+      otlphttp:
+        endpoint: "${env:OTEL_EXPORTER_OTLP_ENDPOINT}"
+        headers:
+          authorization: "Bearer ${env:OTEL_API_TOKEN}"
+    service:
+      pipelines:
+        metrics:
+          receivers: [postgresql]
+          processors: [resource]
+          exporters: [otlphttp]
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -31,6 +65,23 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.115.0
+          args: ["--config=/etc/otel/config.yaml"]
+          volumeMounts:
+            - name: otel-config
+              mountPath: /etc/otel
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+      volumes:
+        - name: otel-config
+          configMap:
+            name: {{ project_name }}-db-otel-config
 ---
 apiVersion: v1
 kind: Service
