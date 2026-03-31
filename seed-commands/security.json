@@ -1,0 +1,1 @@
+{"description": "Security hardening: input validation, secrets management, auth, vulnerability fixes", "persistent_session": true, "runtime": "sandbox", "role": "dev"}

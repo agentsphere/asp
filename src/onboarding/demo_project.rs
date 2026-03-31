@@ -107,6 +107,14 @@ pub fn demo_pr1_template_files() -> Vec<TemplateFile> {
             content: include_str!("templates/Dockerfile.dev").to_owned(),
         },
         TemplateFile {
+            path: "Dockerfile.screenshots",
+            content: include_str!("templates/Dockerfile.screenshots").to_owned(),
+        },
+        TemplateFile {
+            path: "screenshots/capture.py",
+            content: include_str!("templates/screenshots/capture.py").to_owned(),
+        },
+        TemplateFile {
             path: "deploy/postgres.yaml",
             content: include_str!("templates/deploy/postgres.yaml").to_owned(),
         },
@@ -786,7 +794,7 @@ mod tests {
     #[test]
     fn pr1_template_file_count() {
         let files = demo_pr1_template_files();
-        assert_eq!(files.len(), 27);
+        assert_eq!(files.len(), 29);
     }
 
     #[test]
@@ -988,6 +996,29 @@ mod tests {
             .find(|f| f.path == "app/static/style.css")
             .unwrap();
         assert!(!f.content.is_empty());
+    }
+
+    #[test]
+    fn pr1_template_has_dockerfile_screenshots() {
+        let files = demo_pr1_template_files();
+        let f = files
+            .iter()
+            .find(|f| f.path == "Dockerfile.screenshots")
+            .unwrap();
+        assert!(f.content.contains("playwright"));
+        assert!(f.content.contains("screenshots"));
+    }
+
+    #[test]
+    fn pr1_template_has_capture_script() {
+        let files = demo_pr1_template_files();
+        let f = files
+            .iter()
+            .find(|f| f.path == "screenshots/capture.py")
+            .unwrap();
+        assert!(f.content.contains("capture_components"));
+        assert!(f.content.contains("capture_flows"));
+        assert!(f.content.contains("config.json"));
     }
 
     #[test]

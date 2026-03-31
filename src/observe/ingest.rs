@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 use std::collections::HashSet;
+use std::io::Read;
 
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
+use flate2::read::GzDecoder;
 use prost::Message;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -56,6 +58,30 @@ pub fn create_channels() -> (
         logs_rx,
         metrics_rx,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Gzip decompression
+// ---------------------------------------------------------------------------
+
+/// Decompress the request body if `Content-Encoding: gzip` is set.
+/// OTLP exporters (including the OpenTelemetry Collector) send gzip by default.
+fn maybe_decompress(headers: &HeaderMap, body: Bytes) -> Result<Bytes, ApiError> {
+    let is_gzip = headers
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("gzip"));
+
+    if !is_gzip {
+        return Ok(body);
+    }
+
+    let mut decoder = GzDecoder::new(&body[..]);
+    let mut decompressed = Vec::with_capacity(body.len() * 2);
+    decoder
+        .read_to_end(&mut decompressed)
+        .map_err(|e| ApiError::BadRequest(format!("gzip decompression failed: {e}")))?;
+    Ok(Bytes::from(decompressed))
 }
 
 // ---------------------------------------------------------------------------
@@ -117,16 +143,18 @@ async fn check_otlp_project_auth(
 // ---------------------------------------------------------------------------
 
 /// `POST /v1/traces` — receive OTLP trace protobuf.
-#[tracing::instrument(skip(state, channels, body), err)]
+#[tracing::instrument(skip(state, channels, headers, body), err)]
 pub async fn ingest_traces(
     State(state): State<AppState>,
     auth: AuthUser,
     axum::Extension(channels): axum::Extension<IngestChannels>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::rate_limit::check_rate(&state.valkey, "otlp", &auth.user_id.to_string(), 1000, 60)
         .await?;
 
+    let body = maybe_decompress(&headers, body)?;
     let request = proto::ExportTraceServiceRequest::decode(body)
         .map_err(|e| ApiError::BadRequest(format!("invalid protobuf: {e}")))?;
 
@@ -159,16 +187,18 @@ pub async fn ingest_traces(
 }
 
 /// `POST /v1/logs` — receive OTLP log protobuf.
-#[tracing::instrument(skip(state, channels, body), err)]
+#[tracing::instrument(skip(state, channels, headers, body), err)]
 pub async fn ingest_logs(
     State(state): State<AppState>,
     auth: AuthUser,
     axum::Extension(channels): axum::Extension<IngestChannels>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::rate_limit::check_rate(&state.valkey, "otlp", &auth.user_id.to_string(), 1000, 60)
         .await?;
 
+    let body = maybe_decompress(&headers, body)?;
     let request = proto::ExportLogsServiceRequest::decode(body)
         .map_err(|e| ApiError::BadRequest(format!("invalid protobuf: {e}")))?;
 
@@ -200,16 +230,18 @@ pub async fn ingest_logs(
 }
 
 /// `POST /v1/metrics` — receive OTLP metric protobuf.
-#[tracing::instrument(skip(state, channels, body), err)]
+#[tracing::instrument(skip(state, channels, headers, body), err)]
 pub async fn ingest_metrics(
     State(state): State<AppState>,
     auth: AuthUser,
     axum::Extension(channels): axum::Extension<IngestChannels>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     crate::auth::rate_limit::check_rate(&state.valkey, "otlp", &auth.user_id.to_string(), 1000, 60)
         .await?;
 
+    let body = maybe_decompress(&headers, body)?;
     let request = proto::ExportMetricsServiceRequest::decode(body)
         .map_err(|e| ApiError::BadRequest(format!("invalid protobuf: {e}")))?;
 
@@ -990,5 +1022,39 @@ mod tests {
         // the try_recv pattern works
         assert!(rx.try_recv().is_err());
         assert!(buffer.is_empty());
+    }
+
+    // -- maybe_decompress -------------------------------------------------
+
+    #[test]
+    fn decompress_plain_body_passes_through() {
+        let headers = HeaderMap::new();
+        let body = Bytes::from_static(b"hello");
+        let result = maybe_decompress(&headers, body.clone()).unwrap();
+        assert_eq!(result, body);
+    }
+
+    #[test]
+    fn decompress_gzip_body() {
+        use flate2::write::GzEncoder;
+        use std::io::Write;
+
+        let original = b"hello world protobuf data";
+        let mut encoder = GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(original).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("content-encoding", "gzip".parse().unwrap());
+        let result = maybe_decompress(&headers, Bytes::from(compressed)).unwrap();
+        assert_eq!(&result[..], original);
+    }
+
+    #[test]
+    fn decompress_invalid_gzip_returns_error() {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-encoding", "gzip".parse().unwrap());
+        let result = maybe_decompress(&headers, Bytes::from_static(b"not gzip"));
+        assert!(result.is_err());
     }
 }

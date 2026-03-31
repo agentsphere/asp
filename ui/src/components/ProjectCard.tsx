@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 import { api, type ListResponse } from '../lib/api';
-import type { Project, AgentSession, Pipeline, Issue, MergeRequest, Deployment, TreeEntry, BranchInfo, IframePanel } from '../lib/types';
+import type { Project, AgentSession, Pipeline, Issue, MergeRequest, Deployment, TreeEntry, BranchInfo, IframePanel, UiPreviewArtifact } from '../lib/types';
 import { timeAgo } from '../lib/format';
 import { Badge } from './Badge';
 import { StagingPromoteBar } from './StagingPromoteBar';
@@ -16,7 +16,7 @@ interface DeployRelease {
   environment: string;
 }
 
-export type CardTab = 'files' | 'issues' | 'mrs' | 'builds' | 'deploys' | 'sessions' | null;
+export type CardTab = 'files' | 'issues' | 'mrs' | 'builds' | 'ui' | 'deploys' | 'sessions' | null;
 
 interface Props {
   project: Project;
@@ -368,10 +368,10 @@ export function ProjectCard({ project, initialExpanded, initialTab }: Props) {
             </div>
 
             <div class="project-card-detail-actions">
-              {(['files', 'issues', 'mrs', 'builds', 'deploys', 'sessions'] as CardTab[]).map(t => (
+              {(['files', 'issues', 'mrs', 'builds', 'ui', 'deploys', 'sessions'] as CardTab[]).map(t => (
                 <button key={t} class={`project-card-tab-btn${activeTab === t ? ' active' : ''}`}
                   onClick={() => selectTab(t)}>
-                  {t === 'mrs' ? 'MRs' : t === 'deploys' ? 'Deploys' : t![0].toUpperCase() + t!.slice(1)}
+                  {t === 'mrs' ? 'MRs' : t === 'ui' ? 'UI' : t === 'deploys' ? 'Deploys' : t![0].toUpperCase() + t!.slice(1)}
                 </button>
               ))}
               <a href={`/projects/${project.id}/settings`} class="project-card-tab-btn" style="margin-left:auto">
@@ -390,6 +390,7 @@ export function ProjectCard({ project, initialExpanded, initialTab }: Props) {
             {activeTab === 'issues' && <MiniIssues projectId={project.id} />}
             {activeTab === 'mrs' && <MiniMRs projectId={project.id} />}
             {activeTab === 'builds' && <MiniBuilds projectId={project.id} />}
+            {activeTab === 'ui' && <MiniUiPreviews projectId={project.id} defaultBranch={project.default_branch} />}
             {activeTab === 'deploys' && <MiniDeploys projectId={project.id} />}
             {activeTab === 'sessions' && <MiniSessions projectId={project.id} />}
             <div class="project-card-tab-footer">
@@ -633,6 +634,43 @@ function MiniSessions({ projectId }: { projectId: string }) {
         ))}
       </tbody>
     </table>
+  );
+}
+
+function MiniUiPreviews({ projectId, defaultBranch }: { projectId: string; defaultBranch: string }) {
+  const [artifacts, setArtifacts] = useState<UiPreviewArtifact[]>([]);
+
+  useEffect(() => {
+    api.get<UiPreviewArtifact[]>(`/api/projects/${projectId}/ui-previews?branch=${encodeURIComponent(defaultBranch)}`)
+      .then(setArtifacts).catch(() => setArtifacts([]));
+  }, [projectId, defaultBranch]);
+
+  // Collect up to 4 thumbnail files from all artifacts
+  const thumbs: { file: { id: string; relative_path: string }; pipelineId: string }[] = [];
+  for (const a of artifacts) {
+    for (const f of a.files) {
+      if (thumbs.length >= 4) break;
+      thumbs.push({ file: f, pipelineId: a.pipeline_id });
+    }
+    if (thumbs.length >= 4) break;
+  }
+
+  if (thumbs.length === 0) {
+    return <div class="text-muted text-sm">No UI previews on {defaultBranch}</div>;
+  }
+
+  return (
+    <div class="ui-preview-grid" style="grid-template-columns:repeat(auto-fill, minmax(120px, 1fr))">
+      {thumbs.map(t => (
+        <div key={t.file.id} class="ui-preview-card" onClick={() => {
+          window.location.href = `/projects/${projectId}/ui`;
+        }}>
+          <img src={`/api/projects/${projectId}/pipelines/${t.pipelineId}/artifacts/${t.file.id}/view`}
+            alt={t.file.relative_path} loading="lazy" />
+          <div class="ui-preview-card-label">{t.file.relative_path.split('/').pop()}</div>
+        </div>
+      ))}
+    </div>
   );
 }
 

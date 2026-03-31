@@ -1,0 +1,20 @@
+FROM mcr.microsoft.com/playwright/python:v1.52.0-noble
+
+WORKDIR /app
+
+# App dependencies (FastAPI etc. — needed to start the app for screenshots)
+COPY requirements.txt .
+# Pin playwright version to match the base image browser binaries
+RUN pip install --no-cache-dir -r requirements.txt httpx playwright==1.52.0
+
+# App source
+COPY app/ app/
+
+# Screenshot capture script
+COPY screenshots/ screenshots/
+
+RUN mkdir -p /output
+
+ENV OTEL_SDK_DISABLED=true
+
+CMD ["python", "screenshots/capture.py"]

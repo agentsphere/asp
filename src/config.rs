@@ -120,6 +120,10 @@ pub struct Config {
     pub max_artifact_file_bytes: u64,
     /// Maximum total artifact size per step in bytes (default 500 MB).
     pub max_artifact_total_bytes: u64,
+    /// Maximum HTTP body size for registry blob uploads in bytes (default 2 GB).
+    pub registry_http_body_limit_bytes: usize,
+    /// Maximum individual registry blob size in bytes (default 5 GB).
+    pub registry_max_blob_size_bytes: u64,
 }
 
 fn parse_cors_origins(s: &str) -> Vec<String> {
@@ -316,6 +320,14 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(500 * 1024 * 1024), // 500 MB
+            registry_http_body_limit_bytes: env::var("PLATFORM_REGISTRY_HTTP_BODY_LIMIT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2 * 1024 * 1024 * 1024), // 2 GB
+            registry_max_blob_size_bytes: env::var("PLATFORM_REGISTRY_MAX_BLOB_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5_368_709_120), // 5 GB
         }
     }
 
@@ -407,6 +419,8 @@ impl Config {
             mcp_servers_path: "mcp/servers".into(),
             max_artifact_file_bytes: 50 * 1024 * 1024,
             max_artifact_total_bytes: 500 * 1024 * 1024,
+            registry_http_body_limit_bytes: 2 * 1024 * 1024 * 1024, // 2 GB
+            registry_max_blob_size_bytes: 5_368_709_120,            // 5 GB
         }
     }
 }

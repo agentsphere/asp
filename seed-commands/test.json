@@ -1,0 +1,1 @@
+{"description": "Write and execute tests: unit, integration, E2E based on project profile", "persistent_session": true, "runtime": "sandbox", "role": "dev"}

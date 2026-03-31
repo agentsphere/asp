@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'preact/hooks';
 import { api, qs, type ListResponse } from '../lib/api';
-import type { Project, Issue, MergeRequest, Pipeline, Deployment, Webhook, TreeEntry, BlobResponse, BranchInfo, PreviewDeployment, Secret, AgentSession, IframePanel, LogEntry } from '../lib/types';
+import type { Project, Issue, MergeRequest, Pipeline, Deployment, Webhook, TreeEntry, BlobResponse, BranchInfo, PreviewDeployment, Secret, AgentSession, IframePanel, LogEntry, UiPreviewArtifact, UiPreviewFile, UiPreviewConfig, UiPreviewGroup, UiPreviewItem } from '../lib/types';
 import { timeAgo } from '../lib/format';
 import { Badge } from '../components/Badge';
 import { StatusDot } from '../components/StatusDot';
@@ -12,7 +12,7 @@ import { Sessions } from './Sessions';
 
 interface Props { id?: string; tab?: string; }
 
-const TABS = ['files', 'issues', 'mrs', 'builds', 'deployments', 'sessions', 'logs', 'skills', 'webhooks', 'settings'];
+const TABS = ['files', 'issues', 'mrs', 'builds', 'ui', 'deployments', 'sessions', 'logs', 'skills', 'webhooks', 'settings'];
 
 export function ProjectDetail({ id, tab }: Props) {
   const [project, setProject] = useState<Project | null>(null);
@@ -147,13 +147,14 @@ export function ProjectDetail({ id, tab }: Props) {
       <div class="tabs-glass">
         {TABS.map(t => (
           <a key={t} class={`tab${currentTab === t ? ' active' : ''}`}
-            href={`/projects/${id}/${t}`}>{t === 'mrs' ? 'MRs' : t === 'sessions' ? 'Sessions' : t[0].toUpperCase() + t.slice(1)}</a>
+            href={`/projects/${id}/${t}`}>{t === 'mrs' ? 'MRs' : t === 'ui' ? 'UI' : t === 'sessions' ? 'Sessions' : t[0].toUpperCase() + t.slice(1)}</a>
         ))}
       </div>
       {currentTab === 'files' && <FilesTab projectId={id!} defaultBranch={project.default_branch} />}
       {currentTab === 'issues' && <IssuesTab projectId={id!} />}
       {currentTab === 'mrs' && <MRsTab projectId={id!} />}
       {currentTab === 'builds' && <BuildsTab projectId={id!} />}
+      {currentTab === 'ui' && <UiPreviewsTab projectId={id!} defaultBranch={project.default_branch} />}
       {currentTab === 'deployments' && <DeploymentsTab projectId={id!} />}
       {currentTab === 'sessions' && <Sessions projectId={id!} />}
       {currentTab === 'logs' && <ProjectLogs projectId={id!} />}
@@ -537,6 +538,413 @@ function BuildsTab({ projectId }: { projectId: string }) {
         </table>
       )}
       <Pagination total={total} limit={20} offset={offset} onChange={setOffset} />
+    </div>
+  );
+}
+
+interface UiPreviewsCompareResponse {
+  base: UiPreviewArtifact[];
+  head: UiPreviewArtifact[];
+}
+
+function UiPreviewsTab({ projectId, defaultBranch }: { projectId: string; defaultBranch: string }) {
+  const [branches, setBranches] = useState<BranchInfo[]>([]);
+  const [branch, setBranch] = useState(defaultBranch);
+  const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [artifacts, setArtifacts] = useState<UiPreviewArtifact[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [metaFilter, setMetaFilter] = useState<{ key: string; value: string } | null>(null);
+  const [lightbox, setLightbox] = useState<{ file: UiPreviewFile; artifact: UiPreviewArtifact; item: UiPreviewItem | null } | null>(null);
+  const [compareEnabled, setCompareEnabled] = useState(false);
+  const [compareBranch, setCompareBranch] = useState('');
+  const [compareData, setCompareData] = useState<UiPreviewsCompareResponse | null>(null);
+
+  useEffect(() => {
+    api.get<BranchInfo[]>(`/api/projects/${projectId}/branches`).then(setBranches).catch(() => {});
+  }, [projectId]);
+
+  useEffect(() => {
+    setLoading(true);
+    const typeParam = typeFilter === 'all' ? '' : typeFilter;
+    api.get<UiPreviewArtifact[]>(`/api/projects/${projectId}/ui-previews${qs({ branch, type: typeParam })}`)
+      .then(setArtifacts)
+      .catch(() => setArtifacts([]))
+      .finally(() => setLoading(false));
+  }, [projectId, branch, typeFilter]);
+
+  useEffect(() => {
+    if (!compareEnabled || !compareBranch) { setCompareData(null); return; }
+    api.get<UiPreviewsCompareResponse>(`/api/projects/${projectId}/ui-previews/compare${qs({ base: branch, head: compareBranch })}`)
+      .then(setCompareData)
+      .catch(() => setCompareData(null));
+  }, [projectId, branch, compareBranch, compareEnabled]);
+
+  const toggleCollapsed = (key: string) => {
+    setCollapsed(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleMetaFilter = (key: string, value: string) => {
+    if (metaFilter && metaFilter.key === key && metaFilter.value === value) {
+      setMetaFilter(null);
+    } else {
+      setMetaFilter({ key, value });
+    }
+  };
+
+  const imageUrl = (pipelineId: string, fileId: string) =>
+    `/api/projects/${projectId}/pipelines/${pipelineId}/artifacts/${fileId}/view`;
+
+  // Find item config for a file by matching its relative_path against all config items
+  const findItemForFile = (artifact: UiPreviewArtifact, file: UiPreviewFile): UiPreviewItem | null => {
+    if (!artifact.config) return null;
+    const search = (groups: Record<string, UiPreviewGroup>): UiPreviewItem | null => {
+      for (const g of Object.values(groups)) {
+        if (g.items) {
+          for (const [filename, item] of Object.entries(g.items)) {
+            if (file.relative_path.endsWith(filename)) return item;
+          }
+        }
+        if (g.groups) {
+          const found = search(g.groups);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    return search(artifact.config.groups);
+  };
+
+  // Check if a file passes the active meta filter
+  const passesMetaFilter = (artifact: UiPreviewArtifact, file: UiPreviewFile): boolean => {
+    if (!metaFilter) return true;
+    const item = findItemForFile(artifact, file);
+    if (!item || !item.meta) return false;
+    return item.meta[metaFilter.key] === metaFilter.value;
+  };
+
+  // Collect all unique meta key-value pairs across all artifacts
+  const allMeta = new Map<string, Set<string>>();
+  for (const a of artifacts) {
+    if (!a.config) continue;
+    const collectMeta = (groups: Record<string, UiPreviewGroup>) => {
+      for (const g of Object.values(groups)) {
+        if (g.items) {
+          for (const item of Object.values(g.items)) {
+            if (item.meta) {
+              for (const [k, v] of Object.entries(item.meta)) {
+                if (!allMeta.has(k)) allMeta.set(k, new Set());
+                allMeta.get(k)!.add(v);
+              }
+            }
+          }
+        }
+        if (g.groups) collectMeta(g.groups);
+      }
+    };
+    collectMeta(a.config.groups);
+  }
+
+  // Render a group tree recursively
+  const renderGroup = (key: string, group: UiPreviewGroup, artifact: UiPreviewArtifact, path: string, depth: number) => {
+    const fullKey = path ? `${path}.${key}` : key;
+    const isCollapsed = collapsed.has(fullKey);
+
+    // Collect renderable items for this group
+    const items: { file: UiPreviewFile; item: UiPreviewItem | null; filename: string }[] = [];
+    if (group.items) {
+      for (const [filename, item] of Object.entries(group.items)) {
+        const file = artifact.files.find(f => f.relative_path.endsWith(filename));
+        if (file && passesMetaFilter(artifact, file)) {
+          items.push({ file, item, filename });
+        }
+      }
+    }
+
+    const hasSubGroups = group.groups && Object.keys(group.groups).length > 0;
+    const hasItems = items.length > 0;
+    if (!hasSubGroups && !hasItems && group.items && Object.keys(group.items).length > 0) return null;
+
+    return (
+      <div key={fullKey} class="ui-preview-group">
+        <div class="ui-preview-group-header" onClick={() => toggleCollapsed(fullKey)}>
+          <span class="toggle-icon">{isCollapsed ? '\u25B8' : '\u25BE'}</span>
+          {group.label}
+        </div>
+        {!isCollapsed && (
+          <div class="ui-preview-group-children">
+            {group.groups && Object.entries(group.groups).map(([k, g]) =>
+              renderGroup(k, g, artifact, fullKey, depth + 1)
+            )}
+            {hasItems && (
+              <div class="ui-preview-grid">
+                {items.map(({ file, item }) => (
+                  <div key={file.id} class="ui-preview-card" onClick={() => setLightbox({ file, artifact, item })}>
+                    <img src={imageUrl(artifact.pipeline_id, file.id)}
+                      alt={item?.label || file.relative_path}
+                      loading="lazy" />
+                    <div class="ui-preview-card-label">
+                      {item?.label || file.relative_path.split('/').pop()}
+                    </div>
+                    {item?.meta && (
+                      <div style="padding:0 0.5rem 0.4rem">
+                        {Object.entries(item.meta).map(([mk, mv]) => (
+                          <span key={`${mk}-${mv}`}
+                            class={`ui-preview-meta-badge${metaFilter && metaFilter.key === mk && metaFilter.value === mv ? ' active' : ''}`}
+                            onClick={(e) => { e.stopPropagation(); toggleMetaFilter(mk, mv); }}>
+                            {mv}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Render uncategorized files (not referenced in any config item)
+  const renderUncategorized = (artifact: UiPreviewArtifact) => {
+    if (!artifact.config) {
+      // No config at all - show all files flat
+      const filtered = artifact.files.filter(f => passesMetaFilter(artifact, f));
+      if (filtered.length === 0) return null;
+      return (
+        <div class="ui-preview-grid">
+          {filtered.map(file => (
+            <div key={file.id} class="ui-preview-card" onClick={() => setLightbox({ file, artifact, item: null })}>
+              <img src={imageUrl(artifact.pipeline_id, file.id)}
+                alt={file.relative_path} loading="lazy" />
+              <div class="ui-preview-card-label">{file.relative_path.split('/').pop()}</div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // Find files not referenced in config
+    const referencedFiles = new Set<string>();
+    const collectRefs = (groups: Record<string, UiPreviewGroup>) => {
+      for (const g of Object.values(groups)) {
+        if (g.items) {
+          for (const filename of Object.keys(g.items)) {
+            for (const f of artifact.files) {
+              if (f.relative_path.endsWith(filename)) referencedFiles.add(f.id);
+            }
+          }
+        }
+        if (g.groups) collectRefs(g.groups);
+      }
+    };
+    collectRefs(artifact.config.groups);
+
+    const uncategorized = artifact.files.filter(f => !referencedFiles.has(f.id) && passesMetaFilter(artifact, f));
+    if (uncategorized.length === 0) return null;
+
+    const isCollapsed = collapsed.has('__uncategorized');
+    return (
+      <div class="ui-preview-group">
+        <div class="ui-preview-group-header" onClick={() => toggleCollapsed('__uncategorized')}>
+          <span class="toggle-icon">{isCollapsed ? '\u25B8' : '\u25BE'}</span>
+          Uncategorized
+        </div>
+        {!isCollapsed && (
+          <div class="ui-preview-group-children">
+            <div class="ui-preview-grid">
+              {uncategorized.map(file => (
+                <div key={file.id} class="ui-preview-card" onClick={() => setLightbox({ file, artifact, item: null })}>
+                  <img src={imageUrl(artifact.pipeline_id, file.id)}
+                    alt={file.relative_path} loading="lazy" />
+                  <div class="ui-preview-card-label">{file.relative_path.split('/').pop()}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Compare view: render side by side matched by relative_path
+  const renderCompare = () => {
+    if (!compareData) return <div class="empty-state">Loading comparison...</div>;
+    const baseFiles = new Map<string, { file: UiPreviewFile; artifact: UiPreviewArtifact }>();
+    const headFiles = new Map<string, { file: UiPreviewFile; artifact: UiPreviewArtifact }>();
+
+    for (const a of compareData.base) {
+      for (const f of a.files) baseFiles.set(f.relative_path, { file: f, artifact: a });
+    }
+    for (const a of compareData.head) {
+      for (const f of a.files) headFiles.set(f.relative_path, { file: f, artifact: a });
+    }
+
+    const allPaths = new Set([...baseFiles.keys(), ...headFiles.keys()]);
+    if (allPaths.size === 0) return <div class="empty-state">No files to compare</div>;
+
+    return (
+      <div class="ui-preview-compare">
+        <div class="ui-preview-compare-col">
+          <h4>Base: {branch}</h4>
+          {[...allPaths].sort().map(path => {
+            const entry = baseFiles.get(path);
+            return (
+              <div key={path} style="margin-bottom:0.75rem">
+                <div class="text-xs text-muted mb-sm">{path.split('/').pop()}</div>
+                {entry ? (
+                  <img src={imageUrl(entry.artifact.pipeline_id, entry.file.id)}
+                    style="width:100%;border-radius:var(--radius);border:1px solid var(--border)"
+                    loading="lazy" alt={path} />
+                ) : (
+                  <div class="empty-state" style="padding:2rem;font-size:0.75rem">Not in base</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div class="ui-preview-compare-col">
+          <h4>Head: {compareBranch}</h4>
+          {[...allPaths].sort().map(path => {
+            const entry = headFiles.get(path);
+            return (
+              <div key={path} style="margin-bottom:0.75rem">
+                <div class="text-xs text-muted mb-sm">{path.split('/').pop()}</div>
+                {entry ? (
+                  <img src={imageUrl(entry.artifact.pipeline_id, entry.file.id)}
+                    style="width:100%;border-radius:var(--radius);border:1px solid var(--border)"
+                    loading="lazy" alt={path} />
+                ) : (
+                  <div class="empty-state" style="padding:2rem;font-size:0.75rem">Not in head</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  if (loading) return <div class="empty-state">Loading...</div>;
+
+  return (
+    <div>
+      {/* Controls: branch selector, type filter, compare toggle */}
+      <div class="flex gap-sm mb-md" style="align-items:center;flex-wrap:wrap">
+        <select class="input" style="width:auto" value={branch}
+          onChange={(e) => setBranch((e.target as HTMLSelectElement).value)}>
+          {branches.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+        </select>
+
+        <div class="flex gap-sm">
+          {(['all', 'ui-comp', 'ui-flow'] as const).map(t => (
+            <button key={t} class={`btn btn-sm${typeFilter === t ? ' btn-primary' : ''}`}
+              onClick={() => setTypeFilter(t)}>
+              {t === 'all' ? 'All' : t === 'ui-comp' ? 'Components' : 'Flows'}
+            </button>
+          ))}
+        </div>
+
+        <label style="margin-left:auto;display:flex;align-items:center;gap:0.4rem;font-size:0.8rem;color:var(--text-secondary);cursor:pointer">
+          <input type="checkbox" checked={compareEnabled}
+            onChange={() => { setCompareEnabled(!compareEnabled); if (compareEnabled) { setCompareBranch(''); setCompareData(null); } }} />
+          Compare
+        </label>
+
+        {compareEnabled && (
+          <select class="input" style="width:auto" value={compareBranch}
+            onChange={(e) => setCompareBranch((e.target as HTMLSelectElement).value)}>
+            <option value="">Select branch...</option>
+            {branches.filter(b => b.name !== branch).map(b => (
+              <option key={b.name} value={b.name}>{b.name}</option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {/* Active meta filters */}
+      {allMeta.size > 0 && (
+        <div class="flex gap-sm mb-md" style="flex-wrap:wrap;align-items:center">
+          <span class="text-xs text-muted">Filter:</span>
+          {[...allMeta.entries()].map(([key, values]) =>
+            [...values].sort().map(v => (
+              <span key={`${key}-${v}`}
+                class={`ui-preview-meta-badge${metaFilter && metaFilter.key === key && metaFilter.value === v ? ' active' : ''}`}
+                onClick={() => toggleMetaFilter(key, v)}>
+                {key}: {v}
+              </span>
+            ))
+          )}
+          {metaFilter && (
+            <button class="btn btn-sm" onClick={() => setMetaFilter(null)}>Clear</button>
+          )}
+        </div>
+      )}
+
+      {/* Compare mode */}
+      {compareEnabled && compareBranch ? (
+        <div class="card">{renderCompare()}</div>
+      ) : (
+        /* Normal view */
+        <div class="card">
+          {artifacts.length === 0 ? (
+            <div class="empty-state">
+              <p>No UI previews yet.</p>
+              <p class="text-muted text-sm mt-sm">
+                Add a ui-preview step with artifacts to your .platform.yaml to get started.
+              </p>
+            </div>
+          ) : (
+            artifacts.map(artifact => (
+              <div key={artifact.id} style="margin-bottom:1.5rem">
+                <div class="flex-between mb-sm">
+                  <h3 style="font-size:0.9rem">{artifact.name}</h3>
+                  <Badge status={artifact.artifact_type === 'ui-comp' ? 'component' : 'flow'}>
+                    {artifact.artifact_type === 'ui-comp' ? 'Component' : 'Flow'}
+                  </Badge>
+                </div>
+                {artifact.config ? (
+                  <>
+                    {Object.entries(artifact.config.groups).map(([k, g]) =>
+                      renderGroup(k, g, artifact, '', 0)
+                    )}
+                    {renderUncategorized(artifact)}
+                  </>
+                ) : (
+                  renderUncategorized(artifact)
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* Lightbox modal */}
+      <Modal open={!!lightbox} onClose={() => setLightbox(null)}
+        title={lightbox?.item?.label || lightbox?.file.relative_path.split('/').pop() || 'Preview'} wide>
+        {lightbox && (
+          <div>
+            <img class="ui-preview-lightbox-img"
+              src={imageUrl(lightbox.artifact.pipeline_id, lightbox.file.id)}
+              alt={lightbox.item?.label || lightbox.file.relative_path} />
+            <div class="ui-preview-lightbox-meta">
+              {lightbox.item?.meta && Object.entries(lightbox.item.meta).map(([k, v]) => (
+                <span key={`${k}-${v}`} class="ui-preview-meta-badge">{k}: {v}</span>
+              ))}
+            </div>
+            <div class="text-xs text-muted" style="text-align:center;margin-top:0.5rem">
+              {lightbox.file.relative_path}
+              {lightbox.file.size_bytes != null && ` (${Math.round(lightbox.file.size_bytes / 1024)} KB)`}
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

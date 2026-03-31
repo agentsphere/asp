@@ -147,7 +147,27 @@ The reconciler's `resolve_gateway_url()` correctly looks in `PLATFORM_GATEWAY_NA
 1. Verify canary HTTPRoute is actually applied during e2e test (currently warns "no envoy proxy service found")
 2. Production Helm chart should also configure `EnvoyProxy` parametersRef for the platform Gateway
 
-### 10. Nextest test-groups for Valkey isolation (Plan 30)
+### 10. In-cluster mTLS for service-to-service traffic
+
+**Status:** TODO
+
+All in-cluster HTTP traffic (OTEL sidecars → platform, app → platform API, pipeline pods → platform) is plain HTTP. Bearer tokens are transmitted unencrypted on the pod network. Acceptable for single-tenant dev clusters but not for production or shared clusters.
+
+**Options:**
+- **Cilium mTLS** (preferred if already using Cilium CNI) — transparent, no sidecar overhead
+- **Linkerd** — lightweight service mesh, automatic mTLS between meshed pods
+- **Platform-native TLS** — platform serves HTTPS with self-signed cert, sidecars use `insecure_skip_verify`
+
+**Tasks:**
+1. Decide on approach (mesh vs platform-native TLS)
+2. If mesh: add mesh install to `hack/cluster-up.sh` and Helm chart
+3. If platform-native: add TLS cert generation to platform startup, serve HTTPS on a second port
+4. Update OTEL sidecar configs to use `https://` endpoint
+5. Update `PLATFORM_API_URL` injection to use `https://`
+6. Verify: OTEL metrics, traces, logs all flow over encrypted connections
+7. Verify: pipeline/agent pods reach platform API over encrypted connections
+
+### 11. Nextest test-groups for Valkey isolation (Plan 30)
 
 **Status:** TODO (low priority)
 

@@ -1,0 +1,1 @@
+{"description": "Orchestrate multi-agent work: spawn agents, track progress, handle handoffs", "persistent_session": true, "runtime": "manager", "role": "manager"}

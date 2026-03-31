@@ -1,0 +1,1 @@
+{"description": "Review merge request for correctness, style, security, and test quality", "persistent_session": false, "runtime": "read-worker", "role": "review"}

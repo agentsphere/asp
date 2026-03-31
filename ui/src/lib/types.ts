@@ -135,3 +135,37 @@ export interface SecretRequestMeta {
   prompt: string;
   environments?: string[];
 }
+
+// UI Preview artifacts
+export interface UiPreviewArtifact {
+  id: string;
+  name: string;
+  artifact_type: string;
+  config: UiPreviewConfig | null;
+  pipeline_id: string;
+  branch: string;
+  created_at: string;
+  files: UiPreviewFile[];
+}
+
+export interface UiPreviewFile {
+  id: string;
+  relative_path: string;
+  content_type: string | null;
+  size_bytes: number | null;
+}
+
+export interface UiPreviewConfig {
+  groups: Record<string, UiPreviewGroup>;
+}
+
+export interface UiPreviewGroup {
+  label: string;
+  groups?: Record<string, UiPreviewGroup>;
+  items?: Record<string, UiPreviewItem>;
+}
+
+export interface UiPreviewItem {
+  label: string;
+  meta?: Record<string, string>;
+}

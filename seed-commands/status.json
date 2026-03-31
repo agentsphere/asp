@@ -1,0 +1,1 @@
+{"description": "Check project health: pipeline status, deploy state, open issues, agent activity", "persistent_session": false, "runtime": "manager", "role": "manager"}

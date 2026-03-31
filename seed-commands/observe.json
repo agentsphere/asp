@@ -1,0 +1,1 @@
+{"description": "Observability setup: OTEL instrumentation, tracing, structured logging, metrics, alerts", "persistent_session": true, "runtime": "sandbox", "role": "dev"}

@@ -1,0 +1,1 @@
+{"description": "CI/CD pipeline setup: .platform.yaml, build stages, test gates, artifact publishing", "persistent_session": true, "runtime": "sandbox", "role": "dev"}

@@ -1,0 +1,1 @@
+{"description": "Deployment setup: manifests, rolling/canary/A-B strategies, Dockerfiles, traffic management", "persistent_session": true, "runtime": "sandbox", "role": "dev"}

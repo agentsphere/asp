@@ -23,6 +23,11 @@ pipeline:
       only:
         events: [mr]
 
+    - name: build-screenshots
+      type: imagebuild
+      imageName: screenshots
+      dockerfile: Dockerfile.screenshots
+
     - name: e2e
       depends_on: [build-app, build-test]
       only:
@@ -32,6 +37,21 @@ pipeline:
         manifests: testinfra/
         readiness_timeout: 120
         wait_for_services: [platform-demo-app, platform-demo-db]
+
+    - name: ui-previews
+      depends_on: [build-screenshots]
+      image: $REGISTRY/$PROJECT/screenshots:$COMMIT_SHA
+      commands:
+        - python screenshots/capture.py
+      artifacts:
+        - name: components
+          path: /output/components/
+          type: ui-comp
+          config: /output/components/config.json
+        - name: flows
+          path: /output/flows/
+          type: ui-flow
+          config: /output/flows/config.json
 
     - name: sync-ops-repo
       type: gitops_sync

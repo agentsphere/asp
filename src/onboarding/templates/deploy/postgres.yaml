@@ -11,6 +11,8 @@ data:
         password: changeme
         databases: [app]
         collection_interval: 15s
+        tls:
+          insecure_skip_verify: true
     processors:
       resource:
         attributes:
@@ -21,7 +23,7 @@ data:
             value: "{{ project_name }}-postgres"
             action: upsert
     exporters:
-      otlphttp:
+      otlp_http:
         endpoint: "${env:OTEL_EXPORTER_OTLP_ENDPOINT}"
         headers:
           authorization: "Bearer ${env:OTEL_API_TOKEN}"
@@ -30,7 +32,7 @@ data:
         metrics:
           receivers: [postgresql]
           processors: [resource]
-          exporters: [otlphttp]
+          exporters: [otlp_http]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -46,9 +48,26 @@ spec:
       labels:
         app: {{ project_name }}-db
     spec:
+      initContainers:
+        - name: gen-certs
+          image: postgres:16-alpine
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              apk add --no-cache openssl >/dev/null 2>&1
+              openssl req -new -x509 -days 365 -nodes \
+                -out /certs/server.crt -keyout /certs/server.key \
+                -subj "/CN={{ project_name }}-db"
+              chown 70:70 /certs/server.crt /certs/server.key
+              chmod 600 /certs/server.key
+          volumeMounts:
+            - name: certs
+              mountPath: /certs
       containers:
         - name: postgres
           image: postgres:16-alpine
+          args: ["-c", "ssl=on", "-c", "ssl_cert_file=/certs/server.crt", "-c", "ssl_key_file=/certs/server.key"]
           ports:
             - containerPort: 5432
           env:
@@ -58,6 +77,10 @@ spec:
               value: app
             - name: POSTGRES_PASSWORD
               value: changeme
+          volumeMounts:
+            - name: certs
+              mountPath: /certs
+              readOnly: true
           resources:
             requests:
               cpu: 100m
@@ -66,7 +89,7 @@ spec:
               cpu: 500m
               memory: 256Mi
         - name: otel-collector
-          image: otel/opentelemetry-collector-contrib:0.115.0
+          image: otel/opentelemetry-collector-contrib:0.147.0
           args: ["--config=/etc/otel/config.yaml"]
           volumeMounts:
             - name: otel-config
@@ -82,6 +105,8 @@ spec:
         - name: otel-config
           configMap:
             name: {{ project_name }}-db-otel-config
+        - name: certs
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

@@ -18,7 +18,7 @@ data:
             value: "{{ project_name }}-valkey"
             action: upsert
     exporters:
-      otlphttp:
+      otlp_http:
         endpoint: "${env:OTEL_EXPORTER_OTLP_ENDPOINT}"
         headers:
           authorization: "Bearer ${env:OTEL_API_TOKEN}"
@@ -27,7 +27,7 @@ data:
         metrics:
           receivers: [redis]
           processors: [resource]
-          exporters: [otlphttp]
+          exporters: [otlp_http]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -56,7 +56,7 @@ spec:
               cpu: 200m
               memory: 128Mi
         - name: otel-collector
-          image: otel/opentelemetry-collector-contrib:0.115.0
+          image: otel/opentelemetry-collector-contrib:0.147.0
           args: ["--config=/etc/otel/config.yaml"]
           volumeMounts:
             - name: otel-config

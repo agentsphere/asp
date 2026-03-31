@@ -271,7 +271,7 @@ pub async fn complete_upload(
     }
 
     // A14: Enforce maximum blob size limit
-    let max_blob_size: u64 = 5_368_709_120; // 5 GB
+    let max_blob_size = state.config.registry_max_blob_size_bytes;
     let total_size = u64::try_from(session.offset).unwrap_or(0) + body.len() as u64;
     if total_size > max_blob_size {
         return Err(RegistryError::BlobUploadInvalid(format!(

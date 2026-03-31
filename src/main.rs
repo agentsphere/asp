@@ -248,20 +248,20 @@ async fn main() -> anyhow::Result<()> {
         .merge(api::router())
         .merge(api::preview::router())
         .merge(observe::router(observe_channels))
-        // Git + registry routes need a higher body limit (500 MB for push/LFS/blob uploads).
+        // Git + registry routes need a higher body limit for push/LFS/blob uploads.
         // DefaultBodyLimit::disable() is required because axum's Bytes extractor applies
         // an *additional* Limited wrapper from DefaultBodyLimit (see axum-core
         // with_limited_body()). Without disabling it, the outer 10 MB default would
-        // cap these routes even though RequestBodyLimitLayer allows 500 MB.
+        // cap these routes even though RequestBodyLimitLayer allows more.
         .merge(
             git::git_protocol_router()
                 .layer(DefaultBodyLimit::disable())
-                .layer(RequestBodyLimitLayer::new(500 * 1024 * 1024)),
+                .layer(RequestBodyLimitLayer::new(cfg.registry_http_body_limit_bytes)),
         )
         .merge(
             registry::router()
                 .layer(DefaultBodyLimit::disable())
-                .layer(RequestBodyLimitLayer::new(500 * 1024 * 1024)),
+                .layer(RequestBodyLimitLayer::new(cfg.registry_http_body_limit_bytes)),
         )
         .layer(axum::middleware::from_fn(request_tracing_middleware))
         .with_state(state)
