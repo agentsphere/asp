@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Reverse proxy for agent session preview iframes.
 //!
 //! Routes `/preview/{session_id}/{*path}` to the preview K8s Service

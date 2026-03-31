@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -222,6 +225,8 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         kaniko_image: "gcr.io/kaniko-project/executor:v1.23.2-debug".into(),
         registry_proxy_blobs: false,
         mcp_servers_path: "mcp/servers".into(),
+        max_artifact_file_bytes: 50 * 1024 * 1024,
+        max_artifact_total_bytes: 500 * 1024 * 1024,
     };
 
     // Seed registry images from OCI tarballs (idempotent, uses file-based cache)

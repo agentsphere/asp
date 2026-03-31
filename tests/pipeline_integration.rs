@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests for the pipeline API (`src/api/pipelines.rs`).
 //!
 //! Tests the list/get/cancel/artifacts/logs handlers using direct DB inserts
@@ -115,10 +118,42 @@ async fn insert_artifact(
     content_type: Option<&str>,
     size_bytes: Option<i64>,
 ) -> Uuid {
+    insert_artifact_full(
+        pool,
+        pipeline_id,
+        name,
+        minio_path,
+        content_type,
+        size_bytes,
+        None,
+        None,
+        false,
+        None,
+        None,
+    )
+    .await
+}
+
+/// Insert an artifact with all columns (including new artifact-collection fields).
+#[allow(clippy::too_many_arguments)]
+async fn insert_artifact_full(
+    pool: &PgPool,
+    pipeline_id: Uuid,
+    name: &str,
+    minio_path: &str,
+    content_type: Option<&str>,
+    size_bytes: Option<i64>,
+    step_id: Option<Uuid>,
+    artifact_type: Option<&str>,
+    is_directory: bool,
+    parent_id: Option<Uuid>,
+    relative_path: Option<&str>,
+) -> Uuid {
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO artifacts (id, pipeline_id, name, minio_path, content_type, size_bytes)
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO artifacts (id, pipeline_id, name, minio_path, content_type, size_bytes,
+                                step_id, artifact_type, is_directory, parent_id, relative_path)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(id)
     .bind(pipeline_id)
@@ -126,9 +161,71 @@ async fn insert_artifact(
     .bind(minio_path)
     .bind(content_type)
     .bind(size_bytes)
+    .bind(step_id)
+    .bind(artifact_type)
+    .bind(is_directory)
+    .bind(parent_id)
+    .bind(relative_path)
     .execute(pool)
     .await
     .expect("insert artifact");
+    id
+}
+
+/// Insert an artifact parent (directory) with config JSON, returning its UUID.
+async fn insert_artifact_parent(
+    pool: &PgPool,
+    pipeline_id: Uuid,
+    step_id: Option<Uuid>,
+    name: &str,
+    artifact_type: &str,
+    config: Option<serde_json::Value>,
+) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO artifacts (id, pipeline_id, name, minio_path, step_id, artifact_type,
+                                is_directory, config)
+         VALUES ($1, $2, $3, '', $4, $5, true, $6)",
+    )
+    .bind(id)
+    .bind(pipeline_id)
+    .bind(name)
+    .bind(step_id)
+    .bind(artifact_type)
+    .bind(config)
+    .execute(pool)
+    .await
+    .expect("insert artifact parent");
+    id
+}
+
+/// Insert an artifact child (file under a parent), returning its UUID.
+async fn insert_artifact_child(
+    pool: &PgPool,
+    pipeline_id: Uuid,
+    parent_id: Uuid,
+    relative_path: &str,
+    minio_path: &str,
+    content_type: Option<&str>,
+    size_bytes: Option<i64>,
+) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO artifacts (id, pipeline_id, name, minio_path, content_type, size_bytes,
+                                parent_id, relative_path, is_directory)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false)",
+    )
+    .bind(id)
+    .bind(pipeline_id)
+    .bind(relative_path) // use relative_path as name
+    .bind(minio_path)
+    .bind(content_type)
+    .bind(size_bytes)
+    .bind(parent_id)
+    .bind(relative_path)
+    .execute(pool)
+    .await
+    .expect("insert artifact child");
     id
 }
 
@@ -1017,4 +1114,397 @@ async fn public_project_allows_any_user_to_list(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["total"], 1);
+}
+
+// ===========================================================================
+// Artifact collection: parent/child hierarchy
+// ===========================================================================
+
+#[sqlx::test(migrations = "./migrations")]
+async fn list_artifacts_with_children(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let token = admin_token.clone();
+    let uid = admin_user_id(&pool).await;
+
+    let project_id = create_project(&app, &token, "pl-art-child", "private").await;
+    let pipeline_id =
+        insert_pipeline(&pool, project_id, uid, "success", "refs/heads/main", "push").await;
+    let step_id = insert_step(&pool, pipeline_id, project_id, "ui-preview", "success", 0).await;
+
+    // Insert a parent (directory) artifact
+    let parent_id = insert_artifact_parent(
+        &pool,
+        pipeline_id,
+        Some(step_id),
+        "ui-components",
+        "ui-comp",
+        Some(serde_json::json!({"groups": {"auth": {"label": "Auth", "items": {}}}})),
+    )
+    .await;
+
+    // Insert child artifacts under the parent
+    let child1 = insert_artifact_child(
+        &pool,
+        pipeline_id,
+        parent_id,
+        "auth/LoginForm.png",
+        &format!("artifacts/{pipeline_id}/{step_id}/ui-components/auth/LoginForm.png"),
+        Some("image/png"),
+        Some(2048),
+    )
+    .await;
+
+    let child2 = insert_artifact_child(
+        &pool,
+        pipeline_id,
+        parent_id,
+        "auth/SignupForm.png",
+        &format!("artifacts/{pipeline_id}/{step_id}/ui-components/auth/SignupForm.png"),
+        Some("image/png"),
+        Some(3072),
+    )
+    .await;
+
+    // List all artifacts — should include parent + children
+    let (status, body) = get_json(
+        &app,
+        &token,
+        &format!("/api/projects/{project_id}/pipelines/{pipeline_id}/artifacts"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body.as_array().unwrap();
+    assert_eq!(items.len(), 3, "parent + 2 children");
+
+    // Verify parent and child IDs are present
+    let ids: Vec<String> = items
+        .iter()
+        .map(|i| i["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(ids.contains(&parent_id.to_string()));
+    assert!(ids.contains(&child1.to_string()));
+    assert!(ids.contains(&child2.to_string()));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn list_artifacts_filter_by_type(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let token = admin_token.clone();
+    let uid = admin_user_id(&pool).await;
+
+    let project_id = create_project(&app, &token, "pl-art-filt", "private").await;
+    let pipeline_id =
+        insert_pipeline(&pool, project_id, uid, "success", "refs/heads/main", "push").await;
+
+    // Insert artifacts with different types
+    insert_artifact_full(
+        &pool,
+        pipeline_id,
+        "ui-components",
+        "",
+        None,
+        None,
+        None,
+        Some("ui-comp"),
+        true,
+        None,
+        None,
+    )
+    .await;
+
+    insert_artifact_full(
+        &pool,
+        pipeline_id,
+        "ui-flows",
+        "",
+        None,
+        None,
+        None,
+        Some("ui-flow"),
+        true,
+        None,
+        None,
+    )
+    .await;
+
+    insert_artifact_full(
+        &pool,
+        pipeline_id,
+        "test-report",
+        "",
+        None,
+        None,
+        None,
+        Some("test-report"),
+        true,
+        None,
+        None,
+    )
+    .await;
+
+    // The list_artifacts endpoint returns all artifacts regardless of type
+    let (status, body) = get_json(
+        &app,
+        &token,
+        &format!("/api/projects/{project_id}/pipelines/{pipeline_id}/artifacts"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.as_array().unwrap().len(), 3);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn download_child_artifact_inline(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state.clone());
+    let token = admin_token.clone();
+    let uid = admin_user_id(&pool).await;
+
+    let project_id = create_project(&app, &token, "pl-art-view", "private").await;
+    let pipeline_id =
+        insert_pipeline(&pool, project_id, uid, "success", "refs/heads/main", "push").await;
+    let step_id = insert_step(&pool, pipeline_id, project_id, "ui-preview", "success", 0).await;
+
+    let parent_id =
+        insert_artifact_parent(&pool, pipeline_id, Some(step_id), "comps", "ui-comp", None).await;
+
+    let minio_path = format!("artifacts/{pipeline_id}/{step_id}/comps/LoginForm.png");
+    let png_data = b"\x89PNG\r\n\x1a\nfake-png-data";
+    state
+        .minio
+        .write(&minio_path, png_data.to_vec())
+        .await
+        .expect("write to minio");
+
+    let child_id = insert_artifact_child(
+        &pool,
+        pipeline_id,
+        parent_id,
+        "LoginForm.png",
+        &minio_path,
+        Some("image/png"),
+        Some(i64::try_from(png_data.len()).unwrap()),
+    )
+    .await;
+
+    // Use /view endpoint — should return Content-Disposition: inline
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/projects/{project_id}/pipelines/{pipeline_id}/artifacts/{child_id}/view"
+        ))
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers().get("content-type").unwrap(), "image/png");
+    assert_eq!(resp.headers().get("content-disposition").unwrap(), "inline");
+
+    let body_bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
+    assert_eq!(body_bytes, png_data);
+}
+
+// ===========================================================================
+// UI Previews endpoints
+// ===========================================================================
+
+#[sqlx::test(migrations = "./migrations")]
+async fn ui_previews_by_branch(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let token = admin_token.clone();
+    let uid = admin_user_id(&pool).await;
+
+    let project_id = create_project(&app, &token, "pl-uiprev", "private").await;
+    let pipeline_id =
+        insert_pipeline(&pool, project_id, uid, "success", "refs/heads/main", "push").await;
+    let step_id = insert_step(&pool, pipeline_id, project_id, "ui-preview", "success", 0).await;
+
+    // Insert UI preview parent + child
+    let parent_id = insert_artifact_parent(
+        &pool,
+        pipeline_id,
+        Some(step_id),
+        "ui-components",
+        "ui-comp",
+        Some(serde_json::json!({"groups": {"auth": {"label": "Auth", "items": {"LoginForm.png": {"label": "Login Form"}}}}})),
+    )
+    .await;
+
+    insert_artifact_child(
+        &pool,
+        pipeline_id,
+        parent_id,
+        "auth/LoginForm.png",
+        &format!("artifacts/{pipeline_id}/{step_id}/ui-components/auth/LoginForm.png"),
+        Some("image/png"),
+        Some(4096),
+    )
+    .await;
+
+    let (status, body) = get_json(
+        &app,
+        &token,
+        &format!("/api/projects/{project_id}/ui-previews?branch=main"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let previews = body.as_array().unwrap();
+    assert_eq!(previews.len(), 1);
+
+    let preview = &previews[0];
+    assert_eq!(preview["name"], "ui-components");
+    assert_eq!(preview["artifact_type"], "ui-comp");
+    assert_eq!(preview["branch"], "main");
+    assert!(preview["config"].is_object());
+    assert_eq!(
+        preview["pipeline_id"].as_str().unwrap(),
+        pipeline_id.to_string()
+    );
+
+    let files = preview["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["relative_path"], "auth/LoginForm.png");
+    assert_eq!(files[0]["content_type"], "image/png");
+    assert_eq!(files[0]["size_bytes"], 4096);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn ui_previews_by_branch_empty(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let token = admin_token.clone();
+    let uid = admin_user_id(&pool).await;
+
+    let project_id = create_project(&app, &token, "pl-uiprev-empty", "private").await;
+
+    // Insert a FAILED pipeline — should not be picked up
+    let pipeline_id =
+        insert_pipeline(&pool, project_id, uid, "failure", "refs/heads/main", "push").await;
+    insert_artifact_parent(&pool, pipeline_id, None, "comps", "ui-comp", None).await;
+
+    let (status, body) = get_json(
+        &app,
+        &token,
+        &format!("/api/projects/{project_id}/ui-previews?branch=main"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let previews = body.as_array().unwrap();
+    assert_eq!(previews.len(), 0, "no successful pipeline → empty");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn ui_previews_filter_by_type(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let token = admin_token.clone();
+    let uid = admin_user_id(&pool).await;
+
+    let project_id = create_project(&app, &token, "pl-uiprev-type", "private").await;
+    let pipeline_id =
+        insert_pipeline(&pool, project_id, uid, "success", "refs/heads/main", "push").await;
+
+    insert_artifact_parent(&pool, pipeline_id, None, "ui-components", "ui-comp", None).await;
+    insert_artifact_parent(&pool, pipeline_id, None, "ui-flows", "ui-flow", None).await;
+
+    // Filter by ui-flow only
+    let (status, body) = get_json(
+        &app,
+        &token,
+        &format!("/api/projects/{project_id}/ui-previews?branch=main&type=ui-flow"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let previews = body.as_array().unwrap();
+    assert_eq!(previews.len(), 1);
+    assert_eq!(previews[0]["artifact_type"], "ui-flow");
+    assert_eq!(previews[0]["name"], "ui-flows");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn ui_previews_compare(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let token = admin_token.clone();
+    let uid = admin_user_id(&pool).await;
+
+    let project_id = create_project(&app, &token, "pl-uiprev-cmp", "private").await;
+
+    // Create pipelines for two branches
+    let main_pipeline =
+        insert_pipeline(&pool, project_id, uid, "success", "refs/heads/main", "push").await;
+    let feat_pipeline = insert_pipeline(
+        &pool,
+        project_id,
+        uid,
+        "success",
+        "refs/heads/feat-redesign",
+        "push",
+    )
+    .await;
+
+    insert_artifact_parent(&pool, main_pipeline, None, "main-comps", "ui-comp", None).await;
+    insert_artifact_parent(&pool, feat_pipeline, None, "feat-comps", "ui-comp", None).await;
+
+    let (status, body) = get_json(
+        &app,
+        &token,
+        &format!("/api/projects/{project_id}/ui-previews/compare?base=main&head=feat-redesign"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let base = body["base"].as_array().unwrap();
+    let head = body["head"].as_array().unwrap();
+    assert_eq!(base.len(), 1);
+    assert_eq!(head.len(), 1);
+    assert_eq!(base[0]["name"], "main-comps");
+    assert_eq!(base[0]["branch"], "main");
+    assert_eq!(head[0]["name"], "feat-comps");
+    assert_eq!(head[0]["branch"], "feat-redesign");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn ui_previews_requires_project_read(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let uid = admin_user_id(&pool).await;
+
+    let project_id = create_project(&app, &admin_token, "pl-uiprev-priv", "private").await;
+    let pipeline_id =
+        insert_pipeline(&pool, project_id, uid, "success", "refs/heads/main", "push").await;
+    insert_artifact_parent(&pool, pipeline_id, None, "comps", "ui-comp", None).await;
+
+    // Create a user with no project roles
+    let (_user_id, user_token) = create_user(
+        &app,
+        &admin_token,
+        "outsider-uiprev",
+        "outsider-uiprev@test.com",
+    )
+    .await;
+
+    // Private project → 404 for non-member (not 403, to avoid leaking existence)
+    let (status, _) = get_json(
+        &app,
+        &user_token,
+        &format!("/api/projects/{project_id}/ui-previews?branch=main"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "private project should return 404 for non-member"
+    );
 }

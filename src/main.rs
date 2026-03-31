@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -370,6 +373,7 @@ fn spawn_background_tasks(
     }
     tokio::spawn(run_session_cleanup(
         pool.clone(),
+        state.minio.clone(),
         state.secret_requests.clone(),
         shutdown_tx.subscribe(),
     ));
@@ -379,6 +383,7 @@ fn spawn_background_tasks(
 
 async fn run_session_cleanup(
     pool: sqlx::PgPool,
+    minio: opendal::Operator,
     secret_requests: crate::secrets::request::SecretRequests,
     mut shutdown: tokio::sync::watch::Receiver<()>,
 ) {
@@ -418,6 +423,8 @@ async fn run_session_cleanup(
                             tracing::debug!(evicted, "evicted stale secret requests");
                         }
                     }
+                    // Clean up expired artifacts — delete files from MinIO, then delete DB rows
+                    cleanup_expired_artifacts(&pool, &minio).await;
                     tracing::debug!("expired sessions/tokens cleanup complete");
                 }
                 .instrument(span)
@@ -429,6 +436,60 @@ async fn run_session_cleanup(
             }
         }
     }
+}
+
+async fn cleanup_expired_artifacts(pool: &sqlx::PgPool, minio: &opendal::Operator) {
+    // Find expired artifacts (parents only — children cascade via ON DELETE CASCADE)
+    let rows: Vec<(uuid::Uuid, String)> = match sqlx::query_as(
+        "SELECT id, minio_path FROM artifacts WHERE expires_at IS NOT NULL AND expires_at < now() AND parent_id IS NULL",
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to query expired artifacts");
+            return;
+        }
+    };
+
+    if rows.is_empty() {
+        return;
+    }
+
+    for (id, minio_path) in &rows {
+        // Delete child artifact files from MinIO first
+        let children: Vec<(String,)> =
+            sqlx::query_as("SELECT minio_path FROM artifacts WHERE parent_id = $1")
+                .bind(id)
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
+
+        for (child_path,) in &children {
+            if let Err(e) = minio.delete(child_path).await {
+                tracing::warn!(error = %e, path = %child_path, "failed to delete child artifact from MinIO");
+            }
+        }
+
+        // Delete parent artifact file from MinIO (may not have one if is_directory)
+        if !minio_path.is_empty()
+            && let Err(e) = minio.delete(minio_path).await
+        {
+            tracing::warn!(error = %e, path = %minio_path, "failed to delete artifact from MinIO");
+        }
+
+        // Delete from DB (CASCADE handles children)
+        if let Err(e) = sqlx::query("DELETE FROM artifacts WHERE id = $1")
+            .bind(id)
+            .execute(pool)
+            .await
+        {
+            tracing::warn!(error = %e, artifact_id = %id, "failed to delete expired artifact from DB");
+        }
+    }
+
+    tracing::debug!(count = rows.len(), "cleaned up expired artifacts");
 }
 
 async fn shutdown_signal() {

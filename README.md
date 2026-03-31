@@ -1,6 +1,8 @@
-# Platform
+# asp — Agentic DevOps
 
 Unified AI-first platform — a single Rust binary replacing Gitea, Woodpecker, Authelia, OpenObserve, Maddy, and OpenBao with one cohesive service.
+
+asp is developed by Steven Hooker and officially backed and distributed by AgentSphere GmbH.
 
 ## What It Does
 
@@ -162,4 +164,6 @@ Configuration is via environment variables. See `.env.example` for defaults:
 
 ## License
 
-MIT
+This software is licensed under the [Business Source License 1.1](LICENSE). You may use, modify, and self-host asp freely. Providing asp to third parties as a managed or hosted service requires a commercial license from AgentSphere GmbH.
+
+For commercial licensing inquiries, contact sales@agentsphere.de.

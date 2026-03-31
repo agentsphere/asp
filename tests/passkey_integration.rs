@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests for passkey (`WebAuthn`) credential management.
 //! Tests list, rename, delete, begin/complete register, and begin/complete login.
 //! Full ceremony tests use webauthn-authenticator-rs `SoftPasskey`.

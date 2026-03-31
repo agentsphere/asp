@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests for git browse APIs — branches, tree, blob, commits.
 //! Moved from `e2e_git.rs`: these are single-endpoint tests with git filesystem side effects.
 

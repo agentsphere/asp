@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests for agent session CRUD — list, get, stop, spawn, children.
 //! Includes a pod-creation smoke test that verifies the real K8s API path.
 

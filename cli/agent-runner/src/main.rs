@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 #[allow(dead_code)] // Copied from platform crate — not all paths used in standalone binary
 mod control;
 #[allow(dead_code)] // Copied from platform crate — not all paths used in standalone binary

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Valkey-based internal event bus for platform events.
 //!
 //! Events are published as JSON to a Valkey pub/sub channel. A background

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Claude CLI OAuth flow manager.
 //!
 //! Spawns `claude setup-token` via a PTY wrapper (`script`) to obtain a

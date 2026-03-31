@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 /// System prompt for the Manager Agent.
 ///
 /// Unlike the old create-app prompt (which embedded tool schemas), this prompt

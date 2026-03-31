@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Additional integration tests for `src/api/sessions.rs` coverage gaps.
 //!
 //! Covers: validate_provider_config paths, iframes listing, progress endpoint,

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -268,6 +271,8 @@ pub async fn e2e_state_with_api_url(
             .ok()
             .is_some_and(|v| v == "true"),
         mcp_servers_path: "mcp/servers".into(),
+        max_artifact_file_bytes: 50 * 1024 * 1024,
+        max_artifact_total_bytes: 500 * 1024 * 1024,
     };
 
     // Seed registry images from OCI tarballs (idempotent, uses file-based cache)

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Shared helper for creating K8s `imagePullSecrets`-compatible Secrets.
 //!
 //! Used by both the pipeline executor (for kaniko steps) and the agent service

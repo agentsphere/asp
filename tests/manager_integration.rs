@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests for manager agent approval flow — approve/reject actions,
 //! session-approved tools, pending actions, and the full approval roundtrip.
 

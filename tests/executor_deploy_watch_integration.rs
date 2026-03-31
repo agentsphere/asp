@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests for `pipeline::executor` — `deploy_watch` step type.
 //!
 //! The `deploy_watch` step polls the `deploy_releases` table (joined with

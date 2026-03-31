@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Minimal OTLP protobuf types using prost derive macros.
 //!
 //! Defines the subset of OpenTelemetry Protocol messages needed for

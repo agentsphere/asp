@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests for `pipeline::executor::execute_deploy_test_step()`.
 //!
 //! These tests exercise the deploy_test step type end-to-end against the real

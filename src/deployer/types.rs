@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 // Types used by later phases (reconciler rewrite, analysis loop, gateway, API).
 #![cfg_attr(not(test), allow(dead_code))]
 

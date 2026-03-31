@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Ephemeral in-memory state for agent secret requests.
 //!
 //! When an agent needs a secret (e.g. API key), it creates a pending request.

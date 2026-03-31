@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests for `src/agent/llm_validate.rs` — LLM provider validation.
 //!
 //! Tests exercise `run_validation()` with the mock CLI subprocess. The mock CLI

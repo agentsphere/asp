@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! OCI layout tarball parser and registry seeder.
 //!
 //! Imports pre-built OCI images from tarballs on disk into the platform's

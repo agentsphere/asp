@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Custom tracing layer that captures platform's own log events and forwards
 //! them to the observe pipeline so admins can see platform logs in the
 //! Observe > Logs UI with `service = "platform"`.

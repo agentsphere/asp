@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests for `deployer::ops_repo` — bare-repo git operations.
 //!
 //! These tests exercise public functions with real filesystem I/O (temp dirs + git).

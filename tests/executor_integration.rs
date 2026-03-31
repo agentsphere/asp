@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests for `pipeline::executor` — single pipeline lifecycle tests.
 //!
 //! These tests exercise the executor by triggering a pipeline via the API and

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 // Forked from src/agent/claude_cli/control.rs — keep in sync manually
 
 use serde::{Deserialize, Serialize};

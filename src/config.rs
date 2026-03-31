@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 use std::env;
 use std::path::PathBuf;
 
@@ -113,6 +116,10 @@ pub struct Config {
     pub registry_proxy_blobs: bool,
     /// Directory containing MCP server scripts for manager agent sessions.
     pub mcp_servers_path: String,
+    /// Maximum single artifact file size in bytes (default 50 MB).
+    pub max_artifact_file_bytes: u64,
+    /// Maximum total artifact size per step in bytes (default 500 MB).
+    pub max_artifact_total_bytes: u64,
 }
 
 fn parse_cors_origins(s: &str) -> Vec<String> {
@@ -301,6 +308,14 @@ impl Config {
                         .unwrap_or(p)
                 }
             },
+            max_artifact_file_bytes: env::var("PLATFORM_MAX_ARTIFACT_FILE_BYTES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(50 * 1024 * 1024), // 50 MB
+            max_artifact_total_bytes: env::var("PLATFORM_MAX_ARTIFACT_TOTAL_BYTES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(500 * 1024 * 1024), // 500 MB
         }
     }
 
@@ -390,6 +405,8 @@ impl Config {
             kaniko_image: "gcr.io/kaniko-project/executor:v1.23.2-debug".into(),
             registry_proxy_blobs: false,
             mcp_servers_path: "mcp/servers".into(),
+            max_artifact_file_bytes: 50 * 1024 * 1024,
+            max_artifact_total_bytes: 500 * 1024 * 1024,
         }
     }
 }

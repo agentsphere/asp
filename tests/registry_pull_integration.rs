@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests that verify pods can actually pull and run images from the
 //! platform's built-in OCI registry. Unlike `registry_integration.rs` (which tests
 //! the registry API), these tests create real K8s pods and verify containerd pulls.

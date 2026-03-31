@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 use fred::clients::Client;
 use fred::interfaces::{ClientLike, EventInterface, PubsubInterface};
 use fred::types::config::Config;

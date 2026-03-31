@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Background analysis loop for canary/AB releases.
 //!
 //! Runs every 15 seconds, evaluates progress gates and rollback triggers

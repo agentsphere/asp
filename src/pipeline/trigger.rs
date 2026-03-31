@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -443,11 +446,14 @@ async fn create_pipeline_with_steps(
                      --insecure-pull \
                      --cache=true --cache-repo=${{REGISTRY}}/${{PLATFORM_PROJECT_NAME}}/cache"
                 );
-                let config = serde_json::json!({
+                let mut config = serde_json::json!({
                     "image_name": image_name,
                     "dockerfile": dockerfile,
                     "secrets": step.secrets,
                 });
+                if !step.artifacts.is_empty() {
+                    config["artifacts"] = serde_json::to_value(&step.artifacts).unwrap_or_default();
+                }
                 (
                     "imagebuild",
                     kaniko_image.to_string(),
@@ -483,13 +489,25 @@ async fn create_pipeline_with_steps(
                     .map(|dw| serde_json::to_value(dw).unwrap_or_default());
                 ("deploy_watch", String::new(), vec![], None, config)
             }
-            super::definition::StepKind::Command => (
-                "command",
-                step.image.clone(),
-                step.commands.clone(),
-                None,
-                None,
-            ),
+            super::definition::StepKind::Command => {
+                let config = if step.artifacts.is_empty() {
+                    None
+                } else {
+                    let mut c = serde_json::Map::new();
+                    c.insert(
+                        "artifacts".into(),
+                        serde_json::to_value(&step.artifacts).unwrap_or_default(),
+                    );
+                    Some(serde_json::Value::Object(c))
+                };
+                (
+                    "command",
+                    step.image.clone(),
+                    step.commands.clone(),
+                    None,
+                    config,
+                )
+            }
         };
         let commands_refs: Vec<&str> = commands.iter().map(String::as_str).collect();
 

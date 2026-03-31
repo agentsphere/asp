@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! LLM integration tests for the create-app CLI flow.
 //!
 //! These tests use a **real Claude CLI** with real OAuth/API tokens.

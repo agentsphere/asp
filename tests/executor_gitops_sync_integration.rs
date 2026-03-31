@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests for `pipeline::executor` — `gitops_sync` step type.
 //!
 //! These tests exercise the in-process `execute_gitops_sync_step()` and

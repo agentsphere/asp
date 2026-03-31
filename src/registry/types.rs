@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 use serde::{Deserialize, Serialize};
 
 /// OCI Image Manifest (v2 schema 2 / OCI v1).

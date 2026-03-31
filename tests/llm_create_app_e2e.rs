@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! LLM E2E test: Full create-app flow with real Claude CLI and Kind cluster.
 //!
 //! Tests the entire chain: create-app session → Manager Agent tool loop →

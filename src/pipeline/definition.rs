@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
@@ -28,11 +31,8 @@ pub struct PlatformFile {
 pub type PipelineFile = PlatformFile;
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // artifacts consumed via serde for future use
 pub struct PipelineDefinition {
     pub steps: Vec<StepDef>,
-    #[serde(default)]
-    pub artifacts: Vec<ArtifactDef>,
     #[serde(rename = "on")]
     pub trigger: Option<TriggerConfig>,
     #[serde(default)]
@@ -217,6 +217,9 @@ pub struct StepDef {
     /// Quality gate: marks this step as a quality gate (UI/semantic only).
     #[serde(default)]
     pub gate: bool,
+    /// Artifacts to collect after this step succeeds.
+    #[serde(default)]
+    pub artifacts: Vec<ArtifactDef>,
 }
 
 /// Configuration for a `gitops_sync` step.
@@ -318,13 +321,14 @@ pub struct DeployTestDef {
     pub wait_for_services: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)] // fields consumed via serde + executor
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ArtifactDef {
     pub name: String,
     pub path: String,
+    #[serde(rename = "type")]
+    pub artifact_type: String,
     #[serde(default)]
-    pub expires: Option<String>,
+    pub config: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -454,12 +458,15 @@ fn validate(def: &PipelineDefinition) -> Result<(), PipelineError> {
         }
     }
 
-    // Validate artifact paths — reject path traversal
-    for artifact in &def.artifacts {
-        if artifact.path.contains("..") {
-            return Err(PipelineError::InvalidDefinition(
-                "artifact path must not contain '..'".into(),
-            ));
+    // Validate step-level artifact paths — reject path traversal
+    for step in &def.steps {
+        for artifact in &step.artifacts {
+            if artifact.path.contains("..") {
+                return Err(PipelineError::InvalidDefinition(format!(
+                    "step '{}': artifact path must not contain '..'",
+                    step.name,
+                )));
+            }
         }
     }
 
@@ -974,17 +981,16 @@ pipeline:
       image: rust:1.85-slim
       commands:
         - cargo nextest run
+      artifacts:
+        - name: test-results
+          path: target/nextest/
+          type: test-report
     - name: build-image
       image: gcr.io/kaniko-project/executor:latest
       environment:
         DOCKER_CONFIG: /kaniko/.docker
       commands:
         - /kaniko/executor --context=. --dockerfile=Dockerfile
-
-  artifacts:
-    - name: test-results
-      path: target/nextest/
-      expires: 7d
 
   on:
     push:
@@ -1002,8 +1008,8 @@ pipeline:
         assert_eq!(def.steps[0].commands.len(), 1);
         assert_eq!(def.steps[1].name, "build-image");
         assert!(!def.steps[1].environment.is_empty());
-        assert_eq!(def.artifacts.len(), 1);
-        assert_eq!(def.artifacts[0].name, "test-results");
+        assert_eq!(def.steps[0].artifacts.len(), 1);
+        assert_eq!(def.steps[0].artifacts[0].name, "test-results");
         assert!(def.trigger.is_some());
     }
 
@@ -1019,7 +1025,7 @@ pipeline:
 ";
         let def = parse(yaml).unwrap();
         assert_eq!(def.steps.len(), 1);
-        assert!(def.artifacts.is_empty());
+        assert!(def.steps[0].artifacts.is_empty());
         assert!(def.trigger.is_none());
     }
 
@@ -1265,8 +1271,8 @@ pipeline:
     #[test]
     fn parsed_artifact_fields() {
         let def = parse(VALID_YAML).unwrap();
-        assert_eq!(def.artifacts[0].path, "target/nextest/");
-        assert_eq!(def.artifacts[0].expires.as_deref(), Some("7d"));
+        assert_eq!(def.steps[0].artifacts[0].path, "target/nextest/");
+        assert_eq!(def.steps[0].artifacts[0].artifact_type, "test-report");
     }
 
     #[test]
@@ -1369,6 +1375,10 @@ pipeline:
         - cargo nextest run
       depends_on:
         - lint
+      artifacts:
+        - name: test-results
+          path: target/nextest/
+          type: test-report
     - name: build
       image: rust:1.85
       commands:
@@ -1378,12 +1388,10 @@ pipeline:
       environment:
         CARGO_INCREMENTAL: "0"
         RUSTFLAGS: "-C link-arg=-s"
-  artifacts:
-    - name: binary
-      path: target/release/platform
-      expires: 30d
-    - name: test-results
-      path: target/nextest/
+      artifacts:
+        - name: binary
+          path: target/release/platform
+          type: build-output
   on:
     push:
       branches: [main, "release/*"]
@@ -1396,9 +1404,10 @@ pipeline:
         assert_eq!(def.steps[1].depends_on, vec!["lint"]);
         assert_eq!(def.steps[2].depends_on, vec!["test"]);
         assert_eq!(def.steps[2].environment.len(), 2);
-        assert_eq!(def.artifacts.len(), 2);
-        assert_eq!(def.artifacts[0].expires.as_deref(), Some("30d"));
-        assert!(def.artifacts[1].expires.is_none());
+        assert_eq!(def.steps[1].artifacts.len(), 1);
+        assert_eq!(def.steps[1].artifacts[0].artifact_type, "test-report");
+        assert_eq!(def.steps[2].artifacts.len(), 1);
+        assert_eq!(def.steps[2].artifacts[0].artifact_type, "build-output");
 
         // Trigger matching
         assert!(matches_push(def.trigger.as_ref(), "main"));
@@ -2014,6 +2023,7 @@ pipeline:
                 secrets: vec![],
                 gitops: None,
                 deploy_watch: None,
+                artifacts: vec![],
             },
             StepDef {
                 name: "b".into(),
@@ -2030,6 +2040,7 @@ pipeline:
                 secrets: vec![],
                 gitops: None,
                 deploy_watch: None,
+                artifacts: vec![],
             },
         ];
         assert!(topological_layers(&steps).is_none());
@@ -3438,9 +3449,10 @@ pipeline:
   steps:
     - name: test
       image: alpine
-  artifacts:
-    - name: stolen
-      path: ../../../etc/passwd
+      artifacts:
+        - name: stolen
+          path: ../../../etc/passwd
+          type: test-report
 ";
         let err = parse(yaml).unwrap_err();
         assert!(
@@ -3456,9 +3468,10 @@ pipeline:
   steps:
     - name: test
       image: alpine
-  artifacts:
-    - name: results
-      path: target/test-results/
+      artifacts:
+        - name: results
+          path: target/test-results/
+          type: test-report
 ";
         assert!(parse(yaml).is_ok());
     }
@@ -3865,5 +3878,126 @@ pipeline:
         let pf: PlatformFile = serde_yaml::from_str(yaml).unwrap();
         let dw = pf.pipeline.steps[0].deploy_watch.as_ref().unwrap();
         assert_eq!(dw.timeout, 300);
+    }
+
+    // -- step-level artifact parsing --
+
+    #[test]
+    fn parse_step_with_artifacts() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: ui-preview
+      image: ghcr.io/agentsphere/ui-preview:v1
+      commands:
+        - ui-preview-generate
+      artifacts:
+        - name: ui-components
+          path: .platform/ui-previews/components/
+          type: ui-comp
+          config: .platform/ui-previews/components/config.json
+        - name: ui-flows
+          path: .platform/ui-previews/flows/
+          type: ui-flow
+";
+        let def = parse(yaml).unwrap();
+        assert_eq!(def.steps[0].artifacts.len(), 2);
+        assert_eq!(def.steps[0].artifacts[0].name, "ui-components");
+        assert_eq!(
+            def.steps[0].artifacts[0].path,
+            ".platform/ui-previews/components/"
+        );
+        assert_eq!(def.steps[0].artifacts[0].artifact_type, "ui-comp");
+        assert_eq!(
+            def.steps[0].artifacts[0].config.as_deref(),
+            Some(".platform/ui-previews/components/config.json")
+        );
+        assert_eq!(def.steps[0].artifacts[1].name, "ui-flows");
+        assert_eq!(def.steps[0].artifacts[1].artifact_type, "ui-flow");
+    }
+
+    #[test]
+    fn parse_step_without_artifacts() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: build
+      image: alpine
+      commands:
+        - echo build
+";
+        let def = parse(yaml).unwrap();
+        assert!(def.steps[0].artifacts.is_empty());
+    }
+
+    #[test]
+    fn parse_step_artifact_type_field() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: test
+      image: alpine
+      artifacts:
+        - name: results
+          path: output/
+          type: ui-comp
+";
+        let def = parse(yaml).unwrap();
+        assert_eq!(def.steps[0].artifacts[0].artifact_type, "ui-comp");
+    }
+
+    #[test]
+    fn parse_step_artifact_config_optional() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: test
+      image: alpine
+      artifacts:
+        - name: results
+          path: output/
+          type: test-report
+";
+        let def = parse(yaml).unwrap();
+        assert!(def.steps[0].artifacts[0].config.is_none());
+    }
+
+    #[test]
+    fn parse_step_artifact_config_present() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: test
+      image: alpine
+      artifacts:
+        - name: results
+          path: output/
+          type: ui-comp
+          config: output/config.json
+";
+        let def = parse(yaml).unwrap();
+        assert_eq!(
+            def.steps[0].artifacts[0].config.as_deref(),
+            Some("output/config.json")
+        );
+    }
+
+    #[test]
+    fn validate_step_artifact_path_traversal() {
+        let yaml = r"
+pipeline:
+  steps:
+    - name: test
+      image: alpine
+      artifacts:
+        - name: bad
+          path: ../foo
+          type: test-report
+";
+        let err = parse(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineError::InvalidDefinition(ref msg) if msg.contains("..")),
+            "got: {err:?}"
+        );
     }
 }

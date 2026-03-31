@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests for the feature flags CRUD API (`src/api/flags.rs`).
 //!
 //! Covers all 12 handlers: create, list, get, update, delete, toggle,

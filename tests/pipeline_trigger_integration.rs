@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests for `pipeline::trigger` — `on_push`, `on_api`, `on_mr`.
 //!
 //! These tests exercise the public trigger functions with real Postgres and
@@ -1733,6 +1736,133 @@ pipeline:
     assert!(
         comment_count.0 > 0,
         "auto-bump should post a comment on the MR"
+    );
+
+    drop(bare_dir);
+    drop(work_dir);
+}
+
+// ===========================================================================
+// on_push — step with artifacts stores config
+// ===========================================================================
+
+const STEP_WITH_ARTIFACTS_YAML: &str = "\
+pipeline:
+  steps:
+    - name: ui-preview
+      image: ghcr.io/agentsphere/ui-preview:v1
+      commands:
+        - ui-preview-generate
+      artifacts:
+        - name: ui-components
+          path: .platform/ui-previews/components/
+          type: ui-comp
+          config: .platform/ui-previews/components/config.json
+        - name: ui-flows
+          path: .platform/ui-previews/flows/
+          type: ui-flow
+";
+
+#[sqlx::test(migrations = "./migrations")]
+async fn on_push_step_with_artifacts_stored_in_config(pool: PgPool) {
+    let _state = helpers::test_state(pool.clone()).await;
+    let (bare_dir, work_dir, bare_path) =
+        create_test_repo_with_pipeline_yaml(STEP_WITH_ARTIFACTS_YAML);
+    let (project_id, user_id) = create_project_with_repo(&pool, bare_path.to_str().unwrap()).await;
+
+    let params = PushTriggerParams {
+        project_id,
+        user_id,
+        repo_path: bare_path.clone(),
+        branch: "main".into(),
+        commit_sha: None,
+    };
+
+    let result = trigger::on_push(
+        &pool,
+        &params,
+        "gcr.io/kaniko-project/executor:v1.23.2-debug",
+    )
+    .await
+    .unwrap();
+    assert!(result.is_some(), "pipeline should be created");
+    let pipeline_id = result.unwrap();
+
+    let step: (String, Option<serde_json::Value>) =
+        sqlx::query_as("SELECT step_type, step_config FROM pipeline_steps WHERE pipeline_id = $1")
+            .bind(pipeline_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    assert_eq!(step.0, "command");
+    // step_config should contain artifacts array
+    let config = step.1.unwrap();
+    let artifacts = config["artifacts"].as_array().unwrap();
+    assert_eq!(artifacts.len(), 2, "should have 2 artifact definitions");
+
+    assert_eq!(artifacts[0]["name"], "ui-components");
+    assert_eq!(artifacts[0]["path"], ".platform/ui-previews/components/");
+    assert_eq!(artifacts[0]["artifact_type"], "ui-comp");
+    assert_eq!(
+        artifacts[0]["config"],
+        ".platform/ui-previews/components/config.json"
+    );
+
+    assert_eq!(artifacts[1]["name"], "ui-flows");
+    assert_eq!(artifacts[1]["path"], ".platform/ui-previews/flows/");
+    assert_eq!(artifacts[1]["artifact_type"], "ui-flow");
+    // config not specified → should be null/absent
+    assert!(
+        artifacts[1]["config"].is_null()
+            || !artifacts[1].as_object().unwrap().contains_key("config"),
+        "config should be null when not specified"
+    );
+
+    drop(bare_dir);
+    drop(work_dir);
+}
+
+// ===========================================================================
+// on_push — step without artifacts has no config key
+// ===========================================================================
+
+#[sqlx::test(migrations = "./migrations")]
+async fn on_push_step_without_artifacts_no_config_key(pool: PgPool) {
+    let _state = helpers::test_state(pool.clone()).await;
+    let (bare_dir, work_dir, bare_path) = create_test_repo_with_pipeline_yaml(SIMPLE_YAML);
+    let (project_id, user_id) = create_project_with_repo(&pool, bare_path.to_str().unwrap()).await;
+
+    let params = PushTriggerParams {
+        project_id,
+        user_id,
+        repo_path: bare_path.clone(),
+        branch: "main".into(),
+        commit_sha: None,
+    };
+
+    let result = trigger::on_push(
+        &pool,
+        &params,
+        "gcr.io/kaniko-project/executor:v1.23.2-debug",
+    )
+    .await
+    .unwrap();
+    assert!(result.is_some(), "pipeline should be created");
+    let pipeline_id = result.unwrap();
+
+    let step: (String, Option<serde_json::Value>) =
+        sqlx::query_as("SELECT step_type, step_config FROM pipeline_steps WHERE pipeline_id = $1")
+            .bind(pipeline_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    assert_eq!(step.0, "command");
+    // step_config should be null (no config for plain command steps without artifacts)
+    assert!(
+        step.1.is_none(),
+        "step_config should be null for steps without artifacts"
     );
 
     drop(bare_dir);

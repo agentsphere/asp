@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 use sha2::{Digest, Sha256};
 
 /// Generate a session token. Returns `(raw_token, sha256_hash)`.

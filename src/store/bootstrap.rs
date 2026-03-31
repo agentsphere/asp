@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHasher};
 use sha2::{Digest, Sha256};

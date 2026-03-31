@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! E2E tests for `GitOps` deploy, staging promotion, and OTLP observability.
 //!
 //! These tests exercise multi-step user journeys spanning ops-repo commits,

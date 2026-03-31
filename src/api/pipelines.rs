@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -88,6 +91,54 @@ pub struct ArtifactResponse {
 use super::helpers::{ListResponse, require_project_read, require_project_write};
 
 // ---------------------------------------------------------------------------
+// UI Preview types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct UiPreviewsQuery {
+    pub branch: Option<String>,
+    #[serde(rename = "type")]
+    pub artifact_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UiPreviewsCompareQuery {
+    pub base: String,
+    pub head: String,
+    #[serde(rename = "type")]
+    pub artifact_type: Option<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "UiPreviewArtifact")]
+pub struct UiPreviewArtifactResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub artifact_type: String,
+    pub config: Option<serde_json::Value>,
+    pub pipeline_id: Uuid,
+    pub branch: String,
+    pub created_at: DateTime<Utc>,
+    pub files: Vec<UiPreviewFileResponse>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export, rename = "UiPreviewFile")]
+pub struct UiPreviewFileResponse {
+    pub id: Uuid,
+    pub relative_path: String,
+    pub content_type: Option<String>,
+    #[ts(type = "number | null")]
+    pub size_bytes: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UiPreviewsCompareResponse {
+    pub base: Vec<UiPreviewArtifactResponse>,
+    pub head: Vec<UiPreviewArtifactResponse>,
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -116,6 +167,15 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/projects/{id}/pipelines/{pipeline_id}/artifacts/{artifact_id}/download",
             get(download_artifact),
+        )
+        .route(
+            "/api/projects/{id}/pipelines/{pipeline_id}/artifacts/{artifact_id}/view",
+            get(view_artifact_inline),
+        )
+        .route("/api/projects/{id}/ui-previews", get(ui_previews_by_branch))
+        .route(
+            "/api/projects/{id}/ui-previews/compare",
+            get(ui_previews_compare),
         )
 }
 
@@ -522,8 +582,197 @@ async fn download_artifact(
 }
 
 // ---------------------------------------------------------------------------
+// Inline view (Content-Disposition: inline)
+// ---------------------------------------------------------------------------
+
+async fn view_artifact_inline(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, pipeline_id, artifact_id)): Path<(Uuid, Uuid, Uuid)>,
+) -> Result<Response, ApiError> {
+    require_project_read(&state, &auth, id).await?;
+
+    let artifact = sqlx::query!(
+        r#"
+        SELECT a.minio_path, a.content_type, a.name
+        FROM artifacts a
+        JOIN pipelines p ON p.id = a.pipeline_id
+        WHERE a.id = $1 AND a.pipeline_id = $2 AND p.project_id = $3
+        "#,
+        artifact_id,
+        pipeline_id,
+        id,
+    )
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("artifact".into()))?;
+
+    let data = state.minio.read(&artifact.minio_path).await?;
+    let content_type = artifact
+        .content_type
+        .as_deref()
+        .unwrap_or("application/octet-stream");
+
+    Ok(Response::builder()
+        .header("content-type", content_type)
+        .header("content-disposition", "inline")
+        .body(Body::from(data.to_vec()))
+        .expect("infallible: valid status and header"))
+}
+
+// ---------------------------------------------------------------------------
+// UI Previews — query by branch
+// ---------------------------------------------------------------------------
+
+async fn ui_previews_by_branch(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Query(params): Query<UiPreviewsQuery>,
+) -> Result<Json<Vec<UiPreviewArtifactResponse>>, ApiError> {
+    require_project_read(&state, &auth, id).await?;
+
+    let branch = params.branch.as_deref().unwrap_or("main");
+    let git_ref = format!("refs/heads/{branch}");
+
+    let previews = fetch_ui_previews(&state, id, &git_ref, params.artifact_type.as_deref()).await?;
+    Ok(Json(previews))
+}
+
+// ---------------------------------------------------------------------------
+// UI Previews — branch comparison
+// ---------------------------------------------------------------------------
+
+async fn ui_previews_compare(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Query(params): Query<UiPreviewsCompareQuery>,
+) -> Result<Json<UiPreviewsCompareResponse>, ApiError> {
+    require_project_read(&state, &auth, id).await?;
+
+    let base_ref = format!("refs/heads/{}", params.base);
+    let head_ref = format!("refs/heads/{}", params.head);
+
+    let base = fetch_ui_previews(&state, id, &base_ref, params.artifact_type.as_deref()).await?;
+    let head = fetch_ui_previews(&state, id, &head_ref, params.artifact_type.as_deref()).await?;
+
+    Ok(Json(UiPreviewsCompareResponse { base, head }))
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Fetch UI preview artifacts for the latest successful pipeline matching a `git_ref`.
+///
+/// Uses dynamic queries because the new columns (`is_directory`, `artifact_type`,
+/// `parent_id`, `config`, `relative_path`) are added by migration
+/// `20260331010001_artifact_collection` -- the `.sqlx/` offline cache will be
+/// regenerated during integration.
+async fn fetch_ui_previews(
+    state: &AppState,
+    project_id: Uuid,
+    git_ref: &str,
+    artifact_type: Option<&str>,
+) -> Result<Vec<UiPreviewArtifactResponse>, ApiError> {
+    // Find latest successful pipeline matching the git_ref
+    let pipeline: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT id, git_ref FROM pipelines \
+         WHERE project_id = $1 AND git_ref = $2 AND status = 'success' \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(project_id)
+    .bind(git_ref)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let Some((pipeline_id, _)) = pipeline else {
+        return Ok(vec![]);
+    };
+
+    // Default types for UI previews
+    let type_filter: Vec<String> = artifact_type.map_or_else(
+        || vec!["ui-comp".into(), "ui-flow".into()],
+        |t| vec![t.into()],
+    );
+
+    let parents = fetch_parent_artifacts(&state.pool, pipeline_id, &type_filter).await?;
+
+    let branch = git_ref.strip_prefix("refs/heads/").unwrap_or(git_ref);
+
+    let mut result = Vec::with_capacity(parents.len());
+    for (pid, name, art_type, config, pl_id, created_at) in &parents {
+        let files = fetch_child_files(&state.pool, *pid).await?;
+
+        result.push(UiPreviewArtifactResponse {
+            id: *pid,
+            name: name.clone(),
+            artifact_type: art_type.clone().unwrap_or_default(),
+            config: config.clone(),
+            pipeline_id: *pl_id,
+            branch: branch.to_string(),
+            created_at: *created_at,
+            files,
+        });
+    }
+
+    Ok(result)
+}
+
+/// Row type for parent artifact queries (avoids complex inline tuple).
+type ParentArtifactRow = (
+    Uuid,
+    String,
+    Option<String>,
+    Option<serde_json::Value>,
+    Uuid,
+    DateTime<Utc>,
+);
+
+/// Row type for child artifact queries.
+type ChildArtifactRow = (Uuid, Option<String>, Option<String>, Option<i64>);
+
+async fn fetch_parent_artifacts(
+    pool: &sqlx::PgPool,
+    pipeline_id: Uuid,
+    type_filter: &[String],
+) -> Result<Vec<ParentArtifactRow>, ApiError> {
+    let rows: Vec<ParentArtifactRow> = sqlx::query_as(
+        "SELECT id, name, artifact_type, config, pipeline_id, created_at \
+         FROM artifacts \
+         WHERE pipeline_id = $1 AND is_directory = true AND artifact_type = ANY($2::text[]) \
+         ORDER BY created_at ASC",
+    )
+    .bind(pipeline_id)
+    .bind(type_filter)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+async fn fetch_child_files(
+    pool: &sqlx::PgPool,
+    parent_id: Uuid,
+) -> Result<Vec<UiPreviewFileResponse>, ApiError> {
+    let children: Vec<ChildArtifactRow> = sqlx::query_as(
+        "SELECT id, relative_path, content_type, size_bytes \
+         FROM artifacts WHERE parent_id = $1 ORDER BY relative_path ASC",
+    )
+    .bind(parent_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(children
+        .into_iter()
+        .map(|(id, rel_path, ct, sz)| UiPreviewFileResponse {
+            id,
+            relative_path: rel_path.unwrap_or_default(),
+            content_type: ct,
+            size_bytes: sz,
+        })
+        .collect())
+}
 
 async fn fetch_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<PipelineResponse, ApiError> {
     let row = sqlx::query!(

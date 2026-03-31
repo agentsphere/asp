@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! K8s Service informer for iframe preview discovery.
 //!
 //! Watches Services labelled `platform.io/component=iframe-preview` across all

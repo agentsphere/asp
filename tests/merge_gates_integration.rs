@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
+// SPDX-License-Identifier: BUSL-1.1
+
 //! Integration tests for merge gate enforcement and auto-merge endpoints.
 //!
 //! T2: `enforce_merge_gates()` — branch protection rules block/allow merges
