@@ -107,8 +107,8 @@ pub fn demo_pr1_template_files() -> Vec<TemplateFile> {
             content: include_str!("templates/Dockerfile.dev").to_owned(),
         },
         TemplateFile {
-            path: "Dockerfile.screenshots",
-            content: include_str!("templates/Dockerfile.screenshots").to_owned(),
+            path: "screenshots/render.py",
+            content: include_str!("templates/screenshots/render.py").to_owned(),
         },
         TemplateFile {
             path: "screenshots/capture.py",
@@ -590,10 +590,10 @@ async fn create_sample_secrets(
         ("APP_SECRET_KEY", "demo-secret-key-change-me", "pipeline"),
         (
             "DATABASE_URL",
-            "postgresql://demo:demo@platform-demo-db:5432/shop",
+            "postgresql://app:changeme@platform-demo-db:5432/app",
             "all",
         ),
-        ("VALKEY_URL", "redis://platform-demo-valkey:6379", "all"),
+        ("VALKEY_URL", "redis://platform-demo-cache:6379", "all"),
         (
             "SENTRY_DSN",
             "https://examplePublicKey@o0.ingest.sentry.io/0",
@@ -627,7 +627,7 @@ async fn create_sample_secrets(
             workspace_id: None,
             environment: Some("staging"),
             name: "DATABASE_URL",
-            value: b"postgresql://demo:demo@platform-demo-db:5432/shop_staging",
+            value: b"postgresql://app:changeme@platform-demo-db:5432/app",
             scope: "staging",
             created_by: owner_id,
         },
@@ -642,7 +642,7 @@ async fn create_sample_secrets(
             workspace_id: None,
             environment: Some("production"),
             name: "DATABASE_URL",
-            value: b"postgresql://demo:demo@platform-demo-db:5432/shop_production",
+            value: b"postgresql://app:changeme@platform-demo-db:5432/app",
             scope: "prod",
             created_by: owner_id,
         },
@@ -999,26 +999,29 @@ mod tests {
     }
 
     #[test]
-    fn pr1_template_has_dockerfile_screenshots() {
+    fn pr1_template_has_screenshot_scripts() {
         let files = demo_pr1_template_files();
-        let f = files
+        let render = files
             .iter()
-            .find(|f| f.path == "Dockerfile.screenshots")
+            .find(|f| f.path == "screenshots/render.py")
             .unwrap();
-        assert!(f.content.contains("playwright"));
-        assert!(f.content.contains("screenshots"));
-    }
+        assert!(render.content.contains("SEED_PRODUCTS"));
+        assert!(render.content.contains("MockRequest"));
 
-    #[test]
-    fn pr1_template_has_capture_script() {
-        let files = demo_pr1_template_files();
-        let f = files
+        let capture = files
             .iter()
             .find(|f| f.path == "screenshots/capture.py")
             .unwrap();
-        assert!(f.content.contains("capture_components"));
-        assert!(f.content.contains("capture_flows"));
-        assert!(f.content.contains("config.json"));
+        assert!(capture.content.contains("write_configs"));
+        assert!(capture.content.contains("config.json"));
+    }
+
+    #[test]
+    fn pr1_template_dev_image_has_playwright() {
+        let files = demo_pr1_template_files();
+        let f = files.iter().find(|f| f.path == "Dockerfile.dev").unwrap();
+        assert!(f.content.contains("playwright"));
+        assert!(f.content.contains("chromium"));
     }
 
     #[test]

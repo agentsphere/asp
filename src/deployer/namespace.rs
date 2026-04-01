@@ -16,6 +16,28 @@ pub fn session_namespace_name(config: &Config, slug: &str, short_id: &str) -> St
     }
 }
 
+/// Compute the pipeline namespace name for a pipeline run.
+///
+/// Format: `{slug}-p-{short_id}` (or `{prefix}-{slug}-p-{short_id}` with `ns_prefix`).
+/// Each pipeline run gets its own isolated namespace, cleaned up on completion.
+pub fn pipeline_namespace_name(config: &Config, slug: &str, short_id: &str) -> String {
+    match config.ns_prefix.as_deref() {
+        Some(prefix) => format!("{prefix}-{slug}-p-{short_id}"),
+        None => format!("{slug}-p-{short_id}"),
+    }
+}
+
+/// Compute the deploy-test namespace name for a pipeline's test step.
+///
+/// Format: `{slug}-t-{short_id}` (or `{prefix}-{slug}-t-{short_id}` with `ns_prefix`).
+/// Cleaned up automatically when the test step completes.
+pub fn test_namespace_name(config: &Config, slug: &str, short_id: &str) -> String {
+    match config.ns_prefix.as_deref() {
+        Some(prefix) => format!("{prefix}-{slug}-t-{short_id}"),
+        None => format!("{slug}-t-{short_id}"),
+    }
+}
+
 /// Build K8s RBAC objects (`ServiceAccount`, `Role`, `RoleBinding`) for an agent session namespace.
 ///
 /// Returns 3 JSON objects for server-side apply:

@@ -878,10 +878,21 @@ async fn staging_status(
     let ops_repo = fetch_ops_repo_for_project(&state, id).await?;
     let ops_path = std::path::PathBuf::from(&ops_repo.repo_path);
 
-    let (diverged, staging_sha, prod_sha) =
-        crate::deployer::ops_repo::compare_branches(&ops_path, "staging", &ops_repo.branch)
+    // staging branch may not exist yet (no deployment to staging has occurred)
+    let Ok((diverged, staging_sha, prod_sha)) =
+        crate::deployer::ops_repo::compare_branches(&ops_path, "staging", &ops_repo.branch).await
+    else {
+        let prod_sha = crate::deployer::ops_repo::get_head_sha(&ops_path)
             .await
-            .map_err(|e| ApiError::Internal(e.into()))?;
+            .unwrap_or_default();
+        return Ok(Json(StagingStatusResponse {
+            diverged: false,
+            staging_image: None,
+            prod_image: None,
+            staging_sha: String::new(),
+            prod_sha,
+        }));
+    };
 
     let staging_image = crate::deployer::ops_repo::read_values(&ops_path, "staging", "staging")
         .await
@@ -1051,26 +1062,39 @@ async fn list_deploy_iframes(
         Err(e) => return Err(ApiError::Internal(e.into())),
     };
 
-    let panels: Vec<DeployIframePanel> = svcs
-        .items
-        .iter()
-        .flat_map(|svc| {
-            let spec = svc.spec.as_ref();
-            let ports = spec.and_then(|s| s.ports.as_ref());
-            let name = svc.metadata.name.clone().unwrap_or_default();
-            let project_id = id;
-            ports
-                .into_iter()
-                .flatten()
-                .filter(|p| p.name.as_deref() == Some("iframe"))
-                .map(move |p| DeployIframePanel {
-                    service_name: name.clone(),
+    // Filter out services with no ready endpoints (e.g. scaled-to-0 old versions)
+    let ep_api: kube::Api<k8s_openapi::api::core::v1::Endpoints> =
+        kube::Api::namespaced(state.kube.clone(), &namespace);
+
+    let env_str = &query.env;
+    let mut panels = Vec::new();
+    for svc in &svcs.items {
+        let name = svc.metadata.name.as_deref().unwrap_or_default();
+        let has_endpoints = ep_api
+            .get(name)
+            .await
+            .ok()
+            .and_then(|ep| ep.subsets)
+            .is_some_and(|subsets| {
+                subsets
+                    .iter()
+                    .any(|s| s.addresses.as_ref().is_some_and(|a| !a.is_empty()))
+            });
+        if !has_endpoints {
+            continue;
+        }
+        let ports = svc.spec.as_ref().and_then(|s| s.ports.as_ref());
+        for p in ports.into_iter().flatten() {
+            if p.name.as_deref() == Some("iframe") {
+                panels.push(DeployIframePanel {
+                    service_name: name.to_string(),
                     port: p.port,
                     port_name: "iframe".into(),
-                    preview_url: format!("/deploy-preview/{project_id}/{name}/"),
-                })
-        })
-        .collect();
+                    preview_url: format!("/deploy-preview/{id}/{name}/{env_str}/"),
+                });
+            }
+        }
+    }
 
     Ok(Json(panels))
 }

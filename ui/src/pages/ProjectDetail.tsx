@@ -262,74 +262,294 @@ function ProjectLogs({ projectId }: { projectId: string }) {
   );
 }
 
-function FilesTab({ projectId, defaultBranch }: { projectId: string; defaultBranch: string }) {
-  const [branches, setBranches] = useState<BranchInfo[]>([]);
-  const [gitRef, setRef] = useState(defaultBranch);
-  const [path, setPath] = useState('');
-  const [entries, setEntries] = useState<TreeEntry[]>([]);
-  const [blob, setBlob] = useState<BlobResponse | null>(null);
+function fileIcon(name: string, isDir: boolean): string {
+  if (isDir) return '\u{1F4C1}';
+  const ext = name.split('.').pop()?.toLowerCase() || '';
+  const map: Record<string, string> = {
+    rs: '\u{1F9E0}', ts: '\u{1F7E6}', tsx: '\u{1F7E6}', js: '\u{1F7E8}', jsx: '\u{1F7E8}',
+    json: '{ }', yaml: '\u{2699}', yml: '\u{2699}', toml: '\u{2699}',
+    md: '\u{1F4DD}', sql: '\u{1F5C3}', css: '\u{1F3A8}', html: '\u{1F310}',
+    sh: '\u{1F4DF}', py: '\u{1F40D}', lock: '\u{1F512}', svg: '\u{1F5BC}',
+  };
+  return map[ext] || '\u{1F4C4}';
+}
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function langFromPath(path: string): string {
+  const ext = path.split('.').pop()?.toLowerCase() || '';
+  const map: Record<string, string> = {
+    rs: 'rust', ts: 'typescript', tsx: 'tsx', js: 'javascript', jsx: 'jsx',
+    json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml', md: 'markdown',
+    sql: 'sql', css: 'css', html: 'html', sh: 'bash', py: 'python',
+    xml: 'xml', svg: 'xml',
+  };
+  return map[ext] || 'text';
+}
+
+type RepoSource = 'app' | 'ops';
+
+interface TreeNode {
+  entry: TreeEntry;
+  fullPath: string;
+  children: TreeNode[] | null; // null = not loaded yet
+  expanded: boolean;
+}
+
+function sortEntries(entries: TreeEntry[]): TreeEntry[] {
+  return [...entries].sort((a, b) =>
+    a.entry_type === b.entry_type ? a.name.localeCompare(b.name) : a.entry_type === 'tree' ? -1 : 1
+  );
+}
+
+/** Recursive tree row component */
+function TreeRow({ node, depth, activePath, onToggle, onSelect }: {
+  node: TreeNode;
+  depth: number;
+  activePath: string | null;
+  onToggle: (path: string) => void;
+  onSelect: (path: string) => void;
+}) {
+  const isDir = node.entry.entry_type === 'tree';
+  const isActive = activePath === node.fullPath;
+  return (
+    <>
+      <div
+        class={`repo-tree-row${isActive ? ' active' : ''}`}
+        style={`padding-left: ${0.75 + depth * 1}rem`}
+        onClick={() => isDir ? onToggle(node.fullPath) : onSelect(node.fullPath)}
+      >
+        {isDir && (
+          <span class={`repo-tree-chevron${node.expanded ? ' open' : ''}`}>
+            {'\u25B6'}
+          </span>
+        )}
+        {!isDir && <span class="repo-tree-chevron-spacer" />}
+        <span class="repo-tree-icon">{fileIcon(node.entry.name, isDir)}</span>
+        <span class="repo-tree-name">{node.entry.name}</span>
+      </div>
+      {isDir && node.expanded && node.children && node.children.map(child => (
+        <TreeRow
+          key={child.fullPath}
+          node={child}
+          depth={depth + 1}
+          activePath={activePath}
+          onToggle={onToggle}
+          onSelect={onSelect}
+        />
+      ))}
+      {isDir && node.expanded && node.children && node.children.length === 0 && (
+        <div class="repo-tree-row text-muted" style={`padding-left: ${0.75 + (depth + 1) * 1}rem; font-style: italic; font-size: 0.78rem`}>
+          (empty)
+        </div>
+      )}
+    </>
+  );
+}
+
+function FilesTab({ projectId, defaultBranch }: { projectId: string; defaultBranch: string }) {
+  const [repo, setRepo] = useState<RepoSource>('app');
+  const [branches, setBranches] = useState<BranchInfo[]>([]);
+  const [opsBranches, setOpsBranches] = useState<BranchInfo[]>([]);
+  const [gitRef, setRef] = useState(defaultBranch);
+  const [opsRef, setOpsRef] = useState('main');
+  const [tree, setTree] = useState<TreeNode[]>([]);
+  const [blob, setBlob] = useState<BlobResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [hasOps, setHasOps] = useState(false);
+
+  const currentRef = repo === 'app' ? gitRef : opsRef;
+  const apiPrefix = repo === 'app'
+    ? `/api/projects/${projectId}`
+    : `/api/projects/${projectId}/ops-repo`;
+
+  // Load branches for both repos on mount
   useEffect(() => {
-    api.get<BranchInfo[]>(`/api/projects/${projectId}/branches`).then(setBranches).catch(e => console.warn(e));
+    api.get<BranchInfo[]>(`/api/projects/${projectId}/branches`).then(setBranches).catch(() => {});
+    api.get<BranchInfo[]>(`/api/projects/${projectId}/ops-repo/branches`)
+      .then(b => { setOpsBranches(b); setHasOps(true); if (b.length > 0 && !b.find(br => br.name === opsRef)) setOpsRef(b[0].name); })
+      .catch(() => setHasOps(false));
   }, [projectId]);
 
+  // Fetch root tree when repo or ref changes
   useEffect(() => {
     setBlob(null);
-    api.get<TreeEntry[]>(`/api/projects/${projectId}/tree${qs({ ref: gitRef, path })}`)
-      .then(setEntries)
-      .catch(() => setEntries([]));
-  }, [projectId, gitRef, path]);
+    setTree([]);
+    api.get<TreeEntry[]>(`${apiPrefix}/tree${qs({ ref: currentRef, path: '' })}`)
+      .then(entries => {
+        setTree(sortEntries(entries).map(e => ({
+          entry: e,
+          fullPath: e.name,
+          children: e.entry_type === 'tree' ? null : null,
+          expanded: false,
+        })));
+      })
+      .catch(() => setTree([]));
+  }, [projectId, repo, currentRef]);
 
-  const openEntry = (entry: TreeEntry) => {
-    if (entry.entry_type === 'tree') {
-      setPath(path ? `${path}/${entry.name}` : entry.name);
+  const loadChildren = async (dirPath: string): Promise<TreeNode[]> => {
+    const entries = await api.get<TreeEntry[]>(`${apiPrefix}/tree${qs({ ref: currentRef, path: dirPath })}`);
+    return sortEntries(entries).map(e => ({
+      entry: e,
+      fullPath: dirPath ? `${dirPath}/${e.name}` : e.name,
+      children: e.entry_type === 'tree' ? null : null,
+      expanded: false,
+    }));
+  };
+
+  const updateNode = (nodes: TreeNode[], targetPath: string, updater: (n: TreeNode) => TreeNode): TreeNode[] => {
+    return nodes.map(n => {
+      if (n.fullPath === targetPath) return updater(n);
+      if (targetPath.startsWith(n.fullPath + '/') && n.children) {
+        return { ...n, children: updateNode(n.children, targetPath, updater) };
+      }
+      return n;
+    });
+  };
+
+  const toggleDir = async (dirPath: string) => {
+    // Find the node
+    const findNode = (nodes: TreeNode[], path: string): TreeNode | null => {
+      for (const n of nodes) {
+        if (n.fullPath === path) return n;
+        if (path.startsWith(n.fullPath + '/') && n.children) {
+          const found = findNode(n.children, path);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    const node = findNode(tree, dirPath);
+    if (!node) return;
+
+    if (node.expanded) {
+      // Collapse
+      setTree(prev => updateNode(prev, dirPath, n => ({ ...n, expanded: false })));
     } else {
-      const filePath = path ? `${path}/${entry.name}` : entry.name;
-      api.get<BlobResponse>(`/api/projects/${projectId}/blob${qs({ ref: gitRef, path: filePath })}`)
-        .then(setBlob).catch(e => console.warn(e));
+      // Expand — load children if needed
+      if (node.children === null) {
+        const children = await loadChildren(dirPath);
+        setTree(prev => updateNode(prev, dirPath, n => ({ ...n, children, expanded: true })));
+      } else {
+        setTree(prev => updateNode(prev, dirPath, n => ({ ...n, expanded: true })));
+      }
     }
   };
 
-  if (blob) {
-    return (
-      <div class="card">
-        <div class="flex-between mb-md">
-          <span class="mono text-sm">{blob.path}</span>
-          <button class="btn btn-sm" onClick={() => setBlob(null)}>Back</button>
-        </div>
-        <pre class="log-viewer">{blob.encoding === 'base64' ? atob(blob.content) : blob.content}</pre>
-      </div>
-    );
-  }
+  const selectFile = (filePath: string) => {
+    setLoading(true);
+    api.get<BlobResponse>(`${apiPrefix}/blob${qs({ ref: currentRef, path: filePath })}`)
+      .then(setBlob).catch(e => console.warn(e)).finally(() => setLoading(false));
+  };
+
+  const copyFile = () => {
+    if (!blob) return;
+    const text = blob.encoding === 'base64' ? atob(blob.content) : blob.content;
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const blobContent = blob ? (blob.encoding === 'base64' ? atob(blob.content) : blob.content) : '';
+  const blobLines = blob ? blobContent.split('\n') : [];
+  const activeBranches = repo === 'app' ? branches : opsBranches;
 
   return (
-    <div class="card">
-      <div class="flex gap-sm mb-md">
-        <select class="input" style="width:auto" value={gitRef}
-          onChange={(e) => { setRef((e.target as HTMLSelectElement).value); setPath(''); }}>
-          {branches.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+    <div class="repo-browser">
+      {/* Toolbar */}
+      <div class="repo-toolbar">
+        {/* Repo switcher */}
+        <div class="repo-switcher">
+          <button class={`repo-switcher-btn${repo === 'app' ? ' active' : ''}`}
+            onClick={() => { setRepo('app'); setBlob(null); }}>
+            Source
+          </button>
+          {hasOps && (
+            <button class={`repo-switcher-btn${repo === 'ops' ? ' active' : ''}`}
+              onClick={() => { setRepo('ops'); setBlob(null); }}>
+              Ops
+            </button>
+          )}
+        </div>
+        <select class="input repo-branch-select" value={currentRef}
+          onChange={(e) => {
+            const v = (e.target as HTMLSelectElement).value;
+            if (repo === 'app') setRef(v); else setOpsRef(v);
+            setBlob(null);
+          }}>
+          {activeBranches.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
         </select>
-        {path && (
-          <button class="btn btn-sm" onClick={() => {
-            const parts = path.split('/');
-            parts.pop();
-            setPath(parts.join('/'));
-          }}>.. (up)</button>
+        {blob && (
+          <div class="repo-breadcrumb">
+            <span class="repo-breadcrumb-file">{blob.path}</span>
+          </div>
         )}
-        {path && <span class="mono text-sm text-muted">{path}/</span>}
       </div>
-      {entries.length === 0 ? (
-        <div class="empty-state">No files</div>
-      ) : (
-        entries.sort((a, b) => (a.entry_type === b.entry_type ? a.name.localeCompare(b.name) : a.entry_type === 'tree' ? -1 : 1))
-          .map(e => (
-            <div key={e.name} class="tree-entry" onClick={() => openEntry(e)}>
-              <span class="tree-icon">{e.entry_type === 'tree' ? '/' : ' '}</span>
-              <span>{e.name}</span>
-              {e.size != null && <span class="text-muted text-xs" style="margin-left:auto">{e.size}</span>}
+
+      <div class="repo-columns">
+        {/* Left: recursive file tree */}
+        <div class="repo-tree-panel">
+          {tree.length === 0 ? (
+            <div class="repo-tree-empty">No files</div>
+          ) : (
+            tree.map(node => (
+              <TreeRow
+                key={node.fullPath}
+                node={node}
+                depth={0}
+                activePath={blob?.path || null}
+                onToggle={toggleDir}
+                onSelect={selectFile}
+              />
+            ))
+          )}
+        </div>
+
+        {/* Right: file content */}
+        <div class="repo-content-panel">
+          {loading && <div class="repo-content-loading">Loading...</div>}
+          {!blob && !loading && (
+            <div class="repo-content-empty">
+              <span class="repo-content-empty-icon">{'\u{1F4C2}'}</span>
+              <p>Select a file to view its contents</p>
             </div>
-          ))
-      )}
+          )}
+          {blob && !loading && (
+            <>
+              <div class="repo-content-header">
+                <span class="repo-content-filename">{blob.path.split('/').pop()}</span>
+                <div class="repo-content-meta">
+                  <span class="text-muted text-xs">{formatBytes(blob.size)}</span>
+                  <span class="text-muted text-xs">{blobLines.length} lines</span>
+                  <span class="text-muted text-xs">{langFromPath(blob.path)}</span>
+                  <button class="btn btn-ghost btn-xs" onClick={copyFile}>
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+              <div class="repo-content-code">
+                <table class="repo-code-table">
+                  <tbody>
+                    {blobLines.map((line, i) => (
+                      <tr key={i} class="repo-code-row">
+                        <td class="repo-line-no">{i + 1}</td>
+                        <td class="repo-line-code"><pre>{line}</pre></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 use std::io::Read;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -24,6 +25,28 @@ use super::store::{LogEntryRecord, LogTailMessage, MetricRecord, SpanRecord};
 
 /// Buffer capacity per signal type.
 const BUFFER_CAPACITY: usize = 10_000;
+
+/// Dropped-record counter for rate-limited logging of buffer-full events.
+static BUFFER_FULL_DROPS: AtomicU64 = AtomicU64::new(0);
+/// Epoch-second of the last buffer-full warning log.
+static BUFFER_FULL_LAST_LOG: AtomicU64 = AtomicU64::new(0);
+
+/// Log a buffer-full warning at most once per 30 seconds to avoid log spam.
+fn warn_buffer_full(signal: &str) {
+    let dropped = BUFFER_FULL_DROPS.fetch_add(1, Ordering::Relaxed) + 1;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let last = BUFFER_FULL_LAST_LOG.load(Ordering::Relaxed);
+    if now.saturating_sub(last) >= 30
+        && BUFFER_FULL_LAST_LOG
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        tracing::warn!(signal, dropped, "ingest buffer full, dropping records");
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Ingest channels
@@ -100,20 +123,43 @@ async fn check_otlp_project_auth(
     auth: &AuthUser,
     resource_attrs_list: &[&[proto::KeyValue]],
 ) -> Result<(), ApiError> {
-    // Extract and validate all project IDs in a single pass
+    // Extract and validate all project IDs in a single pass.
+    // Resources without platform.project_id are system-level metrics (infra sidecars)
+    // and require admin permission instead of project-scoped ObserveWrite.
     let mut project_ids = HashSet::new();
+    let mut has_system_metrics = false;
+
     for attrs in resource_attrs_list {
-        let pid_str = proto::get_string_attr(attrs, "platform.project_id").ok_or_else(|| {
-            ApiError::BadRequest(
-                "resource attribute 'platform.project_id' is required for OTLP ingest".into(),
-            )
-        })?;
-        let pid = Uuid::parse_str(&pid_str).map_err(|_| {
-            ApiError::BadRequest(format!(
-                "invalid platform.project_id: '{pid_str}' is not a valid UUID"
-            ))
-        })?;
-        project_ids.insert(pid);
+        match proto::get_string_attr(attrs, "platform.project_id") {
+            Some(pid_str) => {
+                let pid = Uuid::parse_str(&pid_str).map_err(|_| {
+                    ApiError::BadRequest(format!(
+                        "invalid platform.project_id: '{pid_str}' is not a valid UUID"
+                    ))
+                })?;
+                project_ids.insert(pid);
+            }
+            None => {
+                has_system_metrics = true;
+            }
+        }
+    }
+
+    // System-level metrics (no project_id) require admin permission
+    if has_system_metrics {
+        let is_admin = resolver::has_permission(
+            &state.pool,
+            &state.valkey,
+            auth.user_id,
+            None,
+            Permission::AdminConfig,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(e.context("OTLP system auth check")))?;
+
+        if !is_admin {
+            return Err(ApiError::Forbidden);
+        }
     }
 
     for pid in &project_ids {
@@ -143,7 +189,7 @@ async fn check_otlp_project_auth(
 // ---------------------------------------------------------------------------
 
 /// `POST /v1/traces` — receive OTLP trace protobuf.
-#[tracing::instrument(skip(state, channels, headers, body), err)]
+#[tracing::instrument(skip(state, channels, headers, body))]
 pub async fn ingest_traces(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -172,6 +218,7 @@ pub async fn ingest_traces(
             for span in &ss.spans {
                 let record = build_span_record(span, resource_attrs, &state).await;
                 if channels.spans_tx.try_send(record).is_err() {
+                    warn_buffer_full("traces");
                     return Err(ApiError::ServiceUnavailable("ingest buffer full".into()));
                 }
             }
@@ -187,7 +234,7 @@ pub async fn ingest_traces(
 }
 
 /// `POST /v1/logs` — receive OTLP log protobuf.
-#[tracing::instrument(skip(state, channels, headers, body), err)]
+#[tracing::instrument(skip(state, channels, headers, body))]
 pub async fn ingest_logs(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -215,6 +262,7 @@ pub async fn ingest_logs(
             for log in &sl.log_records {
                 let record = build_log_record(log, resource_attrs, &state).await;
                 if channels.logs_tx.try_send(record).is_err() {
+                    warn_buffer_full("logs");
                     return Err(ApiError::ServiceUnavailable("ingest buffer full".into()));
                 }
             }
@@ -230,7 +278,7 @@ pub async fn ingest_logs(
 }
 
 /// `POST /v1/metrics` — receive OTLP metric protobuf.
-#[tracing::instrument(skip(state, channels, headers, body), err)]
+#[tracing::instrument(skip(state, channels, headers, body))]
 pub async fn ingest_metrics(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -259,6 +307,7 @@ pub async fn ingest_metrics(
                 let records = build_metric_records(metric, resource_attrs, &state).await;
                 for record in records {
                     if channels.metrics_tx.try_send(record).is_err() {
+                        warn_buffer_full("metrics");
                         return Err(ApiError::ServiceUnavailable("ingest buffer full".into()));
                     }
                 }

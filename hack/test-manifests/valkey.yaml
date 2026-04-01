@@ -1,4 +1,39 @@
 # Lightweight Valkey (Redis-compatible) for per-run test namespaces.
+# Includes OTEL collector sidecar for Redis metrics.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valkey-otel-config
+data:
+  config.yaml: |
+    receivers:
+      redis:
+        endpoint: localhost:6379
+        password: dev
+        collection_interval: 15s
+    processors:
+      resource:
+        attributes:
+          - key: service.name
+            value: platform-valkey
+            action: upsert
+          - key: deployment.environment
+            value: dev
+            action: upsert
+    exporters:
+      otlphttp:
+        endpoint: "${env:OTEL_EXPORTER_OTLP_ENDPOINT}"
+        tls:
+          insecure: true
+        headers:
+          authorization: "Bearer ${env:OTEL_API_TOKEN}"
+    service:
+      pipelines:
+        metrics:
+          receivers: [redis]
+          processors: [resource]
+          exporters: [otlphttp]
+---
 apiVersion: v1
 kind: Pod
 metadata:
@@ -23,6 +58,28 @@ spec:
           memory: 64Mi
         limits:
           memory: 512Mi
+    - name: otel-collector
+      image: otel/opentelemetry-collector-contrib:0.121.0
+      args: ["--config=/etc/otel/config.yaml"]
+      env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "__OTEL_ENDPOINT__"
+        - name: OTEL_API_TOKEN
+          value: "plat_api_otel_system_dev_000000000000000000000000000000"
+      volumeMounts:
+        - name: otel-config
+          mountPath: /etc/otel
+      resources:
+        requests:
+          cpu: 25m
+          memory: 48Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+  volumes:
+    - name: otel-config
+      configMap:
+        name: valkey-otel-config
 ---
 apiVersion: v1
 kind: Service

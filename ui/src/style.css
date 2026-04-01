@@ -108,6 +108,22 @@
     --danger: #dc2626;
     --purple: #9333ea;
   }
+  :root:not([data-theme="dark"]) .glass-card,
+  :root:not([data-theme="dark"]) .project-card,
+  :root:not([data-theme="dark"]) .project-card-detail,
+  :root:not([data-theme="dark"]) .project-card-tab-content,
+  :root:not([data-theme="dark"]) .project-header-card,
+  :root:not([data-theme="dark"]) .tabs-glass,
+  :root:not([data-theme="dark"]) .notification-center-trigger,
+  :root:not([data-theme="dark"]) .notification-center-panel,
+  :root:not([data-theme="dark"]) .hero-chat-input,
+  :root:not([data-theme="dark"]) .hero-option-card,
+  :root:not([data-theme="dark"]) .wizard-panel,
+  :root:not([data-theme="dark"]) .org-type-card,
+  :root:not([data-theme="dark"]) .auth-option-card {
+    --glass-bg: rgba(255, 255, 255, 0.7);
+    --glass-border: rgba(0, 0, 0, 0.08);
+  }
 }
 
 body { font-family: var(--font); background: var(--bg-primary); color: var(--text-primary); font-size: 14px; line-height: 1.5; }
@@ -269,6 +285,186 @@ textarea.input { resize: vertical; min-height: 80px; }
 .tree-entry { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.5rem; cursor: pointer; border-radius: var(--radius); }
 .tree-entry:hover { background: var(--bg-hover); }
 .tree-icon { color: var(--text-muted); width: 16px; text-align: center; font-size: 12px; }
+
+/* Repo browser — VSCode-style 2-column layout */
+.repo-browser {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-secondary);
+}
+.repo-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
+}
+.repo-branch-select {
+  width: auto !important;
+  max-width: 180px;
+  font-size: 0.8rem;
+  padding: 0.3rem 0.5rem;
+}
+.repo-breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  gap: 0;
+}
+.repo-breadcrumb-seg { cursor: pointer; color: var(--accent); }
+.repo-breadcrumb-seg:hover { text-decoration: underline; }
+.repo-breadcrumb-root { font-weight: 600; }
+.repo-breadcrumb-sep { color: var(--text-muted); margin: 0 1px; }
+.repo-breadcrumb-file { color: var(--text-primary); font-weight: 500; }
+
+.repo-columns {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  min-height: 500px;
+  max-height: calc(100vh - 260px);
+}
+.repo-tree-panel {
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  background: var(--bg-secondary);
+  padding: 0.25rem 0;
+}
+.repo-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.75rem;
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  border-left: 2px solid transparent;
+  transition: background 0.1s;
+}
+.repo-tree-row:hover { background: var(--bg-hover); }
+.repo-tree-row.active {
+  background: var(--bg-hover);
+  border-left-color: var(--accent);
+  font-weight: 500;
+}
+.repo-tree-row.is-dir { color: var(--text-primary); font-weight: 500; }
+.repo-tree-chevron {
+  width: 14px; flex-shrink: 0; text-align: center; font-size: 0.5rem;
+  color: var(--text-muted); transition: transform 0.15s; display: inline-block;
+}
+.repo-tree-chevron.open { transform: rotate(90deg); }
+.repo-tree-chevron-spacer { width: 14px; flex-shrink: 0; }
+.repo-tree-icon { width: 18px; flex-shrink: 0; text-align: center; font-size: 0.8rem; }
+.repo-tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repo-tree-size { color: var(--text-muted); font-size: 0.7rem; font-family: var(--mono); flex-shrink: 0; }
+.repo-tree-empty { padding: 2rem; text-align: center; color: var(--text-muted); font-size: 0.85rem; }
+
+/* Repo source switcher (Source / Ops) */
+.repo-switcher {
+  display: flex;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.repo-switcher-btn {
+  padding: 0.25rem 0.6rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  transition: background 0.1s, color 0.1s;
+}
+.repo-switcher-btn:hover { color: var(--text-primary); }
+.repo-switcher-btn.active {
+  background: var(--accent);
+  color: white;
+}
+
+.repo-content-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+.repo-content-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  gap: 0.5rem;
+}
+.repo-content-empty-icon { font-size: 2rem; opacity: 0.4; }
+.repo-content-empty p { font-size: 0.85rem; }
+.repo-content-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+.repo-content-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
+}
+.repo-content-filename {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.repo-content-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.repo-content-code {
+  flex: 1;
+  overflow: auto;
+}
+.repo-code-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.repo-code-row:hover { background: var(--bg-hover); }
+.repo-line-no {
+  width: 1%;
+  min-width: 3rem;
+  padding: 0 0.75rem 0 0.5rem;
+  text-align: right;
+  color: var(--text-muted);
+  user-select: none;
+  white-space: nowrap;
+  vertical-align: top;
+  opacity: 0.6;
+}
+.repo-line-code {
+  padding: 0 1rem 0 0.5rem;
+  white-space: pre;
+  color: var(--text-primary);
+}
+.repo-line-code pre {
+  margin: 0;
+  font: inherit;
+  white-space: pre;
+}
+
 .comment-box { background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; margin-bottom: 0.75rem; }
 .comment-header { font-size: 12px; color: var(--text-muted); margin-bottom: 0.5rem; }
 .labels { display: flex; gap: 0.3rem; flex-wrap: wrap; }

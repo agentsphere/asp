@@ -552,7 +552,9 @@ async fn executor_git_k8s_secret_lifecycle(pool: PgPool) {
         .fetch_one(&state.pool)
         .await
         .unwrap();
-    let namespace = state.config.project_namespace(&ns_slug.0, "dev");
+    let short_id = &pipeline_uuid.to_string()[..8];
+    let namespace =
+        platform::deployer::namespace::pipeline_namespace_name(&state.config, &ns_slug.0, short_id);
 
     // Allow a brief delay for cleanup
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;

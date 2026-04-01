@@ -23,11 +23,6 @@ pipeline:
       only:
         events: [mr]
 
-    - name: build-screenshots
-      type: imagebuild
-      imageName: screenshots
-      dockerfile: Dockerfile.screenshots
-
     - name: e2e
       depends_on: [build-app, build-test]
       only:
@@ -39,10 +34,10 @@ pipeline:
         wait_for_services: [platform-demo-app, platform-demo-db]
 
     - name: ui-previews
-      depends_on: [build-screenshots]
-      image: $REGISTRY/$PROJECT/screenshots:$COMMIT_SHA
+      depends_on: [build-dev]
+      image: $REGISTRY/$PROJECT/dev:$COMMIT_SHA
       commands:
-        - python screenshots/capture.py
+        - python3 screenshots/render.py && python3 screenshots/capture.py
       artifacts:
         - name: components
           path: /output/components/

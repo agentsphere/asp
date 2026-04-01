@@ -109,6 +109,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/projects/{id}/branches", get(branches))
         .route("/api/projects/{id}/commits", get(commits))
         .route("/api/projects/{id}/commits/{sha}", get(commit_detail))
+        // Ops repo browsing (same interface, different backing repo)
+        .route("/api/projects/{id}/ops-repo/tree", get(ops_tree))
+        .route("/api/projects/{id}/ops-repo/blob", get(ops_blob))
+        .route("/api/projects/{id}/ops-repo/branches", get(ops_branches))
 }
 
 // ---------------------------------------------------------------------------
@@ -197,40 +201,45 @@ async fn check_project_read(
     Ok(())
 }
 
+/// Look up the ops repo path for a project.
+async fn get_ops_repo_path(pool: &PgPool, project_id: Uuid) -> Result<(PathBuf, String), ApiError> {
+    let row = sqlx::query_as::<_, (String, String)>(
+        "SELECT repo_path, branch FROM ops_repos WHERE project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("ops_repo".into()))?;
+
+    Ok((PathBuf::from(row.0), row.1))
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// `GET /api/projects/:id/tree?ref=main&path=/`
-///
-/// List directory contents via `git ls-tree`.
-#[tracing::instrument(skip(state), fields(%id), err)]
-async fn tree(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Path(id): Path<Uuid>,
-    Query(query): Query<TreeQuery>,
-) -> Result<Json<Vec<TreeEntry>>, ApiError> {
-    check_project_read(&state, &auth, id).await?;
-    validate_git_ref(&query.git_ref)?;
-    validate_path(&query.path)?;
+// ---------------------------------------------------------------------------
+// Shared git operations (repo-agnostic)
+// ---------------------------------------------------------------------------
 
-    let (repo_path, _default_branch) = get_repo_path(&state.pool, &state.config, id).await?;
-
-    // Build the tree-ish argument: ref:path or just ref for root
-    let treeish = if query.path.is_empty() || query.path == "/" {
-        query.git_ref.clone()
+async fn git_ls_tree(
+    repo_path: &std::path::Path,
+    git_ref: &str,
+    path: &str,
+) -> Result<Vec<TreeEntry>, ApiError> {
+    let treeish = if path.is_empty() || path == "/" {
+        git_ref.to_owned()
     } else {
-        let clean_path = query.path.trim_start_matches('/');
-        format!("{}:{clean_path}", query.git_ref)
+        let clean_path = path.trim_start_matches('/');
+        format!("{git_ref}:{clean_path}")
     };
 
     let output = tokio::time::timeout(GIT_TIMEOUT, {
         tokio::process::Command::new("git")
             .arg("-C")
-            .arg(&repo_path)
+            .arg(repo_path)
             .arg("ls-tree")
-            .arg("-l") // include size
+            .arg("-l")
             .arg("--")
             .arg(&treeish)
             .output()
@@ -249,36 +258,22 @@ async fn tree(
         )));
     }
 
-    let entries = parse_ls_tree(&String::from_utf8_lossy(&output.stdout));
-    Ok(Json(entries))
+    Ok(parse_ls_tree(&String::from_utf8_lossy(&output.stdout)))
 }
 
-/// `GET /api/projects/:id/blob?ref=main&path=src/main.rs`
-///
-/// Read file contents via `git show ref:path`.
-#[tracing::instrument(skip(state), fields(%id), err)]
-async fn blob(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Path(id): Path<Uuid>,
-    Query(query): Query<BlobQuery>,
-) -> Result<Json<BlobResponse>, ApiError> {
-    check_project_read(&state, &auth, id).await?;
-    validate_git_ref(&query.git_ref)?;
-    validate_path(&query.path)?;
-
-    if query.path.is_empty() {
-        return Err(ApiError::BadRequest("path is required".into()));
-    }
-
-    let (repo_path, _default_branch) = get_repo_path(&state.pool, &state.config, id).await?;
-    let clean_path = query.path.trim_start_matches('/');
-    let object_spec = format!("{}:{clean_path}", query.git_ref);
+async fn git_show_blob(
+    repo_path: &std::path::Path,
+    git_ref: &str,
+    path: &str,
+) -> Result<BlobResponse, ApiError> {
+    const MAX_BLOB_SIZE: usize = 50 * 1024 * 1024;
+    let clean_path = path.trim_start_matches('/');
+    let object_spec = format!("{git_ref}:{clean_path}");
 
     let output = tokio::time::timeout(GIT_TIMEOUT, {
         tokio::process::Command::new("git")
             .arg("-C")
-            .arg(&repo_path)
+            .arg(repo_path)
             .arg("show")
             .arg(&object_spec)
             .output()
@@ -297,8 +292,6 @@ async fn blob(
         )));
     }
 
-    // A15: Reject oversized blobs before converting to string/base64
-    const MAX_BLOB_SIZE: usize = 50 * 1024 * 1024; // 50 MB
     if output.stdout.len() > MAX_BLOB_SIZE {
         return Err(ApiError::BadRequest(format!(
             "file too large: {} bytes (max {MAX_BLOB_SIZE})",
@@ -309,7 +302,6 @@ async fn blob(
     #[allow(clippy::cast_possible_wrap)]
     let size = output.stdout.len() as i64;
 
-    // Try UTF-8 first; fall back to base64 for binary
     let (content, encoding) = match String::from_utf8(output.stdout.clone()) {
         Ok(text) => (text, "utf-8".to_owned()),
         Err(_) => (
@@ -318,31 +310,19 @@ async fn blob(
         ),
     };
 
-    Ok(Json(BlobResponse {
-        path: query.path.clone(),
+    Ok(BlobResponse {
+        path: path.to_owned(),
         size,
         content,
         encoding,
-    }))
+    })
 }
 
-/// `GET /api/projects/:id/branches`
-///
-/// List branches via `git for-each-ref`.
-#[tracing::instrument(skip(state), fields(%id), err)]
-async fn branches(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Path(id): Path<Uuid>,
-) -> Result<Json<Vec<BranchInfo>>, ApiError> {
-    check_project_read(&state, &auth, id).await?;
-
-    let (repo_path, _default_branch) = get_repo_path(&state.pool, &state.config, id).await?;
-
+async fn git_list_branches(repo_path: &std::path::Path) -> Result<Vec<BranchInfo>, ApiError> {
     let output = tokio::time::timeout(GIT_TIMEOUT, {
         tokio::process::Command::new("git")
             .arg("-C")
-            .arg(&repo_path)
+            .arg(repo_path)
             .arg("for-each-ref")
             .arg("--format=%(refname:short)\t%(objectname:short)\t%(creatordate:iso-strict)")
             .arg("refs/heads/")
@@ -353,12 +333,117 @@ async fn branches(
     .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to run git for-each-ref: {e}")))?;
 
     if !output.status.success() {
-        // Empty repo — no branches yet
-        return Ok(Json(Vec::new()));
+        return Ok(Vec::new());
     }
 
-    let branches = parse_branches(&String::from_utf8_lossy(&output.stdout));
-    Ok(Json(branches))
+    Ok(parse_branches(&String::from_utf8_lossy(&output.stdout)))
+}
+
+// ---------------------------------------------------------------------------
+// Project repo handlers
+// ---------------------------------------------------------------------------
+
+/// `GET /api/projects/:id/tree?ref=main&path=/`
+#[tracing::instrument(skip(state), fields(%id), err)]
+async fn tree(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Query(query): Query<TreeQuery>,
+) -> Result<Json<Vec<TreeEntry>>, ApiError> {
+    check_project_read(&state, &auth, id).await?;
+    validate_git_ref(&query.git_ref)?;
+    validate_path(&query.path)?;
+
+    let (repo_path, _) = get_repo_path(&state.pool, &state.config, id).await?;
+    Ok(Json(
+        git_ls_tree(&repo_path, &query.git_ref, &query.path).await?,
+    ))
+}
+
+/// `GET /api/projects/:id/blob?ref=main&path=src/main.rs`
+#[tracing::instrument(skip(state), fields(%id), err)]
+async fn blob(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Query(query): Query<BlobQuery>,
+) -> Result<Json<BlobResponse>, ApiError> {
+    check_project_read(&state, &auth, id).await?;
+    validate_git_ref(&query.git_ref)?;
+    validate_path(&query.path)?;
+    if query.path.is_empty() {
+        return Err(ApiError::BadRequest("path is required".into()));
+    }
+    let (repo_path, _) = get_repo_path(&state.pool, &state.config, id).await?;
+    Ok(Json(
+        git_show_blob(&repo_path, &query.git_ref, &query.path).await?,
+    ))
+}
+
+/// `GET /api/projects/:id/branches`
+#[tracing::instrument(skip(state), fields(%id), err)]
+async fn branches(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<BranchInfo>>, ApiError> {
+    check_project_read(&state, &auth, id).await?;
+    let (repo_path, _) = get_repo_path(&state.pool, &state.config, id).await?;
+    Ok(Json(git_list_branches(&repo_path).await?))
+}
+
+// ---------------------------------------------------------------------------
+// Ops repo handlers
+// ---------------------------------------------------------------------------
+
+/// `GET /api/projects/:id/ops-repo/tree?ref=main&path=/`
+#[tracing::instrument(skip(state), fields(%id), err)]
+async fn ops_tree(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Query(query): Query<TreeQuery>,
+) -> Result<Json<Vec<TreeEntry>>, ApiError> {
+    check_project_read(&state, &auth, id).await?;
+    validate_git_ref(&query.git_ref)?;
+    validate_path(&query.path)?;
+    let (repo_path, _) = get_ops_repo_path(&state.pool, id).await?;
+    Ok(Json(
+        git_ls_tree(&repo_path, &query.git_ref, &query.path).await?,
+    ))
+}
+
+/// `GET /api/projects/:id/ops-repo/blob?ref=main&path=...`
+#[tracing::instrument(skip(state), fields(%id), err)]
+async fn ops_blob(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Query(query): Query<BlobQuery>,
+) -> Result<Json<BlobResponse>, ApiError> {
+    check_project_read(&state, &auth, id).await?;
+    validate_git_ref(&query.git_ref)?;
+    validate_path(&query.path)?;
+    if query.path.is_empty() {
+        return Err(ApiError::BadRequest("path is required".into()));
+    }
+    let (repo_path, _) = get_ops_repo_path(&state.pool, id).await?;
+    Ok(Json(
+        git_show_blob(&repo_path, &query.git_ref, &query.path).await?,
+    ))
+}
+
+/// `GET /api/projects/:id/ops-repo/branches`
+#[tracing::instrument(skip(state), fields(%id), err)]
+async fn ops_branches(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<BranchInfo>>, ApiError> {
+    check_project_read(&state, &auth, id).await?;
+    let (repo_path, _) = get_ops_repo_path(&state.pool, id).await?;
+    Ok(Json(git_list_branches(&repo_path).await?))
 }
 
 /// `GET /api/projects/:id/commits?ref=main&limit=20`

@@ -207,30 +207,14 @@ pub async fn setup_project_infrastructure(
     namespace_slug: &str,
 ) -> Result<(), ApiError> {
     let project_id_str = project_id.to_string();
-    let dev_ns = state.config.project_namespace(namespace_slug, "dev");
     let prod_ns = state.config.project_namespace(namespace_slug, "prod");
 
-    // 1. Create dev namespace
+    // 1. Create prod namespace
     let svc_ns = state
         .config
         .ns_prefix
         .as_deref()
         .unwrap_or(&state.config.platform_namespace);
-    if let Err(e) = crate::deployer::namespace::ensure_namespace_with_services_ns(
-        &state.kube,
-        &dev_ns,
-        "dev",
-        &project_id_str,
-        &state.config.platform_namespace,
-        svc_ns,
-        false,
-    )
-    .await
-    {
-        tracing::warn!(error = %e, "failed to create dev namespace (will retry)");
-    }
-
-    // 2. Create prod namespace
     if let Err(e) = crate::deployer::namespace::ensure_namespace_with_services_ns(
         &state.kube,
         &prod_ns,
@@ -243,20 +227,6 @@ pub async fn setup_project_infrastructure(
     .await
     {
         tracing::warn!(error = %e, "failed to create prod namespace (will retry)");
-    }
-
-    // 3. Apply NetworkPolicy to dev namespace (agents only run in dev; prod
-    //    NetworkPolicy is intentionally omitted — deployer pods use their own RBAC).
-    //    Skip in dev mode — pods need unrestricted egress to reach the platform on the host.
-    if !state.config.dev_mode
-        && let Err(e) = crate::deployer::namespace::ensure_network_policy(
-            &state.kube,
-            &dev_ns,
-            &state.config.platform_namespace,
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "failed to apply network policy (will retry)");
     }
 
     // 4. Auto-create ops repo (best-effort — don't block project creation)

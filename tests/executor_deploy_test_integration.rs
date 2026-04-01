@@ -413,7 +413,7 @@ pipeline:
 
     let _ = helpers::poll_pipeline_status(&app, &admin_token, project_id, &pipeline_id, 180).await;
 
-    // Reconstruct temp namespace name: {namespace_slug}-test-{pipeline_id[..8]}
+    // Reconstruct temp test namespace name: {slug}-t-{pipeline_id[..8]}
     let ns_slug: (String,) = sqlx::query_as("SELECT namespace_slug FROM projects WHERE id = $1")
         .bind(project_id)
         .fetch_one(&state.pool)
@@ -421,7 +421,9 @@ pipeline:
         .unwrap();
 
     let pipeline_uuid = Uuid::parse_str(&pipeline_id).unwrap();
-    let ns_name = format!("{}-test-{}", ns_slug.0, &pipeline_uuid.to_string()[..8]);
+    let short_id = &pipeline_uuid.to_string()[..8];
+    let ns_name =
+        platform::deployer::namespace::test_namespace_name(&state.config, &ns_slug.0, short_id);
 
     // TestNamespaceGuard spawns an async delete on drop — allow time to propagate
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;

@@ -315,6 +315,7 @@ pub async fn run(
 
     seed_permissions(pool).await?;
     seed_roles(pool).await?;
+    seed_otel_service_account(pool).await?;
 
     if dev_mode {
         let generated;
@@ -393,6 +394,53 @@ async fn seed_roles(pool: &PgPool) -> anyhow::Result<()> {
     }
 
     tracing::info!(count = SYSTEM_ROLES.len(), "roles seeded");
+    Ok(())
+}
+
+/// Seed the OTEL system service account with a deterministic API token.
+/// Used by infrastructure OTEL sidecars to push system-level metrics.
+async fn seed_otel_service_account(pool: &PgPool) -> anyhow::Result<()> {
+    const OTEL_USER_ID: &str = "00000000-0000-0000-0000-000000000099";
+    const OTEL_TOKEN_ID: &str = "00000000-0000-0000-0000-0000000000a1";
+    const OTEL_RAW_TOKEN: &str = "plat_api_otel_system_dev_000000000000000000000000000000";
+
+    let user_id = Uuid::parse_str(OTEL_USER_ID)?;
+    let token_id = Uuid::parse_str(OTEL_TOKEN_ID)?;
+    let token_hash = crate::auth::token::hash_token(OTEL_RAW_TOKEN);
+
+    // Service account user
+    sqlx::query(
+        "INSERT INTO users (id, name, display_name, email, password_hash, user_type)
+         VALUES ($1, 'otel-system', 'OTEL System Collector', 'otel-system@platform.local', 'nologin', 'service_account')
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+
+    // API token (never expires, no project/workspace scope)
+    sqlx::query(
+        "INSERT INTO api_tokens (id, user_id, name, token_hash)
+         VALUES ($1, $2, 'otel-infra-collector', $3)
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(token_id)
+    .bind(user_id)
+    .bind(&token_hash)
+    .execute(pool)
+    .await?;
+
+    // Grant admin role for system-level metrics (no project_id)
+    sqlx::query(
+        "INSERT INTO user_roles (id, user_id, role_id)
+         SELECT gen_random_uuid(), $1, r.id FROM roles r WHERE r.name = 'admin'
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+
+    tracing::info!("OTEL system service account seeded");
     Ok(())
 }
 

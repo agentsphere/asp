@@ -90,7 +90,7 @@ MINIO_SECRET_KEY=devdevdev
 MINIO_INSECURE=true
 
 # --- Platform core ---
-PLATFORM_LOG=debug
+PLATFORM_LOG=debug,sqlx::query=warn,hyper=info
 PLATFORM_LISTEN=0.0.0.0:${BACKEND_PORT}
 PLATFORM_DEV=true
 PLATFORM_ADMIN_PASSWORD=admin
@@ -141,6 +141,7 @@ PLATFORM_SEED_COMMANDS_PATH=${PROJECT_DIR}/seed-commands
 # Required in Kind — kaniko pods can't reach MinIO's NodePort directly.
 REGISTRY_PROXY_BLOBS=true
 EOF
+
 
 # ── Summary ──────────────────────────────────────────────────────────────
 echo ""

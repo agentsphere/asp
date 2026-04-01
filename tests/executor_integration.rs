@@ -1495,7 +1495,9 @@ async fn executor_git_secret_lifecycle(pool: PgPool) {
         .fetch_one(&state.pool)
         .await
         .unwrap();
-    let namespace = state.config.project_namespace(&ns_slug.0, "dev");
+    let short_id = &pipeline_id[..8];
+    let namespace =
+        platform::deployer::namespace::pipeline_namespace_name(&state.config, &ns_slug.0, short_id);
 
     // Check if the secret still exists in K8s
     let secrets_api: kube::Api<k8s_openapi::api::core::v1::Secret> =

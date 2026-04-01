@@ -706,7 +706,7 @@ async fn deploy_preview_empty_namespace_slug(pool: PgPool) {
     let (status, body) = helpers::get_json(
         &app,
         &admin_token,
-        &format!("/deploy-preview/{project_id}/my-svc"),
+        &format!("/deploy-preview/{project_id}/my-svc/production"),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);

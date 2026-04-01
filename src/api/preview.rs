@@ -41,15 +41,15 @@ pub fn router() -> Router<AppState> {
         .route("/preview/{session_id}/", any(preview_proxy))
         .route("/preview/{session_id}/{*path}", any(preview_proxy))
         .route(
-            "/deploy-preview/{project_id}/{service_name}",
+            "/deploy-preview/{project_id}/{service_name}/{env}",
             any(deploy_preview_proxy),
         )
         .route(
-            "/deploy-preview/{project_id}/{service_name}/",
+            "/deploy-preview/{project_id}/{service_name}/{env}/",
             any(deploy_preview_proxy),
         )
         .route(
-            "/deploy-preview/{project_id}/{service_name}/{*path}",
+            "/deploy-preview/{project_id}/{service_name}/{env}/{*path}",
             any(deploy_preview_proxy),
         )
         // All preview responses (including errors) must allow framing by the platform UI.
@@ -434,23 +434,14 @@ struct PreviewPath {
 }
 
 /// Path parameters for deploy preview routes.
+/// Format: `/deploy-preview/{project_id}/{service_name}/{env}/{*path}`
 #[derive(Debug, serde::Deserialize)]
 struct DeployPreviewPath {
     project_id: Uuid,
     service_name: String,
+    env: String,
     #[serde(default)]
     path: Option<String>,
-}
-
-/// Optional query params for deploy preview (environment selection).
-#[derive(Debug, serde::Deserialize)]
-struct DeployPreviewQuery {
-    #[serde(default = "default_env")]
-    env: String,
-}
-
-fn default_env() -> String {
-    "production".into()
 }
 
 /// Deploy preview proxy handler. Routes to K8s Services labeled
@@ -460,7 +451,6 @@ async fn deploy_preview_proxy(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(params): Path<DeployPreviewPath>,
-    axum::extract::Query(query): axum::extract::Query<DeployPreviewQuery>,
     req: Request,
 ) -> Result<Response, ApiError> {
     let project_id = params.project_id;
@@ -491,7 +481,7 @@ async fn deploy_preview_proxy(
     super::helpers::require_project_read(&state, &auth, project_id).await?;
 
     // Compute deploy namespace
-    let namespace = crate::deployer::reconciler::target_namespace(&state.config, slug, &query.env);
+    let namespace = crate::deployer::reconciler::target_namespace(&state.config, slug, &params.env);
     if !validate_namespace_format(&namespace) {
         return Err(ApiError::BadRequest("invalid namespace format".into()));
     }
@@ -534,7 +524,7 @@ async fn deploy_preview_proxy(
         state.config.preview_proxy_url.as_deref(),
         Some(port),
     );
-    tracing::info!(%target_url, "deploy preview proxy request");
+    tracing::debug!(%target_url, "deploy preview proxy request");
 
     // WebSocket upgrade path
     if is_websocket_upgrade(req.headers()) {
@@ -552,7 +542,8 @@ async fn deploy_preview_proxy(
         }));
     }
 
-    let base = format!("/deploy-preview/{project_id}/{service_name}/");
+    let env = &params.env;
+    let base = format!("/deploy-preview/{project_id}/{service_name}/{env}/");
     proxy_http_with_base(req, &target_url, Some(&base)).await
 }
 

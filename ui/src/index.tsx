@@ -38,10 +38,21 @@ interface WizardStatus {
   show_wizard: boolean;
 }
 
+function getInitialTheme(): 'light' | 'dark' {
+  const stored = localStorage.getItem('theme');
+  if (stored === 'light' || stored === 'dark') return stored;
+  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
+
 function AppRouter() {
   const { user, loading } = useAuth();
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [showWizard, setShowWizard] = useState<boolean | null>(null);
+
+  // Apply theme globally before any screen renders (Login, Setup, Onboarding all need it)
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', getInitialTheme());
+  }, []);
 
   useEffect(() => {
     fetch('/api/setup/status')

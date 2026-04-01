@@ -176,10 +176,13 @@ async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), Pip
     // Create a short-lived OTLP token for pipeline pods to emit telemetry
     let otlp_token = create_pipeline_otlp_token(state, project_id, pipeline_id).await;
 
-    let pipeline_namespace = state
-        .config
-        .project_namespace(&pipeline.namespace_slug, "dev");
-    let git_secret_name = format!("pl-git-{}", &pipeline_id.to_string()[..8]);
+    let short_id = &pipeline_id.to_string()[..8];
+    let pipeline_namespace = crate::deployer::namespace::pipeline_namespace_name(
+        &state.config,
+        &pipeline.namespace_slug,
+        short_id,
+    );
+    let git_secret_name = format!("pl-git-{short_id}");
 
     let meta = PipelineMeta {
         git_ref: pipeline.git_ref,
@@ -195,8 +198,8 @@ async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), Pip
         git_secret_name,
     };
 
-    // Ensure project namespace exists (lazy creation for DB-only projects)
-    ensure_project_namespace(state, &meta.namespace, project_id).await?;
+    // Ensure pipeline namespace exists (unique per pipeline run)
+    ensure_pipeline_namespace(state, &meta.namespace, project_id).await?;
 
     // S31: Create git auth Secret for init container (avoids exposing token as env var)
     {
@@ -300,6 +303,9 @@ async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), Pip
     // Clean up git auth token
     cleanup_git_auth_token(state, &git_token.1).await;
 
+    // Clean up the pipeline namespace (unique per run)
+    cleanup_pipeline_namespace(&state.kube, &meta.namespace).await;
+
     finalize_pipeline(state, pipeline_id, project_id, all_succeeded, &pipeline_svc).await
 }
 
@@ -396,7 +402,7 @@ struct PipelineMeta {
     repo_clone_url: String,
     /// Short-lived API token for authenticating git clone via `GIT_ASKPASS`.
     git_auth_token: String,
-    /// K8s namespace for this pipeline's pods (e.g. `{slug}-dev`).
+    /// K8s namespace for this pipeline's pods (e.g. `{slug}-p-{short_id}`).
     namespace: String,
     /// How the pipeline was triggered: push, mr, tag, api.
     trigger_type: String,
@@ -427,9 +433,9 @@ struct StepRow {
     step_config: Option<serde_json::Value>,
 }
 
-/// Ensure the project's dev namespace (and network policy) exist before running pods.
-/// Idempotent — no-op if the namespace was already created by `setup_project_infrastructure`.
-async fn ensure_project_namespace(
+/// Ensure the pipeline namespace (and network policy) exist before running pods.
+/// Each pipeline run gets its own namespace (`{slug}-p-{short_id}`).
+async fn ensure_pipeline_namespace(
     state: &AppState,
     namespace: &str,
     project_id: Uuid,
@@ -437,7 +443,7 @@ async fn ensure_project_namespace(
     crate::deployer::namespace::ensure_namespace(
         &state.kube,
         namespace,
-        "dev",
+        "pipeline",
         &project_id.to_string(),
         &state.config.platform_namespace,
         false,
@@ -912,6 +918,19 @@ async fn execute_single_step(
         step.environment.as_ref(),
     );
 
+    // Expand $REGISTRY, $PROJECT, $COMMIT_SHA etc. in the step image reference.
+    // Override REGISTRY with the node-visible URL so containerd can pull the image.
+    let mut env_pairs: Vec<(String, String)> = env_vars
+        .iter()
+        .filter_map(|ev| Some((ev.name.clone(), ev.value.as_ref()?.clone())))
+        .collect();
+    if let Some(node_reg) = node_registry_url(&state.config)
+        && let Some(pair) = env_pairs.iter_mut().find(|(k, _)| k == "REGISTRY")
+    {
+        pair.1 = node_reg.to_string();
+    }
+    let resolved_image = super::definition::expand_step_env(&step.image, &env_pairs);
+
     let pod_name = format!("pl-{}-{}", &pipeline_id.to_string()[..8], slug(&step.name));
     let step_artifacts = extract_artifact_defs(step.step_config.as_ref());
     let pod_spec = build_pod_spec(&PodSpecParams {
@@ -919,7 +938,7 @@ async fn execute_single_step(
         pipeline_id,
         project_id,
         step_name: &step.name,
-        image: &step.image,
+        image: &resolved_image,
         commands: &step.commands,
         env_vars: &env_vars,
         repo_clone_url: &pipeline.repo_clone_url,
@@ -945,7 +964,7 @@ async fn execute_single_step(
         project_id,
         &step_svc,
         "info",
-        &format!("Step '{}' started (image: {})", step.name, step.image),
+        &format!("Step '{}' started (image: {})", step.name, resolved_image),
         Some(serde_json::json!({"pipeline_id": pipeline_id.to_string(), "step": step.name})),
     )
     .await;
@@ -1151,8 +1170,11 @@ async fn wait_for_step_completion(pods: &Api<Pod>, pod_name: &str) -> Result<i32
                     .as_ref()
                     .and_then(|s| s.phase.as_deref())
                     .unwrap_or("Unknown");
-                if phase == "Failed" || phase == "Succeeded" {
-                    // Container exited before we could read marker — likely crash
+                if phase == "Succeeded" {
+                    // Container completed — exit code is 0 by definition
+                    return Ok(0);
+                }
+                if phase == "Failed" {
                     let code = pod.status.as_ref().and_then(extract_exit_code).unwrap_or(1);
                     return Ok(code);
                 }
@@ -1165,9 +1187,14 @@ async fn wait_for_step_completion(pods: &Api<Pod>, pod_name: &str) -> Result<i32
             Err(e) => return Err(e.into()),
         }
 
-        // Try to read the exit-code marker
+        // Try to read the exit-code marker (written atomically via mv)
         if let Ok(output) = exec_in_pod(pods, pod_name, "step", &["cat", "/tmp/.exit-code"]).await {
-            let code = output.trim().parse::<i32>().unwrap_or(1);
+            let raw = output.trim();
+            if raw.is_empty() {
+                // File exists but empty — race with write; retry next poll
+                continue;
+            }
+            let code = raw.parse::<i32>().unwrap_or(1);
             return Ok(code);
         }
         // File doesn't exist yet — keep polling
@@ -1225,12 +1252,15 @@ async fn collect_step_artifacts(
         .execute(&state.pool)
         .await?;
 
-        // Exec tar to stream the artifact path
+        // Exec tar to stream the artifact path.
+        // Strip leading '/' so the path is relative to -C /workspace
+        // (absolute paths cause tar to ignore -C and archive from root).
+        let rel_path = artifact_def.path.trim_start_matches('/');
         let tar_result = exec_bytes(
             pods,
             pod_name,
             "step",
-            &["tar", "czf", "-", "-C", "/workspace", &artifact_def.path],
+            &["tar", "czf", "-", "-C", "/workspace", rel_path],
         )
         .await;
 
@@ -1941,11 +1971,11 @@ async fn create_registry_secret(
             )])),
             ..Default::default()
         },
-        string_data: Some(BTreeMap::from([(
-            "config.json".into(),
-            config_json.to_string(),
-        )])),
-        type_: Some("Opaque".into()),
+        string_data: Some(BTreeMap::from([
+            (".dockerconfigjson".into(), config_json.to_string()),
+            ("config.json".into(), config_json.to_string()),
+        ])),
+        type_: Some("kubernetes.io/dockerconfigjson".into()),
         ..Default::default()
     };
 
@@ -1983,6 +2013,17 @@ async fn cleanup_registry_secret(
         .await
     {
         tracing::warn!(error = %e, "failed to delete pipeline API token");
+    }
+}
+
+/// Delete the pipeline's unique namespace after the run finishes.
+/// Best-effort — failures are logged but don't block finalization.
+async fn cleanup_pipeline_namespace(kube: &kube::Client, namespace: &str) {
+    let namespaces: Api<k8s_openapi::api::core::v1::Namespace> = Api::all(kube.clone());
+    if let Err(e) = namespaces.delete(namespace, &DeleteParams::default()).await {
+        tracing::warn!(error = %e, %namespace, "failed to delete pipeline namespace");
+    } else {
+        tracing::info!(%namespace, "pipeline namespace deleted");
     }
 }
 
@@ -2068,7 +2109,7 @@ fn build_pod_spec(p: &PodSpecParams<'_>) -> Pod {
         // Wrap user commands with marker file pattern to keep container alive for artifact collection
         let user_cmds = p.commands.join(" && ");
         format!(
-            "({user_cmds}); echo $? > /tmp/.exit-code; while [ ! -f /tmp/.done ]; do sleep 1; done; exit $(cat /tmp/.exit-code)"
+            "({user_cmds}); EC=$?; echo $EC > /tmp/.exit-code.tmp && mv /tmp/.exit-code.tmp /tmp/.exit-code; while [ ! -f /tmp/.done ]; do sleep 1; done; exit $EC"
         )
     } else {
         p.commands.join(" && ")
@@ -2525,11 +2566,12 @@ async fn execute_deploy_test_step(
 
     let start = std::time::Instant::now();
 
-    // 1. Create temp namespace
-    let ns_name = format!(
-        "{}-test-{}",
-        pipeline.namespace_slug,
-        &pipeline_id.to_string()[..8]
+    // 1. Create temp test namespace
+    let short_id = &pipeline_id.to_string()[..8];
+    let ns_name = crate::deployer::namespace::test_namespace_name(
+        &state.config,
+        &pipeline.namespace_slug,
+        short_id,
     );
     crate::deployer::namespace::ensure_namespace(
         &state.kube,
@@ -3658,7 +3700,8 @@ pub async fn cancel_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), 
 
     skip_remaining_steps(&state.pool, pipeline_id).await?;
 
-    // Look up project namespace for pod deletion
+    // Look up project namespace slug and reconstruct pipeline namespace
+    let short_id = &pipeline_id.to_string()[..8];
     let namespace = sqlx::query_scalar!(
         r#"
         SELECT p.namespace_slug as "namespace_slug!: String"
@@ -3671,7 +3714,7 @@ pub async fn cancel_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), 
     .await?
     .map_or_else(
         || state.config.pipeline_namespace.clone(),
-        |slug| state.config.project_namespace(&slug, "dev"),
+        |slug| crate::deployer::namespace::pipeline_namespace_name(&state.config, &slug, short_id),
     );
 
     // Delete running pods by label selector
@@ -3686,6 +3729,9 @@ pub async fn cancel_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), 
             }
         }
     }
+
+    // Clean up the pipeline namespace
+    cleanup_pipeline_namespace(&state.kube, &namespace).await;
 
     Ok(())
 }

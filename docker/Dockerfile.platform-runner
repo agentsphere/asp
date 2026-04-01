@@ -54,6 +54,16 @@ RUN npm install -g @anthropic-ai/claude-code@1.0.16
 COPY mcp/ /usr/local/lib/mcp/
 RUN cd /usr/local/lib/mcp && npm ci --ignore-scripts --omit=dev
 
+# Python + Playwright for UI screenshots (available to all projects)
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv \
+  && rm -rf /var/lib/apt/lists/* \
+  && pip install --no-cache-dir --break-system-packages \
+    jinja2 playwright==1.52.0 \
+  && playwright install chromium --with-deps \
+  && chmod -R o+rx /opt/playwright
+
 # Non-root user with sudo access (for installing packages at runtime)
 RUN userdel -r node 2>/dev/null || true \
   && useradd -m -s /bin/bash -u 1000 agent \

@@ -5,11 +5,11 @@ FROM ${PLATFORM_RUNNER_IMAGE}
 # This image is used for agent sessions in this project.
 #
 # The base image (platform-runner) already includes:
-#   - Node.js 22, git, curl, kubectl, Claude Code CLI
+#   - Node.js 22, Python 3, git, curl, kubectl, Claude Code CLI
+#   - Playwright + Chromium (for UI screenshots)
 
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv \
     postgresql-client \
   && rm -rf /var/lib/apt/lists/*
 USER agent

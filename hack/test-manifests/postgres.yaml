@@ -1,6 +1,45 @@
 # Lightweight Postgres for per-run test namespaces.
 # Boots in ~3-5s (vs 30-60s for CNPG operator).
 # The platform user gets CREATEDB via post-deploy script.
+# Includes OTEL collector sidecar for Postgres metrics.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-otel-config
+data:
+  config.yaml: |
+    receivers:
+      postgresql:
+        endpoint: localhost:5432
+        username: platform
+        password: dev
+        databases: [platform_dev]
+        collection_interval: 15s
+        tls:
+          insecure_skip_verify: true
+    processors:
+      resource:
+        attributes:
+          - key: service.name
+            value: platform-postgres
+            action: upsert
+          - key: deployment.environment
+            value: dev
+            action: upsert
+    exporters:
+      otlphttp:
+        endpoint: "${env:OTEL_EXPORTER_OTLP_ENDPOINT}"
+        tls:
+          insecure: true
+        headers:
+          authorization: "Bearer ${env:OTEL_API_TOKEN}"
+    service:
+      pipelines:
+        metrics:
+          receivers: [postgresql]
+          processors: [resource]
+          exporters: [otlphttp]
+---
 apiVersion: v1
 kind: Pod
 metadata:
@@ -57,9 +96,30 @@ spec:
           memory: 128Mi
         limits:
           memory: 512Mi
+    - name: otel-collector
+      image: otel/opentelemetry-collector-contrib:0.121.0
+      args: ["--config=/etc/otel/config.yaml"]
+      env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "__OTEL_ENDPOINT__"
+        - name: OTEL_API_TOKEN
+          value: "plat_api_otel_system_dev_000000000000000000000000000000"
+      volumeMounts:
+        - name: otel-config
+          mountPath: /etc/otel
+      resources:
+        requests:
+          cpu: 25m
+          memory: 48Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
   volumes:
     - name: certs
       emptyDir: {}
+    - name: otel-config
+      configMap:
+        name: postgres-otel-config
 ---
 apiVersion: v1
 kind: Service

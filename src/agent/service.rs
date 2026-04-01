@@ -400,13 +400,7 @@ pub async fn send_message(
         .pod_name
         .as_deref()
         .ok_or(AgentError::SessionNotRunning)?;
-    let namespace = resolve_session_namespace(
-        &state.pool,
-        &session,
-        &state.config.agent_namespace,
-        &state.config,
-    )
-    .await?;
+    let namespace = resolve_session_namespace(&session, &state.config.agent_namespace);
     let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &namespace);
 
     let mut attached = pods
@@ -513,13 +507,7 @@ pub async fn stop_session(state: &AppState, session_id: Uuid) -> Result<(), Agen
         _ => {
             // Pod session — capture logs and delete pod
             if let Some(ref pod_name) = session.pod_name {
-                let namespace = resolve_session_namespace(
-                    &state.pool,
-                    &session,
-                    &state.config.agent_namespace,
-                    &state.config,
-                )
-                .await?;
+                let namespace = resolve_session_namespace(&session, &state.config.agent_namespace);
                 let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &namespace);
                 capture_session_logs(&pods, pod_name, state, session_id).await;
                 let _ = pods.delete(pod_name, &DeleteParams::default()).await;
@@ -629,14 +617,11 @@ async fn reap_terminated_sessions(state: &AppState) -> Result<(), AgentError> {
     }
 
     for session in running {
-        // Use session_namespace if set, else fall back to project dev namespace
+        // Use session_namespace if set, else fall back to agent namespace
         let namespace = if let Some(ref ns) = session.session_namespace {
             ns.clone()
         } else {
-            session.namespace_slug.as_deref().map_or_else(
-                || state.config.agent_namespace.clone(),
-                |s| state.config.project_namespace(s, "dev"),
-            )
+            state.config.agent_namespace.clone()
         };
         let pods: Api<Pod> = Api::namespaced(state.kube.clone(), &namespace);
         let Some(ref pod_name) = session.pod_name else {
@@ -853,29 +838,12 @@ async fn finalize_reaped_session(
 
 /// Resolve the K8s namespace for a session.
 ///
-/// Priority: `session.session_namespace` (new per-session ns) > project dev namespace > fallback.
-async fn resolve_session_namespace(
-    pool: &PgPool,
-    session: &AgentSession,
-    fallback_namespace: &str,
-    config: &crate::config::Config,
-) -> Result<String, AgentError> {
-    // New sessions have session_namespace set
+/// Priority: `session.session_namespace` (per-session ns) > fallback agent namespace.
+fn resolve_session_namespace(session: &AgentSession, fallback_namespace: &str) -> String {
     if let Some(ref ns) = session.session_namespace {
-        return Ok(ns.clone());
-    }
-    // Backward compat: old sessions use project dev namespace
-    if let Some(project_id) = session.project_id {
-        let slug = sqlx::query_scalar!(
-            "SELECT namespace_slug FROM projects WHERE id = $1 AND is_active = true",
-            project_id,
-        )
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| AgentError::Other(anyhow::anyhow!("project not found")))?;
-        Ok(config.project_namespace(&slug, "dev"))
+        ns.clone()
     } else {
-        Ok(fallback_namespace.to_string())
+        fallback_namespace.to_string()
     }
 }
 

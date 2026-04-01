@@ -1,130 +1,98 @@
-"""Capture UI preview screenshots for platform artifact collection.
+"""Capture UI preview screenshots from pre-rendered static HTML.
 
-Starts the FastAPI app locally (no DB required — uses seed data),
-then uses Playwright to screenshot each page and component state.
-Outputs to /output/components/ and /output/flows/ with config.json files
-that define the group hierarchy for the platform UI preview viewer.
+Works in both pipeline pods and agent dev sessions.
+Requires: screenshots/render.py to have run first.
 """
 
 import asyncio
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
-COMP_DIR = Path(os.getenv("OUTPUT_DIR", "/output")) / "components"
-FLOW_DIR = Path(os.getenv("OUTPUT_DIR", "/output")) / "flows"
-APP_PORT = int(os.getenv("APP_PORT", "8099"))
-APP_URL = f"http://localhost:{APP_PORT}"
+COMP_DIR = Path(os.getenv("OUTPUT_DIR", "/workspace/output")) / "components"
+FLOW_DIR = Path(os.getenv("OUTPUT_DIR", "/workspace/output")) / "flows"
+RENDERED = Path(os.getenv("RENDER_DIR", "/tmp/rendered"))
+PORT = int(os.getenv("CAPTURE_PORT", "8099"))
+URL = f"http://localhost:{PORT}"
 
 
-async def start_app():
-    """Start the FastAPI app in the background with seed data only."""
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "uvicorn", "app.main:app",
-        "--host", "127.0.0.1", "--port", str(APP_PORT),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "OTEL_SDK_DISABLED": "true"},
+async def main():
+    from playwright.async_api import async_playwright
+
+    COMP_DIR.mkdir(parents=True, exist_ok=True)
+    FLOW_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Minimal static file server — starts instantly
+    server = subprocess.Popen(
+        [sys.executable, "-m", "http.server", str(PORT), "--directory", str(RENDERED)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
-    import httpx
-    for _ in range(30):
-        try:
-            async with httpx.AsyncClient() as client:
-                r = await client.get(f"{APP_URL}/healthz", timeout=2)
-                if r.status_code == 200:
-                    return proc
-        except Exception:
-            pass
-        await asyncio.sleep(0.5)
-    raise RuntimeError("App did not become ready within 15 seconds")
 
+    try:
+        await asyncio.sleep(0.3)  # socket bind
 
-async def capture_components(browser):
-    """Screenshot individual pages and component states."""
-    page = await browser.new_page(viewport={"width": 1280, "height": 720})
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
 
-    async def goto(url):
-        await page.goto(url)
-        await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_timeout(1000)
+            # --- Component screenshots ---
+            page = await browser.new_page(viewport={"width": 1280, "height": 720})
 
-    # --- Full pages ---
-    await goto(f"{APP_URL}/")
-    await page.screenshot(path=str(COMP_DIR / "catalog.png"), full_page=True)
+            async def snap(html_file, out_path, full_page=True):
+                await page.goto(f"{URL}/{html_file}")
+                await page.wait_for_load_state("domcontentloaded")
+                await page.wait_for_timeout(300)
+                await page.screenshot(path=str(out_path), full_page=full_page)
 
-    await goto(f"{APP_URL}/product/1")
-    await page.screenshot(path=str(COMP_DIR / "product-detail.png"), full_page=True)
+            # Full pages
+            await snap("index.html", COMP_DIR / "catalog.png")
+            await snap("product-1.html", COMP_DIR / "product-detail.png")
+            await snap("cart-empty.html", COMP_DIR / "cart-empty.png")
+            await snap("orders.html", COMP_DIR / "orders-empty.png")
+            await snap("cart-items.html", COMP_DIR / "cart-with-items.png")
 
-    await goto(f"{APP_URL}/cart")
-    await page.screenshot(path=str(COMP_DIR / "cart-empty.png"), full_page=True)
+            # Isolated component elements
+            await page.goto(f"{URL}/index.html")
+            await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_timeout(300)
 
-    await goto(f"{APP_URL}/orders")
-    await page.screenshot(path=str(COMP_DIR / "orders-empty.png"), full_page=True)
+            nav = page.locator("nav")
+            if await nav.count() > 0:
+                await nav.screenshot(path=str(COMP_DIR / "nav-bar.png"))
 
-    # --- Isolated components ---
-    await goto(f"{APP_URL}/")
+            card = page.locator(".grid > div").first
+            if await card.count() > 0:
+                await card.screenshot(path=str(COMP_DIR / "product-card.png"))
 
-    nav = page.locator("nav")
-    if await nav.count() > 0:
-        await nav.screenshot(path=str(COMP_DIR / "nav-bar.png"))
+            await page.close()
 
-    card = page.locator(".grid > div").first
-    if await card.count() > 0:
-        await card.screenshot(path=str(COMP_DIR / "product-card.png"))
+            # --- Flow screenshots ---
+            page = await browser.new_page(viewport={"width": 1280, "height": 720})
 
-    # --- Stateful: cart with items ---
-    await goto(f"{APP_URL}/product/1")
-    await page.locator("button:has-text('Add to Cart')").click()
-    await page.wait_for_timeout(500)
-    await goto(f"{APP_URL}/product/2")
-    await page.locator("button:has-text('Add to Cart')").click()
-    await page.wait_for_timeout(500)
+            await snap("index.html", FLOW_DIR / "01-browse-catalog.png")
+            await snap("product-1.html", FLOW_DIR / "02-view-product.png")
+            await snap("cart-items.html", FLOW_DIR / "03-add-to-cart.png")
+            await snap("cart-items.html", FLOW_DIR / "04-view-cart.png")
+            await snap("orders.html", FLOW_DIR / "05-order-confirmed.png")
 
-    await goto(f"{APP_URL}/cart")
-    await page.screenshot(path=str(COMP_DIR / "cart-with-items.png"), full_page=True)
+            await page.close()
+            await browser.close()
 
-    await page.close()
+        write_configs()
 
+        comp_count = len(list(COMP_DIR.glob("*.png")))
+        flow_count = len(list(FLOW_DIR.glob("*.png")))
+        print(f"OK components={comp_count} flows={flow_count}")
 
-async def capture_flows(browser):
-    """Screenshot a multi-step purchase flow."""
-    page = await browser.new_page(viewport={"width": 1280, "height": 720})
-
-    # Step 1: Browse catalog
-    await page.goto(f"{APP_URL}/")
-    await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(1000)
-    await page.screenshot(path=str(FLOW_DIR / "01-browse-catalog.png"), full_page=True)
-
-    # Step 2: View product (navigate directly — CDN scripts may delay link rendering)
-    await page.goto(f"{APP_URL}/product/1")
-    await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(1000)
-    await page.screenshot(path=str(FLOW_DIR / "02-view-product.png"), full_page=True)
-
-    # Step 3: Add to cart
-    await page.locator("button:has-text('Add to Cart')").click()
-    await page.wait_for_timeout(1000)
-    await page.screenshot(path=str(FLOW_DIR / "03-add-to-cart.png"), full_page=True)
-
-    # Step 4: View cart
-    await page.goto(f"{APP_URL}/cart")
-    await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(1000)
-    await page.screenshot(path=str(FLOW_DIR / "04-view-cart.png"), full_page=True)
-
-    # Step 5: Checkout
-    await page.locator("button:has-text('Checkout')").click()
-    await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(1000)
-    await page.screenshot(path=str(FLOW_DIR / "05-order-confirmed.png"), full_page=True)
-
-    await page.close()
+    finally:
+        server.terminate()
+        server.wait()
 
 
 def write_configs():
-    """Write config.json files defining group hierarchy for the preview viewer."""
+    """Write config.json files for the platform UI preview viewer."""
     comp_config = {
         "groups": {
             "pages": {
@@ -205,30 +173,6 @@ def write_configs():
 
     (COMP_DIR / "config.json").write_text(json.dumps(comp_config, indent=2))
     (FLOW_DIR / "config.json").write_text(json.dumps(flow_config, indent=2))
-
-
-async def main():
-    from playwright.async_api import async_playwright
-
-    COMP_DIR.mkdir(parents=True, exist_ok=True)
-    FLOW_DIR.mkdir(parents=True, exist_ok=True)
-
-    proc = await start_app()
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch()
-            await capture_components(browser)
-            await capture_flows(browser)
-            await browser.close()
-
-        write_configs()
-
-        comp_count = len(list(COMP_DIR.glob("*.png")))
-        flow_count = len(list(FLOW_DIR.glob("*.png")))
-        print(f"OK components={comp_count} flows={flow_count}")
-    finally:
-        proc.terminate()
-        await proc.wait()
 
 
 if __name__ == "__main__":

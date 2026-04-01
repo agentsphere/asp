@@ -71,7 +71,9 @@ async fn main() -> anyhow::Result<()> {
         observe::tracing_layer::PlatformLogLayer::new(platform_logs_tx, self_observe_level);
 
     tracing_subscriber::registry()
-        .with(EnvFilter::try_from_env("PLATFORM_LOG").unwrap_or_else(|_| "info".into()))
+        .with(EnvFilter::try_from_env("PLATFORM_LOG").unwrap_or_else(|_| {
+            "info,sqlx::query=warn,tower::buffer=warn,kube_client=warn,reqsign=warn,rustls=warn,hyper=info".into()
+        }))
         .with(fmt::layer().json())
         .with(platform_log_layer)
         .init();

@@ -300,7 +300,7 @@ async fn deploy_preview_project_not_found_returns_404(pool: PgPool) {
     let (status, body) = helpers::get_json(
         &app,
         &admin_token,
-        &format!("/deploy-preview/{fake_project}/my-svc"),
+        &format!("/deploy-preview/{fake_project}/my-svc/production"),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -318,7 +318,7 @@ async fn deploy_preview_invalid_service_name_returns_400(pool: PgPool) {
     let (status, body) = helpers::get_json(
         &app,
         &admin_token,
-        &format!("/deploy-preview/{project_id}/INVALID_SVC"),
+        &format!("/deploy-preview/{project_id}/INVALID_SVC/production"),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -331,8 +331,12 @@ async fn deploy_preview_auth_required(pool: PgPool) {
     let app = test_router(state);
 
     let fake_project = Uuid::new_v4();
-    let (status, _body) =
-        helpers::get_json(&app, "", &format!("/deploy-preview/{fake_project}/my-svc")).await;
+    let (status, _body) = helpers::get_json(
+        &app,
+        "",
+        &format!("/deploy-preview/{fake_project}/my-svc/production"),
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -350,7 +354,7 @@ async fn deploy_preview_non_reader_returns_404(pool: PgPool) {
     let (status, _body) = helpers::get_json(
         &app,
         &other_token,
-        &format!("/deploy-preview/{project_id}/my-svc"),
+        &format!("/deploy-preview/{project_id}/my-svc/production"),
     )
     .await;
     // Private project, no access -> 404 (not 403)
@@ -368,7 +372,7 @@ async fn deploy_preview_service_not_found_in_k8s(pool: PgPool) {
     let (status, body) = helpers::get_json(
         &app,
         &admin_token,
-        &format!("/deploy-preview/{project_id}/nonexistent-svc"),
+        &format!("/deploy-preview/{project_id}/nonexistent-svc/production"),
     )
     .await;
     // Should get 404 for the service (K8s API returns 404)
@@ -377,7 +381,7 @@ async fn deploy_preview_service_not_found_in_k8s(pool: PgPool) {
 }
 
 // ---------------------------------------------------------------------------
-// Deploy preview with environment query param
+// Deploy preview with environment path segment
 // ---------------------------------------------------------------------------
 
 #[sqlx::test(migrations = "./migrations")]
@@ -387,11 +391,11 @@ async fn deploy_preview_with_env_query_param(pool: PgPool) {
 
     let project_id = create_project(&app, &admin_token, "dp-env-param", "public").await;
 
-    // Request with ?env=staging — service won't exist but validates the env param is accepted
+    // Request with /staging env path — service won't exist but validates the env segment is accepted
     let (status, body) = helpers::get_json(
         &app,
         &admin_token,
-        &format!("/deploy-preview/{project_id}/my-svc?env=staging"),
+        &format!("/deploy-preview/{project_id}/my-svc/staging"),
     )
     .await;
     // K8s namespace doesn't exist, so service lookup fails with 404
@@ -454,7 +458,7 @@ async fn deploy_preview_trailing_slash(pool: PgPool) {
     let (status, body) = helpers::get_json(
         &app,
         &admin_token,
-        &format!("/deploy-preview/{project_id}/my-svc/"),
+        &format!("/deploy-preview/{project_id}/my-svc/production/"),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -476,7 +480,7 @@ async fn deploy_preview_with_path(pool: PgPool) {
     let (status, body) = helpers::get_json(
         &app,
         &admin_token,
-        &format!("/deploy-preview/{project_id}/my-svc/assets/app.js"),
+        &format!("/deploy-preview/{project_id}/my-svc/production/assets/app.js"),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -503,7 +507,7 @@ async fn deploy_preview_viewer_public_project(pool: PgPool) {
     let (status, body) = helpers::get_json(
         &app,
         &user_token,
-        &format!("/deploy-preview/{project_id}/my-svc"),
+        &format!("/deploy-preview/{project_id}/my-svc/production"),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -525,7 +529,7 @@ async fn deploy_preview_preserves_query_string(pool: PgPool) {
     let (status, body) = helpers::get_json(
         &app,
         &admin_token,
-        &format!("/deploy-preview/{project_id}/my-svc/api/data?page=1&limit=10"),
+        &format!("/deploy-preview/{project_id}/my-svc/production/api/data?page=1&limit=10"),
     )
     .await;
     // Service doesn't exist, but query is accepted without errors
