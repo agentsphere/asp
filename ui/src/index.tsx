@@ -10,7 +10,6 @@ import { Login } from './pages/Login';
 import { Setup } from './pages/Setup';
 import { Dashboard } from './pages/Dashboard';
 import { Projects } from './pages/Projects';
-import { ProjectDetail } from './pages/ProjectDetail';
 import { IssueDetail } from './pages/IssueDetail';
 import { MRDetail } from './pages/MRDetail';
 import { PipelineDetail } from './pages/PipelineDetail';
@@ -90,11 +89,11 @@ function AppRouter() {
           <Workspaces path="/workspaces" />
           <WorkspaceDetail path="/workspaces/:id" />
           <Projects path="/projects" />
-          <ProjectDetail path="/projects/:id/:tab?" />
           <IssueDetail path="/projects/:id/issues/:number" />
           <MRDetail path="/projects/:id/merge-requests/:number" />
           <PipelineDetail path="/projects/:id/pipelines/:pipelineId" />
           <SessionDetail path="/projects/:id/sessions/:sessionId" />
+          <Dashboard path="/projects/:id/:tab?" />
           <Logs path="/observe/logs" />
           <Traces path="/observe/traces" />
           <TraceDetail path="/observe/traces/:traceId" />

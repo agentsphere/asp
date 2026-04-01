@@ -1,16 +1,25 @@
-import { useState, useEffect, useMemo } from 'preact/hooks';
+import { useState, useEffect } from 'preact/hooks';
 import { api, type ListResponse } from '../lib/api';
 import type { Project, DashboardStats } from '../lib/types';
 import { useAuth } from '../lib/auth';
-import { ProjectCard, type CardTab } from '../components/ProjectCard';
+import { ProjectCard, parseTabFromUrl, type CardTab } from '../components/ProjectCard';
 import { SystemHealthPanel } from '../components/SystemHealthPanel';
 import { ActivityFeed } from '../components/ActivityFeed';
 
-export function Dashboard() {
+interface Props {
+  id?: string;   // project ID from route /projects/:id
+  tab?: string;  // tab name from route /projects/:id/:tab
+}
+
+export function Dashboard({ id: routeProjectId, tab: routeTab }: Props) {
   const { user } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [total, setTotal] = useState<number | null>(null);
   const [stats, setStats] = useState<DashboardStats | null>(null);
+
+  // Parse initial expand state from route params
+  const expandedProjectId = routeProjectId || null;
+  const initialTab: CardTab = routeTab ? parseTabFromUrl(routeTab) : (routeProjectId ? null : null);
 
   useEffect(() => {
     api.get<ListResponse<Project>>('/api/projects?limit=20')
@@ -19,17 +28,6 @@ export function Dashboard() {
     api.get<DashboardStats>('/api/dashboard/stats')
       .then(setStats)
       .catch(e => console.warn(e));
-  }, []);
-
-  // Parse URL params for initial expand state
-  const urlParams = useMemo(() => {
-    const params = new URLSearchParams(window.location.search);
-    const validTabs = ['files', 'issues', 'mrs', 'builds', 'deploys', 'sessions'];
-    const tab = params.get('tab');
-    return {
-      projectId: params.get('p'),
-      tab: (tab && validTabs.includes(tab) ? tab : null) as CardTab,
-    };
   }, []);
 
   if (total === null) {
@@ -89,15 +87,32 @@ export function Dashboard() {
           </div>
         )}
 
+        {/* Project list in sidebar — highlights active project */}
+        {projects.length > 0 && (
+          <div class="panel">
+            <div class="panel-header">Projects</div>
+            <div class="panel-body" style="padding:0">
+              {projects.map(p => (
+                <a key={p.id}
+                  href={`/projects/${p.id}`}
+                  class={`sidebar-project-item${expandedProjectId === p.id ? ' active' : ''}`}>
+                  <span class="sidebar-project-dot" style={`background:${expandedProjectId === p.id ? 'var(--accent)' : 'var(--text-muted)'}`} />
+                  <span class="sidebar-project-name">{p.display_name || p.name}</span>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+
         <ActivityFeed />
       </div>
 
-      {/* Center: project cards (vertically centered) */}
+      {/* Center: project cards (vertically stacked) */}
       <div class="dashboard-center">
         {projects.map(p => (
           <ProjectCard key={p.id} project={p}
-            initialExpanded={urlParams.projectId === p.id}
-            initialTab={urlParams.projectId === p.id ? urlParams.tab : null} />
+            initialExpanded={expandedProjectId === p.id}
+            initialTab={expandedProjectId === p.id ? initialTab : null} />
         ))}
         <a href="/create-app" class="project-card-new">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">

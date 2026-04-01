@@ -58,8 +58,10 @@ const ADMIN_NAV: NavItem[] = [
 ];
 
 function NavItemLink({ item, currentPath }: { item: NavItem; currentPath: string }) {
-  const active = currentPath === item.href ||
-    (item.href !== '/' && currentPath.startsWith(item.href));
+  // Home is active for both / and /projects/:id (dashboard renders both)
+  const active = item.href === '/'
+    ? (currentPath === '/' || currentPath.startsWith('/projects/'))
+    : (currentPath === item.href || (item.href !== '/' && currentPath.startsWith(item.href)));
   return (
     <a href={item.href} class={`sidebar-v2-item${active ? ' active' : ''}`}>
       <span class="sidebar-v2-icon"><SvgIcon name={item.icon} /></span>
