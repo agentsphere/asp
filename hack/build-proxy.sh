@@ -38,9 +38,7 @@ docker run --rm \
       cargo build -p platform-proxy --release --target x86_64-unknown-linux-musl && \
     cp target/aarch64-unknown-linux-musl/release/platform-proxy /out/arm64 && \
     cp target/x86_64-unknown-linux-musl/release/platform-proxy /out/amd64 && \
-    chmod +x /out/arm64 /out/amd64 && \
-    echo "Verifying static linking..." && \
-    file /out/arm64 && file /out/amd64'
+    chmod +x /out/arm64 /out/amd64'
 
 # Create `platform-proxy` as a copy of the arch the Kind node uses.
 CLUSTER_ARCH="amd64"
