@@ -104,11 +104,15 @@ find_free_port() {
 
 BACKEND_PORT=$(find_free_port)
 REGISTRY_NODE_PORT=$(find_free_node_port)
+GATEWAY_HTTP_NODE_PORT=$(find_free_node_port)
+GATEWAY_TLS_NODE_PORT=$(find_free_node_port)
 
 echo ""
 echo "==> Local ports"
-echo "  Backend:  ${BACKEND_PORT}"
-echo "  Registry: ${REGISTRY_NODE_PORT} (node hostPort)"
+echo "  Backend:      ${BACKEND_PORT}"
+echo "  Registry:     ${REGISTRY_NODE_PORT} (node hostPort)"
+echo "  Gateway HTTP: ${GATEWAY_HTTP_NODE_PORT} (node hostPort)"
+echo "  Gateway TLS:  ${GATEWAY_TLS_NODE_PORT} (node hostPort)"
 
 # ── Build seed images + agent-runner binaries (cached, worktree-scoped) ───
 bash "${SCRIPT_DIR}/build-agent-images.sh"
@@ -170,57 +174,8 @@ kubectl create clusterrolebinding "${NS_PREFIX}-runner" \
   --clusterrole=test-runner \
   --serviceaccount="${SVC_NS}:test-runner" 2>/dev/null || true
 
-# Create shared platform Gateway for test (if Envoy Gateway is installed)
-if kubectl get gatewayclass eg &>/dev/null; then
-  # EnvoyProxy tells Envoy Gateway to provision the proxy pod/service
-  # in the Gateway's namespace (not envoy-gateway-system).
-  cat <<EPEOF | kubectl apply -f -
-apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: EnvoyProxy
-metadata:
-  name: platform-proxy-config
-  namespace: ${NS_PREFIX}-services
-spec:
-  provider:
-    type: Kubernetes
-    kubernetes:
-      envoyDeployment:
-        replicas: 1
-        container:
-          resources:
-            requests:
-              cpu: 50m
-              memory: 64Mi
-            limits:
-              memory: 128Mi
-EPEOF
-
-  cat <<GWEOF | kubectl apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: platform-gateway
-  namespace: ${NS_PREFIX}-services
-  labels:
-    platform.io/managed-by: platform
-spec:
-  gatewayClassName: eg
-  infrastructure:
-    parametersRef:
-      group: gateway.envoyproxy.io
-      kind: EnvoyProxy
-      name: platform-proxy-config
-  listeners:
-    - name: http
-      protocol: HTTP
-      port: 80
-      allowedRoutes:
-        namespaces:
-          from: All
-GWEOF
-  export PLATFORM_GATEWAY_NAMESPACE="${NS_PREFIX}-services"
-  echo "  Gateway: platform-gateway in ${NS_PREFIX}-services"
-fi
+# Gateway is auto-deployed by the platform binary (PLATFORM_GATEWAY_AUTO_DEPLOY=true)
+# No manual EnvoyProxy/Gateway CRD creation needed
 
 # ── Run tests ─────────────────────────────────────────────────────────────
 echo ""
@@ -246,6 +201,10 @@ export PLATFORM_API_URL="http://${PLATFORM_HOST}:${BACKEND_PORT}"
 export PLATFORM_PIPELINE_NAMESPACE="${PIPELINE_NS}"
 export PLATFORM_AGENT_NAMESPACE="${AGENT_NS}"
 export PLATFORM_GATEWAY_NAMESPACE="${PLATFORM_GATEWAY_NAMESPACE:-${SVC_NS}}"
+export PLATFORM_GATEWAY_AUTO_DEPLOY=true
+export PLATFORM_GATEWAY_HTTP_NODE_PORT="${GATEWAY_HTTP_NODE_PORT}"
+export PLATFORM_GATEWAY_TLS_NODE_PORT="${GATEWAY_TLS_NODE_PORT}"
+export PLATFORM_GATEWAY_WATCH_NAMESPACES="${SVC_NS},${PIPELINE_NS},${AGENT_NS}"
 export PLATFORM_VALKEY_AGENT_HOST="valkey.${SVC_NS}.svc.cluster.local:6379"
 export PLATFORM_PREVIEW_PROXY_URL="http://${NODE_IP}:${PREVIEW_PROXY_PORT}"
 export PLATFORM_SEED_IMAGES_PATH="/tmp/platform-e2e/${WORKTREE}/seed-images"

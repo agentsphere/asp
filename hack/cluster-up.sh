@@ -49,41 +49,9 @@ export KUBECONFIG="$KUBECONFIG_FILE"
 helm repo add cnpg https://cloudnative-pg.github.io/charts --force-update
 helm upgrade --install cnpg cnpg/cloudnative-pg -n cnpg-system --create-namespace --wait
 
-# Install Gateway API CRDs (standalone, no Envoy Gateway)
+# Install Gateway API CRDs (for HTTPRoute resources used by deployer traffic splitting)
 kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
-
-# Ensure platform namespace exists before creating Gateway resource in it
-kubectl create namespace platform --dry-run=client -o yaml | kubectl apply -f -
-
-# Create GatewayClass + shared platform Gateway (platform-proxy --gateway is the controller)
-cat <<'EOF' | kubectl apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: platform
-spec:
-  controllerName: io.platform/gateway-controller
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: platform-gateway
-  namespace: platform
-  labels:
-    platform.io/managed-by: platform
-spec:
-  gatewayClassName: platform
-  listeners:
-    - name: http
-      protocol: HTTP
-      port: 80
-      allowedRoutes:
-        namespaces:
-          from: Selector
-          selector:
-            matchLabels:
-              platform.io/managed-by: platform
-EOF
+# No GatewayClass/Gateway resources needed — platform auto-deploys its own gateway
 
 # Create shared temp directory for e2e test repos (mounted via extraMounts)
 mkdir -p /tmp/platform-e2e

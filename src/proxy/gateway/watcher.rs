@@ -227,6 +227,14 @@ fn build_routing_table(
     let mut by_hostname: HashMap<String, Vec<RouteEntry>> = HashMap::new();
 
     for obj in routes.values() {
+        // Filter by namespace if configured (dev/test isolation)
+        if !config.watch_namespaces.is_empty() {
+            let obj_ns = obj.metadata.namespace.as_deref().unwrap_or("");
+            if !config.watch_namespaces.iter().any(|ns| ns == obj_ns) {
+                continue;
+            }
+        }
+
         // Filter by parentRef matching our gateway
         if !matches_parent_ref(obj, &config.gateway_name, &config.gateway_namespace) {
             continue;

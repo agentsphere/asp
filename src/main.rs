@@ -56,6 +56,9 @@ mod workspace;
 // Onboarding
 mod onboarding;
 
+// Gateway auto-deployment controller
+mod gateway;
+
 // Service Mesh CA
 mod mesh;
 
@@ -407,6 +410,12 @@ fn spawn_background_tasks(
         state.clone(),
         shutdown_tx.subscribe(),
     ));
+    if state.config.gateway_auto_deploy {
+        tokio::spawn(gateway::reconcile_gateway(
+            state.clone(),
+            shutdown_tx.subscribe(),
+        ));
+    }
     (shutdown_tx, observe_channels)
 }
 

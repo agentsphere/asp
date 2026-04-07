@@ -37,11 +37,15 @@ find_free_port() {
 
 BACKEND_PORT=$(find_free_port)
 REGISTRY_NODE_PORT=$(find_free_node_port)
+GATEWAY_HTTP_NODE_PORT=$(find_free_node_port)
+GATEWAY_TLS_NODE_PORT=$(find_free_node_port)
 
 echo ""
 echo "==> Auto-assigned ports"
-echo "  Backend:  ${BACKEND_PORT}"
-echo "  Registry: ${REGISTRY_NODE_PORT} (node hostPort)"
+echo "  Backend:      ${BACKEND_PORT}"
+echo "  Registry:     ${REGISTRY_NODE_PORT} (node hostPort)"
+echo "  Gateway HTTP: ${GATEWAY_HTTP_NODE_PORT} (node hostPort)"
+echo "  Gateway TLS:  ${GATEWAY_TLS_NODE_PORT} (node hostPort)"
 
 # ── Deploy services + registry proxy (idempotent) ────────────────────────
 REGISTRY_BACKEND_HOST="${PLATFORM_HOST}" \
@@ -135,6 +139,13 @@ WEBAUTHN_RP_NAME=Platform
 
 PLATFORM_MCP_SERVERS_TARBALL=/tmp/platform-e2e/${WORKTREE}/mcp-servers.tar.gz
 PLATFORM_SEED_COMMANDS_PATH=${PROJECT_DIR}/seed-commands
+
+# --- Gateway auto-deployment ---
+PLATFORM_GATEWAY_AUTO_DEPLOY=true
+PLATFORM_GATEWAY_NAMESPACE=${NS}
+PLATFORM_GATEWAY_HTTP_NODE_PORT=${GATEWAY_HTTP_NODE_PORT}
+PLATFORM_GATEWAY_TLS_NODE_PORT=${GATEWAY_TLS_NODE_PORT}
+PLATFORM_GATEWAY_WATCH_NAMESPACES=${NS}
 
 # --- Registry ---
 # Stream blobs through the platform instead of redirecting to MinIO.

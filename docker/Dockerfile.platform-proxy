@@ -1,0 +1,6 @@
+# Minimal image for platform-proxy binary (gateway + sidecar modes).
+# The binary is statically linked (musl) — no OS dependencies needed.
+FROM scratch
+ARG TARGETARCH=amd64
+COPY platform-proxy-${TARGETARCH} /usr/local/bin/platform-proxy
+ENTRYPOINT ["/usr/local/bin/platform-proxy"]

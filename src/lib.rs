@@ -44,6 +44,9 @@ pub mod workspace;
 // Onboarding
 pub mod onboarding;
 
+// Gateway auto-deployment controller
+pub mod gateway;
+
 // Service Mesh CA
 pub mod mesh;
 

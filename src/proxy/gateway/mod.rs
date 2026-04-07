@@ -43,6 +43,8 @@ pub struct GatewayConfig {
     pub gateway_name: String,
     /// Gateway resource namespace to filter parentRefs (default: "platform").
     pub gateway_namespace: String,
+    /// Namespaces to watch for `HTTPRoutes`. Empty = all namespaces.
+    pub watch_namespaces: Vec<String>,
     /// Log level (default: "info").
     pub log_level: String,
     /// OTLP export endpoint (default: platform API URL).
@@ -67,6 +69,15 @@ impl GatewayConfig {
                 .unwrap_or_else(|_| "platform-gateway".into()),
             gateway_namespace: env::var("PROXY_GATEWAY_NAMESPACE")
                 .unwrap_or_else(|_| "platform".into()),
+            watch_namespaces: env::var("PROXY_GATEWAY_WATCH_NAMESPACES")
+                .ok()
+                .map(|s| {
+                    s.split(',')
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
             log_level: env::var("PROXY_LOG_LEVEL").unwrap_or_else(|_| "info".into()),
             otlp_endpoint: env::var("PROXY_OTLP_ENDPOINT").ok(),
             otlp_token: env::var("PROXY_OTLP_TOKEN").ok(),
@@ -802,6 +813,7 @@ mod tests {
             health_port: 15020,
             gateway_name: "platform-gateway".into(),
             gateway_namespace: "platform".into(),
+            watch_namespaces: vec![],
             log_level: "info".into(),
             otlp_endpoint: None,
             otlp_token: None,

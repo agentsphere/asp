@@ -132,6 +132,18 @@ pub struct Config {
     pub mesh_ca_root_ttl_days: u32,
     /// Path to prebuilt platform-proxy binary directory (dev/test only).
     pub proxy_binary_path: Option<String>,
+    /// Whether the platform should auto-deploy its gateway DaemonSet/Deployment (default: false).
+    pub gateway_auto_deploy: bool,
+    /// Gateway HTTP listen port inside the pod (default: 8080).
+    pub gateway_http_port: u16,
+    /// Gateway TLS listen port inside the pod (default: 8443).
+    pub gateway_tls_port: u16,
+    /// `NodePort` for gateway HTTP (0 = K8s auto-assign). Default: 0.
+    pub gateway_http_node_port: u16,
+    /// `NodePort` for gateway TLS (0 = K8s auto-assign). Default: 0.
+    pub gateway_tls_node_port: u16,
+    /// Comma-separated namespaces the gateway should watch. Empty = all labeled.
+    pub gateway_watch_namespaces: Vec<String>,
     /// Enable ACME (Let's Encrypt) automatic certificate provisioning (default: false).
     pub acme_enabled: bool,
     /// ACME directory URL (default: Let's Encrypt production).
@@ -354,6 +366,34 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(365),
             proxy_binary_path: env::var("PLATFORM_PROXY_PATH").ok(),
+            gateway_auto_deploy: env::var("PLATFORM_GATEWAY_AUTO_DEPLOY")
+                .ok()
+                .is_some_and(|v| v == "true"),
+            gateway_http_port: env::var("PLATFORM_GATEWAY_HTTP_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8080),
+            gateway_tls_port: env::var("PLATFORM_GATEWAY_TLS_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8443),
+            gateway_http_node_port: env::var("PLATFORM_GATEWAY_HTTP_NODE_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            gateway_tls_node_port: env::var("PLATFORM_GATEWAY_TLS_NODE_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            gateway_watch_namespaces: env::var("PLATFORM_GATEWAY_WATCH_NAMESPACES")
+                .ok()
+                .map(|s| {
+                    s.split(',')
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
             acme_enabled: env::var("PLATFORM_ACME_ENABLED")
                 .ok()
                 .is_some_and(|v| v == "true"),
@@ -457,6 +497,12 @@ impl Config {
             mesh_ca_cert_ttl_secs: 3600,
             mesh_ca_root_ttl_days: 365,
             proxy_binary_path: None,
+            gateway_auto_deploy: false,
+            gateway_http_port: 8080,
+            gateway_tls_port: 8443,
+            gateway_http_node_port: 0,
+            gateway_tls_node_port: 0,
+            gateway_watch_namespaces: vec![],
             acme_enabled: false,
             acme_directory_url: "https://acme-staging-v02.api.letsencrypt.org/directory".into(),
             acme_contact_email: None,
