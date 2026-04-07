@@ -52,6 +52,9 @@ helm upgrade --install cnpg cnpg/cloudnative-pg -n cnpg-system --create-namespac
 # Install Gateway API CRDs (standalone, no Envoy Gateway)
 kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
 
+# Ensure platform namespace exists before creating Gateway resource in it
+kubectl create namespace platform --dry-run=client -o yaml | kubectl apply -f -
+
 # Create GatewayClass + shared platform Gateway (platform-proxy --gateway is the controller)
 cat <<'EOF' | kubectl apply -f -
 apiVersion: gateway.networking.k8s.io/v1
