@@ -13,6 +13,22 @@ pub fn session_namespace_name(config: &Config, slug: &str, short_id: &str) -> St
     }
 }
 
+/// Generate a per-pipeline ephemeral namespace name (`{slug}-p-{short_id}`).
+pub fn pipeline_namespace_name(config: &Config, slug: &str, short_id: &str) -> String {
+    match config.ns_prefix.as_deref() {
+        Some(prefix) => format!("{prefix}-{slug}-p-{short_id}"),
+        None => format!("{slug}-p-{short_id}"),
+    }
+}
+
+/// Generate a per-test ephemeral namespace name (`{slug}-t-{short_id}`).
+pub fn test_namespace_name(config: &Config, slug: &str, short_id: &str) -> String {
+    match config.ns_prefix.as_deref() {
+        Some(prefix) => format!("{prefix}-{slug}-t-{short_id}"),
+        None => format!("{slug}-t-{short_id}"),
+    }
+}
+
 /// Build K8s RBAC objects (`ServiceAccount`, `Role`, `RoleBinding`) for an agent session namespace.
 ///
 /// Returns 3 JSON objects for server-side apply:

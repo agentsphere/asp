@@ -52,7 +52,6 @@ pub struct ReleaseResponse {
     pub id: Uuid,
     pub target_id: Uuid,
     pub project_id: Uuid,
-    pub environment: String,
     pub image_ref: String,
     pub commit_sha: Option<String>,
     pub strategy: String,
@@ -358,6 +357,7 @@ async fn create_target(
             "strategy must be rolling, canary, or ab_test".into(),
         ));
     }
+
     if let Some(ref h) = body.hostname {
         validation::check_length("hostname", h, 1, 255)?;
     }
@@ -425,14 +425,11 @@ async fn list_releases(
             .await?;
 
     let rows = sqlx::query(
-        "SELECT r.id, r.target_id, r.project_id, t.environment, r.image_ref, r.commit_sha,
-                r.strategy, r.phase, r.traffic_weight, r.health, r.current_step,
-                r.rollout_config, r.values_override, r.deployed_by, r.pipeline_id,
-                r.started_at, r.completed_at, r.created_at, r.updated_at
-         FROM deploy_releases r
-         JOIN deploy_targets t ON t.id = r.target_id
-         WHERE r.project_id = $1
-         ORDER BY r.created_at DESC LIMIT $2 OFFSET $3",
+        "SELECT id, target_id, project_id, image_ref, commit_sha, strategy, phase,
+                traffic_weight, health, current_step, rollout_config, values_override,
+                deployed_by, pipeline_id, started_at, completed_at, created_at, updated_at
+         FROM deploy_releases WHERE project_id = $1
+         ORDER BY created_at DESC LIMIT $2 OFFSET $3",
     )
     .bind(id)
     .bind(limit)
@@ -452,13 +449,10 @@ async fn get_release(
     require_deploy_read(&state, &auth, id).await?;
 
     let row = sqlx::query(
-        "SELECT r.id, r.target_id, r.project_id, t.environment, r.image_ref, r.commit_sha,
-                r.strategy, r.phase, r.traffic_weight, r.health, r.current_step,
-                r.rollout_config, r.values_override, r.deployed_by, r.pipeline_id,
-                r.started_at, r.completed_at, r.created_at, r.updated_at
-         FROM deploy_releases r
-         JOIN deploy_targets t ON t.id = r.target_id
-         WHERE r.id = $1 AND r.project_id = $2",
+        "SELECT id, target_id, project_id, image_ref, commit_sha, strategy, phase,
+                traffic_weight, health, current_step, rollout_config, values_override,
+                deployed_by, pipeline_id, started_at, completed_at, created_at, updated_at
+         FROM deploy_releases WHERE id = $1 AND project_id = $2",
     )
     .bind(release_id)
     .bind(id)
@@ -1376,13 +1370,10 @@ fn row_to_target(row: &sqlx::postgres::PgRow) -> TargetResponse {
 }
 
 fn row_to_release(row: &sqlx::postgres::PgRow) -> ReleaseResponse {
-    // environment comes from JOIN with deploy_targets; fallback for INSERT RETURNING
-    let environment: String = row.try_get("environment").unwrap_or_default();
     ReleaseResponse {
         id: row.get("id"),
         target_id: row.get("target_id"),
         project_id: row.get("project_id"),
-        environment,
         image_ref: row.get("image_ref"),
         commit_sha: row.get("commit_sha"),
         strategy: row.get("strategy"),
