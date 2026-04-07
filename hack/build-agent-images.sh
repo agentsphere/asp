@@ -91,8 +91,8 @@ mkdir -p "${PROXY_DIR}"
 echo "  Platform-proxy binary (→ ${PROXY_DIR}):"
 PROXY_CHECKSUM_FILE="${PROXY_DIR}/.checksum"
 PROXY_CURRENT_CHECKSUM=$(
-  { find "${PROJECT_DIR}/src/proxy" -name '*.rs' -exec shasum -a 256 {} +
-    shasum -a 256 "${PROJECT_DIR}/Cargo.toml" "${PROJECT_DIR}/Cargo.lock"
+  { find "${PROJECT_DIR}/crates/proxy/src" -name '*.rs' -exec shasum -a 256 {} +
+    shasum -a 256 "${PROJECT_DIR}/crates/proxy/Cargo.toml" "${PROJECT_DIR}/Cargo.lock"
   } | sort | shasum -a 256 | awk '{print $1}'
 )
 
