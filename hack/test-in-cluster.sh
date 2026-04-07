@@ -139,7 +139,7 @@ echo "  Preview proxy: ${NODE_IP}:${PREVIEW_PROXY_PORT}"
 
 # Wait for NodePort connectivity (direct to cluster node — no port-forward)
 echo -n "  Waiting for NodePort connectivity"
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
   if nc -z "$NODE_IP" "$PG_PORT" 2>/dev/null && \
      nc -z "$NODE_IP" "$VALKEY_PORT" 2>/dev/null && \
      nc -z "$NODE_IP" "$MINIO_PORT" 2>/dev/null; then
@@ -182,6 +182,10 @@ echo ""
 echo "==> Running tests"
 echo "────────────────────────────────────────────────────────────────"
 
+# SQLX_OFFLINE must be set BEFORE DATABASE_URL — otherwise sqlx::query!() macros
+# try to connect to the DB during compilation (which may not be ready yet).
+export SQLX_OFFLINE=true
+
 # Build env vars
 export DATABASE_URL="postgres://platform:dev@${NODE_IP}:${PG_PORT}/platform_dev?sslmode=require"
 export VALKEY_URL="redis://:dev@${NODE_IP}:${VALKEY_PORT}"
@@ -222,10 +226,7 @@ export PLATFORM_HOST_MOUNT_PATH="/tmp/platform-e2e"
 # Override CLAUDE_CLI_PATH for pod-accessible path (hostPath mount)
 export CLAUDE_CLI_PATH="/tmp/platform-e2e/mock-claude-cli.sh"
 
-# Always use offline sqlx cache — it contains pre-computed types needed by
-# sqlx::query! macros. Under coverage mode (--cfg=coverage), type inference
-# breaks without the offline cache.
-export SQLX_OFFLINE=true
+# SQLX_OFFLINE already set above (before DATABASE_URL) to prevent compile-time DB connections.
 
 # Test output files — grouped by RUN_ID prefix for easy discovery
 REPORT_FILE="${PROJECT_DIR}/test-${RUN_ID}-report.txt"
