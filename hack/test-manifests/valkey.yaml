@@ -16,6 +16,7 @@ spec:
         - "--tcp-ports=6379"
         - "--scrape-type=redis"
         - "--"
+        - "docker-entrypoint.sh"
         - "valkey-server"
         - "--save"
         - ""

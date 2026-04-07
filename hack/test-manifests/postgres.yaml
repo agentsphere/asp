@@ -36,6 +36,7 @@ spec:
         - "--tcp-ports=5432"
         - "--scrape-type=postgres"
         - "--"
+        - "docker-entrypoint.sh"
         - "postgres"
         - "-c"
         - "max_connections=300"
