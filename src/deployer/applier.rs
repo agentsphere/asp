@@ -512,6 +512,186 @@ fn inject_env_from_to_container(container: &mut serde_json::Value, secret_name: 
     }
 }
 
+// ---------------------------------------------------------------------------
+// Proxy injection
+// ---------------------------------------------------------------------------
+
+/// Configuration for proxy injection.
+pub struct ProxyInjectionConfig {
+    /// Dev mode: host path to proxy binary directory.
+    pub proxy_binary_path: Option<String>,
+    /// Platform API URL for OTLP export.
+    pub platform_api_url: String,
+}
+
+/// Inject platform-proxy wrapper into all containers in workload manifests.
+///
+/// For each container in Deployment/StatefulSet/DaemonSet/Job/CronJob:
+/// 1. Wraps the container command with `/proxy/platform-proxy --wrap --`
+/// 2. Adds proxy volume mount at `/proxy` (read-only)
+/// 3. Adds proxy env vars (`PLATFORM_API_URL`, `PLATFORM_SERVICE_NAME`)
+/// 4. Adds proxy volume (`hostPath` from `proxy_binary_path`)
+///
+/// Containers without an explicit `command` require entrypoint resolution
+/// (handled separately by the caller before invoking this function).
+pub fn inject_proxy_wrapper(
+    manifests_yaml: &str,
+    config: &ProxyInjectionConfig,
+) -> Result<String, DeployerError> {
+    let docs = renderer::split_yaml_documents(manifests_yaml);
+    let mut output_docs = Vec::with_capacity(docs.len());
+
+    for doc_str in &docs {
+        let mut doc: serde_json::Value = serde_yaml::from_str(doc_str)
+            .map_err(|e| DeployerError::InvalidManifest(e.to_string()))?;
+
+        let kind = doc["kind"].as_str().unwrap_or_default().to_string();
+        let name = doc["metadata"]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+
+        match kind.as_str() {
+            "Deployment" | "StatefulSet" | "DaemonSet" | "Job" => {
+                inject_proxy_to_pod_spec(&mut doc, "/spec/template/spec", config, &name);
+            }
+            "CronJob" => {
+                inject_proxy_to_pod_spec(
+                    &mut doc,
+                    "/spec/jobTemplate/spec/template/spec",
+                    config,
+                    &name,
+                );
+            }
+            _ => {}
+        }
+
+        let yaml_str = serde_yaml::to_string(&doc)
+            .map_err(|e| DeployerError::InvalidManifest(e.to_string()))?;
+        output_docs.push(yaml_str);
+    }
+
+    Ok(output_docs.join("---\n"))
+}
+
+/// Inject proxy wrapping into all containers under a pod spec path.
+fn inject_proxy_to_pod_spec(
+    doc: &mut serde_json::Value,
+    pod_spec_path: &str,
+    config: &ProxyInjectionConfig,
+    workload_name: &str,
+) {
+    let Some(spec) = doc.pointer_mut(pod_spec_path) else {
+        return;
+    };
+
+    // Add proxy volume to the pod spec
+    let proxy_volume = if let Some(ref host_path) = config.proxy_binary_path {
+        serde_json::json!({
+            "name": "platform-proxy",
+            "hostPath": { "path": host_path, "type": "Directory" }
+        })
+    } else {
+        return; // No proxy binary path configured — skip injection
+    };
+
+    let volumes = spec.get_mut("volumes").and_then(|v| v.as_array_mut());
+    if let Some(vols) = volumes {
+        // Don't add if already present
+        if !vols.iter().any(|v| v["name"] == "platform-proxy") {
+            vols.push(proxy_volume);
+        }
+    } else {
+        spec["volumes"] = serde_json::json!([proxy_volume]);
+    }
+
+    // Wrap each container
+    if let Some(containers) = spec.get_mut("containers").and_then(|v| v.as_array_mut()) {
+        for container in containers.iter_mut() {
+            inject_proxy_to_container(container, config, workload_name);
+        }
+    }
+}
+
+/// Wrap a single container with the proxy command.
+fn inject_proxy_to_container(
+    container: &mut serde_json::Value,
+    config: &ProxyInjectionConfig,
+    workload_name: &str,
+) {
+    let container_name = container["name"].as_str().unwrap_or("main").to_string();
+
+    // Get existing command + args
+    let existing_command: Vec<String> = container
+        .get("command")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let existing_args: Vec<String> = container
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Skip containers without explicit command (can't wrap unknown entrypoint)
+    // The caller should resolve entrypoints and set command before calling this.
+    if existing_command.is_empty() {
+        return;
+    }
+
+    // Build wrapped command: /proxy/platform-proxy --wrap -- <original command + args>
+    let mut proxy_args = vec!["--wrap".to_string(), "--".to_string()];
+    proxy_args.extend(existing_command);
+    proxy_args.extend(existing_args);
+
+    container["command"] = serde_json::json!(["/proxy/platform-proxy"]);
+    container["args"] = serde_json::json!(proxy_args);
+
+    // Add proxy volume mount
+    let proxy_mount = serde_json::json!({
+        "name": "platform-proxy",
+        "mountPath": "/proxy",
+        "readOnly": true
+    });
+    if let Some(mounts) = container
+        .get_mut("volumeMounts")
+        .and_then(|v| v.as_array_mut())
+    {
+        if !mounts.iter().any(|m| m["name"] == "platform-proxy") {
+            mounts.push(proxy_mount);
+        }
+    } else {
+        container["volumeMounts"] = serde_json::json!([proxy_mount]);
+    }
+
+    // Add proxy env vars
+    let service_name = format!("{workload_name}/{container_name}");
+    let proxy_env = vec![
+        serde_json::json!({"name": "PLATFORM_API_URL", "value": config.platform_api_url}),
+        serde_json::json!({"name": "PLATFORM_SERVICE_NAME", "value": service_name}),
+        serde_json::json!({"name": "PROXY_HEALTH_PORT", "value": "15020"}),
+    ];
+    if let Some(env) = container.get_mut("env").and_then(|v| v.as_array_mut()) {
+        for e in &proxy_env {
+            let name = e["name"].as_str().unwrap_or_default();
+            if !env.iter().any(|existing| existing["name"] == name) {
+                env.push(e.clone());
+            }
+        }
+    } else {
+        container["env"] = serde_json::json!(proxy_env);
+    }
+}
+
 /// Find the first Deployment resource name from a list of applied resources.
 pub fn find_deployment_name(applied: &[AppliedResource]) -> Option<&str> {
     applied
@@ -2018,5 +2198,251 @@ metadata:
         let env_from = container["envFrom"].as_array().unwrap();
         // Should not duplicate
         assert_eq!(env_from.len(), 1);
+    }
+
+    // -- inject_proxy_wrapper tests --
+
+    fn proxy_config() -> ProxyInjectionConfig {
+        ProxyInjectionConfig {
+            proxy_binary_path: Some("/tmp/proxy".into()),
+            platform_api_url: "http://platform:8080".into(),
+        }
+    }
+
+    #[test]
+    fn inject_proxy_wraps_deployment_command() {
+        let yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: my-app:v1
+          command: ["python"]
+          args: ["app.py"]
+"#;
+        let result = inject_proxy_wrapper(yaml, &proxy_config()).unwrap();
+        let doc: serde_json::Value = serde_yaml::from_str(&result).unwrap();
+        let container = &doc["spec"]["template"]["spec"]["containers"][0];
+
+        assert_eq!(container["command"][0], "/proxy/platform-proxy");
+        let args: Vec<&str> = container["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(args, vec!["--wrap", "--", "python", "app.py"]);
+    }
+
+    #[test]
+    fn inject_proxy_adds_volume_and_mount() {
+        let yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: my-app:v1
+          command: ["python"]
+"#;
+        let result = inject_proxy_wrapper(yaml, &proxy_config()).unwrap();
+        let doc: serde_json::Value = serde_yaml::from_str(&result).unwrap();
+
+        // Volume added
+        let volumes = doc["spec"]["template"]["spec"]["volumes"]
+            .as_array()
+            .unwrap();
+        assert!(volumes.iter().any(|v| v["name"] == "platform-proxy"));
+
+        // Mount added
+        let mounts = doc["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
+            .as_array()
+            .unwrap();
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m["name"] == "platform-proxy" && m["mountPath"] == "/proxy")
+        );
+    }
+
+    #[test]
+    fn inject_proxy_skips_service() {
+        let yaml = r#"
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-svc
+spec:
+  ports:
+    - port: 80
+"#;
+        let result = inject_proxy_wrapper(yaml, &proxy_config()).unwrap();
+        let doc: serde_json::Value = serde_yaml::from_str(&result).unwrap();
+        // No volumes key added to a Service
+        assert!(doc["spec"]["template"].is_null());
+    }
+
+    #[test]
+    fn inject_proxy_skips_container_without_command() {
+        let yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: my-app:v1
+"#;
+        let result = inject_proxy_wrapper(yaml, &proxy_config()).unwrap();
+        let doc: serde_json::Value = serde_yaml::from_str(&result).unwrap();
+        let container = &doc["spec"]["template"]["spec"]["containers"][0];
+        // No command wrapping — original has no command
+        assert!(container["command"].is_null());
+    }
+
+    #[test]
+    fn inject_proxy_adds_env_vars() {
+        let yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: web:v1
+          command: ["node"]
+          args: ["server.js"]
+"#;
+        let result = inject_proxy_wrapper(yaml, &proxy_config()).unwrap();
+        let doc: serde_json::Value = serde_yaml::from_str(&result).unwrap();
+        let env = doc["spec"]["template"]["spec"]["containers"][0]["env"]
+            .as_array()
+            .unwrap();
+
+        let names: Vec<&str> = env.iter().map(|e| e["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"PLATFORM_API_URL"));
+        assert!(names.contains(&"PLATFORM_SERVICE_NAME"));
+        assert!(names.contains(&"PROXY_HEALTH_PORT"));
+
+        // Service name is workload/container
+        let svc = env
+            .iter()
+            .find(|e| e["name"] == "PLATFORM_SERVICE_NAME")
+            .unwrap();
+        assert_eq!(svc["value"], "web/app");
+    }
+
+    #[test]
+    fn inject_proxy_preserves_existing_volumes() {
+        let yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: my-app:v1
+          command: ["python"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+"#;
+        let result = inject_proxy_wrapper(yaml, &proxy_config()).unwrap();
+        let doc: serde_json::Value = serde_yaml::from_str(&result).unwrap();
+
+        let volumes = doc["spec"]["template"]["spec"]["volumes"]
+            .as_array()
+            .unwrap();
+        assert_eq!(volumes.len(), 2); // data + platform-proxy
+        assert!(volumes.iter().any(|v| v["name"] == "data"));
+        assert!(volumes.iter().any(|v| v["name"] == "platform-proxy"));
+
+        let mounts = doc["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
+            .as_array()
+            .unwrap();
+        assert_eq!(mounts.len(), 2); // data + proxy
+    }
+
+    #[test]
+    fn inject_proxy_multi_container() {
+        let yaml = r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      containers:
+        - name: web
+          image: web:v1
+          command: ["node"]
+        - name: worker
+          image: worker:v1
+          command: ["python"]
+"#;
+        let result = inject_proxy_wrapper(yaml, &proxy_config()).unwrap();
+        let doc: serde_json::Value = serde_yaml::from_str(&result).unwrap();
+        let containers = doc["spec"]["template"]["spec"]["containers"]
+            .as_array()
+            .unwrap();
+
+        // Both containers wrapped
+        for c in containers {
+            assert_eq!(c["command"][0], "/proxy/platform-proxy");
+        }
+    }
+
+    #[test]
+    fn inject_proxy_statefulset() {
+        let yaml = r#"
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+spec:
+  template:
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          command: ["docker-entrypoint.sh"]
+          args: ["postgres"]
+"#;
+        let result = inject_proxy_wrapper(yaml, &proxy_config()).unwrap();
+        let doc: serde_json::Value = serde_yaml::from_str(&result).unwrap();
+        let container = &doc["spec"]["template"]["spec"]["containers"][0];
+        assert_eq!(container["command"][0], "/proxy/platform-proxy");
+        let args: Vec<&str> = container["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            args,
+            vec!["--wrap", "--", "docker-entrypoint.sh", "postgres"]
+        );
     }
 }

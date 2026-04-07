@@ -235,6 +235,7 @@ async fn reconcile_one(state: &AppState, release: &PendingRelease) -> Result<(),
 // ---------------------------------------------------------------------------
 
 /// Pending release — apply manifests, transition to progressing.
+#[allow(clippy::too_many_lines)]
 async fn handle_pending(state: &AppState, release: &PendingRelease) -> Result<(), DeployerError> {
     let ns = target_namespace(&state.config, &release.namespace_slug, &release.environment);
 
@@ -256,6 +257,23 @@ async fn handle_pending(state: &AppState, release: &PendingRelease) -> Result<()
     let (rendered, _sha) = render_manifests(state, release).await?;
     let rendered = if let Some(ref sn) = secrets_name {
         applier::inject_env_from_secret(&rendered, sn)?
+    } else {
+        rendered
+    };
+
+    // Inject proxy wrapper if mesh is enabled
+    let rendered = if state.config.mesh_enabled {
+        applier::inject_proxy_wrapper(
+            &rendered,
+            &applier::ProxyInjectionConfig {
+                proxy_binary_path: if state.config.dev_mode {
+                    state.config.proxy_binary_path.clone()
+                } else {
+                    None
+                },
+                platform_api_url: state.config.platform_api_url.clone(),
+            },
+        )?
     } else {
         rendered
     };
