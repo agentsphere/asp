@@ -126,6 +126,9 @@ PLATFORM_SEED_IMAGES_PATH=/tmp/platform-e2e/${WORKTREE}/seed-images
 # --- Agent runner binaries (worktree-scoped) ---
 PLATFORM_AGENT_RUNNER_DIR=/tmp/platform-e2e/${WORKTREE}/agent-runner
 
+# --- Proxy binary (worktree-scoped, for pipeline/agent pod wrapping) ---
+PLATFORM_PROXY_PATH=/tmp/platform-e2e/${WORKTREE}/proxy
+
 # --- K8s config ---
 KUBECONFIG=${KUBECONFIG_PATH}
 

@@ -85,6 +85,69 @@ else
   echo "${RUNNER_CURRENT_CHECKSUM}" > "${RUNNER_CHECKSUM_FILE}"
 fi
 
+# ── Platform-proxy binary (cross-compiled, worktree-scoped) ─────────────
+PROXY_DIR="/tmp/platform-e2e/${WORKTREE}/proxy"
+mkdir -p "${PROXY_DIR}"
+echo "  Platform-proxy binary (→ ${PROXY_DIR}):"
+PROXY_CHECKSUM_FILE="${PROXY_DIR}/.checksum"
+PROXY_CURRENT_CHECKSUM=$(
+  { find "${PROJECT_DIR}/src/proxy" -name '*.rs' -exec shasum -a 256 {} +
+    shasum -a 256 "${PROJECT_DIR}/Cargo.toml" "${PROJECT_DIR}/Cargo.lock"
+  } | sort | shasum -a 256 | awk '{print $1}'
+)
+
+if [[ "$FORCE" == "false" && -f "${PROXY_DIR}/amd64" && -f "${PROXY_DIR}/arm64" && \
+      -f "${PROXY_CHECKSUM_FILE}" && "$(cat "${PROXY_CHECKSUM_FILE}")" == "${PROXY_CURRENT_CHECKSUM}" ]]; then
+  echo "    cached"
+else
+  echo "    building..."
+  bash "${SCRIPT_DIR}/build-proxy.sh"
+  echo "${PROXY_CURRENT_CHECKSUM}" > "${PROXY_CHECKSUM_FILE}"
+fi
+
+# ── Platform-proxy OCI image (from built binary) ────────────────────────
+echo "  Proxy seed image:"
+PROXY_TAR="${SEED_DIR}/platform-proxy.tar"
+PROXY_IMG_CHECKSUM_FILE="${SEED_DIR}/.platform-proxy-checksum"
+# Checksum based on the binary + Dockerfile
+PROXY_IMG_CHECKSUM=$(
+  { shasum -a 256 "${PROJECT_DIR}/docker/Dockerfile.platform-proxy"
+    # Use binary checksum if it exists
+    if [[ -f "${PROXY_DIR}/amd64" ]]; then shasum -a 256 "${PROXY_DIR}/amd64"; fi
+    if [[ -f "${PROXY_DIR}/arm64" ]]; then shasum -a 256 "${PROXY_DIR}/arm64"; fi
+  } | sort | shasum -a 256 | awk '{print $1}'
+)
+
+if [[ "$FORCE" == "false" && -f "${PROXY_TAR}" && -f "${PROXY_IMG_CHECKSUM_FILE}" && \
+      "$(cat "${PROXY_IMG_CHECKSUM_FILE}")" == "${PROXY_IMG_CHECKSUM}" ]]; then
+  echo "    cached"
+else
+  echo "    building OCI image..."
+  # Determine which arch binary to use for the image
+  ARCH="$(uname -m)"
+  case "${ARCH}" in
+    x86_64)  PROXY_BIN="${PROXY_DIR}/amd64" ;;
+    aarch64|arm64) PROXY_BIN="${PROXY_DIR}/arm64" ;;
+    *) PROXY_BIN="${PROXY_DIR}/amd64" ;;
+  esac
+
+  if [[ -f "${PROXY_BIN}" ]]; then
+    # Build context: copy binary to temp dir with expected name
+    PROXY_BUILD_CTX=$(mktemp -d)
+    cp "${PROXY_BIN}" "${PROXY_BUILD_CTX}/platform-proxy-amd64"
+    cp "${PROXY_BIN}" "${PROXY_BUILD_CTX}/platform-proxy-arm64"
+    docker buildx build \
+      --builder platform-oci \
+      --file "${PROJECT_DIR}/docker/Dockerfile.platform-proxy" \
+      --output "type=oci,dest=${PROXY_TAR}" \
+      "${PROXY_BUILD_CTX}"
+    rm -rf "${PROXY_BUILD_CTX}"
+    echo "${PROXY_IMG_CHECKSUM}" > "${PROXY_IMG_CHECKSUM_FILE}"
+  else
+    echo "    SKIP: proxy binary not found at ${PROXY_BIN}"
+  fi
+fi
+
 # ── MCP servers tarball ────────────────────────────────────────────────
 MCP_TARBALL="/tmp/platform-e2e/${WORKTREE}/mcp-servers.tar.gz"
 MCP_CHECKSUM_FILE="/tmp/platform-e2e/${WORKTREE}/.mcp-checksum"
@@ -111,5 +174,7 @@ echo "  Seed images: ${SEED_DIR}/"
 ls -lh "${SEED_DIR}"/*.tar 2>/dev/null | awk '{print "    " $NF " (" $5 ")"}'
 echo "  Agent-runner: ${RUNNER_DIR}/"
 ls -lh "${RUNNER_DIR}/arm64" "${RUNNER_DIR}/amd64" 2>/dev/null | awk '{print "    " $NF " (" $5 ")"}'
+echo "  Platform-proxy: ${PROXY_DIR}/"
+ls -lh "${PROXY_DIR}/arm64" "${PROXY_DIR}/amd64" 2>/dev/null | awk '{print "    " $NF " (" $5 ")"}'
 echo "  MCP tarball: ${MCP_TARBALL}"
 ls -lh "${MCP_TARBALL}" 2>/dev/null | awk '{print "    " $NF " (" $5 ")"}'
