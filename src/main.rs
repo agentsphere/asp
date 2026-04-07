@@ -62,8 +62,7 @@ mod gateway;
 // Service Mesh CA
 mod mesh;
 
-// Process-wrapper proxy
-mod proxy;
+// Process-wrapper proxy moved to separate crate: crates/proxy/
 
 #[tokio::main]
 #[allow(clippy::too_many_lines)]

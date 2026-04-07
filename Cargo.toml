@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "crates/proxy"]
+
 [package]
 name = "platform"
 version = "0.1.0"
@@ -9,10 +12,6 @@ repository = "https://github.com/agentsphere/platform"
 [[bin]]
 name = "platform"
 path = "src/main.rs"
-
-[[bin]]
-name = "platform-proxy"
-path = "src/proxy/main.rs"
 
 [dependencies]
 # HTTP + SSE

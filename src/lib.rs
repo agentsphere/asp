@@ -50,6 +50,4 @@ pub mod gateway;
 // Service Mesh CA
 pub mod mesh;
 
-// Process-wrapper proxy (used by the `platform-proxy` binary, not the main binary)
-#[allow(dead_code)]
-pub mod proxy;
+// Process-wrapper proxy moved to separate crate: crates/proxy/
