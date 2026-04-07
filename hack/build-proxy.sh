@@ -22,22 +22,25 @@ docker run --rm \
   -v "platform-cross-proxy-target:/src/target" \
   rust:1.88-slim-bookworm sh -c '
     apt-get update && apt-get install -y --no-install-recommends \
-      gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
-      gcc-x86-64-linux-gnu libc6-dev-amd64-cross \
-      pkg-config && \
-    rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu && \
+      musl-tools gcc-aarch64-linux-gnu gcc-x86-64-linux-gnu \
+      libc6-dev-arm64-cross libc6-dev-amd64-cross pkg-config && \
+    rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl && \
     cd /src && \
-    echo "==> Building arm64..." && \
+    echo "==> Building arm64 (musl, static)..." && \
     SQLX_OFFLINE=true \
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
-      cargo build -p platform-proxy --release --target aarch64-unknown-linux-gnu && \
-    echo "==> Building amd64..." && \
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
+      CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc \
+      cargo build -p platform-proxy --release --target aarch64-unknown-linux-musl && \
+    echo "==> Building amd64 (musl, static)..." && \
     SQLX_OFFLINE=true \
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
-      cargo build -p platform-proxy --release --target x86_64-unknown-linux-gnu && \
-    cp target/aarch64-unknown-linux-gnu/release/platform-proxy /out/arm64 && \
-    cp target/x86_64-unknown-linux-gnu/release/platform-proxy /out/amd64 && \
-    chmod +x /out/arm64 /out/amd64'
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-gnu-gcc \
+      CC_x86_64_unknown_linux_musl=x86_64-linux-gnu-gcc \
+      cargo build -p platform-proxy --release --target x86_64-unknown-linux-musl && \
+    cp target/aarch64-unknown-linux-musl/release/platform-proxy /out/arm64 && \
+    cp target/x86_64-unknown-linux-musl/release/platform-proxy /out/amd64 && \
+    chmod +x /out/arm64 /out/amd64 && \
+    echo "Verifying static linking..." && \
+    file /out/arm64 && file /out/amd64'
 
 # Create `platform-proxy` as a copy of the arch the Kind node uses.
 CLUSTER_ARCH="amd64"
