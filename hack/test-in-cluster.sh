@@ -182,12 +182,17 @@ echo ""
 echo "==> Running tests"
 echo "────────────────────────────────────────────────────────────────"
 
-# SQLX_OFFLINE must be set BEFORE DATABASE_URL — otherwise sqlx::query!() macros
-# try to connect to the DB during compilation (which may not be ready yet).
-export SQLX_OFFLINE=true
-
-# Build env vars
+# Build env vars — DATABASE_URL is set after the connectivity check above
+# so sqlx::query!() macros can validate queries against the real DB at compile time.
 export DATABASE_URL="postgres://platform:dev@${NODE_IP}:${PG_PORT}/platform_dev?sslmode=require"
+
+# Run migrations so the DB schema is up-to-date for sqlx compile-time validation
+echo "  Running migrations..."
+sqlx migrate run --source "${PROJECT_DIR}/migrations" 2>/dev/null || {
+  # If sqlx-cli isn't installed, fall back to offline mode
+  echo "  sqlx-cli not found, using offline cache"
+  export SQLX_OFFLINE=true
+}
 export VALKEY_URL="redis://:dev@${NODE_IP}:${VALKEY_PORT}"
 export MINIO_ENDPOINT="https://${NODE_IP}:${MINIO_PORT}"
 export MINIO_ACCESS_KEY="platform"
@@ -225,8 +230,6 @@ chmod +x "/tmp/platform-e2e/mock-claude-cli-git.sh"
 export PLATFORM_HOST_MOUNT_PATH="/tmp/platform-e2e"
 # Override CLAUDE_CLI_PATH for pod-accessible path (hostPath mount)
 export CLAUDE_CLI_PATH="/tmp/platform-e2e/mock-claude-cli.sh"
-
-# SQLX_OFFLINE already set above (before DATABASE_URL) to prevent compile-time DB connections.
 
 # Test output files — grouped by RUN_ID prefix for easy discovery
 REPORT_FILE="${PROJECT_DIR}/test-${RUN_ID}-report.txt"
