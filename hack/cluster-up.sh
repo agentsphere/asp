@@ -49,30 +49,40 @@ export KUBECONFIG="$KUBECONFIG_FILE"
 helm repo add cnpg https://cloudnative-pg.github.io/charts --force-update
 helm upgrade --install cnpg cnpg/cloudnative-pg -n cnpg-system --create-namespace --wait
 
-# Install Envoy Gateway (includes Gateway API CRDs)
-helm upgrade --install eg oci://docker.io/envoyproxy/gateway-helm \
-  --version v1.3.0 \
-  -n envoy-gateway-system --create-namespace --wait
+# Install Gateway API CRDs (standalone, no Envoy Gateway)
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
 
-# Create GatewayClass + shared platform Gateway (ClusterIP, cross-namespace routes allowed)
+# Create GatewayClass + shared platform Gateway (platform-proxy --gateway is the controller)
 cat <<'EOF' | kubectl apply -f -
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
-  name: eg
+  name: platform
 spec:
-  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  controllerName: io.platform/gateway-controller
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: platform-gateway
-  namespace: envoy-gateway-system
+  namespace: platform
   labels:
     platform.io/managed-by: platform
 spec:
-  gatewayClassName: eg
+  gatewayClassName: platform
   listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRefs: []
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              platform.io/managed-by: platform
     - name: http
       protocol: HTTP
       port: 80
