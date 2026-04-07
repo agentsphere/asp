@@ -227,10 +227,39 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         mcp_servers_path: "mcp/servers".into(),
         max_artifact_file_bytes: 50 * 1024 * 1024,
         max_artifact_total_bytes: 500 * 1024 * 1024,
-        mesh_enabled: false,
+        mesh_enabled: std::env::var("PLATFORM_MESH_ENABLED")
+            .ok()
+            .is_some_and(|v| v == "true"),
         mesh_ca_cert_ttl_secs: 3600,
         mesh_ca_root_ttl_days: 365,
-        proxy_binary_path: None,
+        proxy_binary_path: std::env::var("PLATFORM_PROXY_PATH").ok(),
+        gateway_auto_deploy: std::env::var("PLATFORM_GATEWAY_AUTO_DEPLOY")
+            .ok()
+            .is_some_and(|v| v == "true"),
+        gateway_http_port: 8080,
+        gateway_tls_port: 8443,
+        gateway_http_node_port: std::env::var("PLATFORM_GATEWAY_HTTP_NODE_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+        gateway_tls_node_port: std::env::var("PLATFORM_GATEWAY_TLS_NODE_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+        gateway_watch_namespaces: std::env::var("PLATFORM_GATEWAY_WATCH_NAMESPACES")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        acme_enabled: false,
+        acme_directory_url: "https://acme-staging-v02.api.letsencrypt.org/directory".into(),
+        acme_contact_email: None,
+        registry_http_body_limit_bytes: 2 * 1024 * 1024 * 1024,
+        registry_max_blob_size_bytes: 5_368_709_120,
     };
 
     // Seed registry images from OCI tarballs (idempotent, uses file-based cache)

@@ -137,6 +137,17 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
         mesh_ca_cert_ttl_secs: 3600,
         mesh_ca_root_ttl_days: 365,
         proxy_binary_path: None,
+        gateway_auto_deploy: false,
+        gateway_http_port: 8080,
+        gateway_tls_port: 8443,
+        gateway_http_node_port: 0,
+        gateway_tls_node_port: 0,
+        gateway_watch_namespaces: vec![],
+        acme_enabled: false,
+        acme_directory_url: "https://acme-staging-v02.api.letsencrypt.org/directory".into(),
+        acme_contact_email: None,
+        registry_http_body_limit_bytes: 2 * 1024 * 1024 * 1024,
+        registry_max_blob_size_bytes: 5_368_709_120,
     };
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");

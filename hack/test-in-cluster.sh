@@ -200,6 +200,7 @@ export MINIO_SECRET_KEY="devdevdev"
 export MINIO_INSECURE=true  # S55: accept self-signed TLS cert in dev/test
 export REGISTRY_PROXY_BLOBS=true  # Stream blobs through platform (MinIO NodePort unreachable from pods)
 export PLATFORM_MASTER_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+export PLATFORM_MESH_ENABLED=true
 export PLATFORM_DEV=true
 export RUST_LOG="${RUST_LOG:-platform=debug}"
 export PLATFORM_NS_PREFIX="${NS_PREFIX}"
