@@ -158,6 +158,9 @@ PROXY_INIT_IMG_CHECKSUM=$(
   { shasum -a 256 "${PROJECT_DIR}/docker/Dockerfile.platform-proxy-init"
     if [[ -f "${PROXY_INIT_DIR}/amd64" ]]; then shasum -a 256 "${PROXY_INIT_DIR}/amd64"; fi
     if [[ -f "${PROXY_INIT_DIR}/arm64" ]]; then shasum -a 256 "${PROXY_INIT_DIR}/arm64"; fi
+    # Also include the proxy binary (baked into the init image)
+    if [[ -f "${PROXY_DIR}/amd64" ]]; then shasum -a 256 "${PROXY_DIR}/amd64"; fi
+    if [[ -f "${PROXY_DIR}/arm64" ]]; then shasum -a 256 "${PROXY_DIR}/arm64"; fi
   } | sort | shasum -a 256 | awk '{print $1}'
 )
 
@@ -167,10 +170,13 @@ if [[ "$FORCE" == "false" && -f "${PROXY_INIT_TAR}" && -f "${PROXY_INIT_IMG_CHEC
 else
   echo "    building OCI image..."
   PROXY_INIT_BUILD_CTX=$(mktemp -d)
-  # Copy both arch binaries into the build context
-  if [[ -f "${PROXY_INIT_DIR}/amd64" && -f "${PROXY_INIT_DIR}/arm64" ]]; then
+  # Copy both init + proxy binaries into the build context
+  if [[ -f "${PROXY_INIT_DIR}/amd64" && -f "${PROXY_INIT_DIR}/arm64" && \
+        -f "${PROXY_DIR}/amd64" && -f "${PROXY_DIR}/arm64" ]]; then
     cp "${PROXY_INIT_DIR}/amd64" "${PROXY_INIT_BUILD_CTX}/platform-proxy-init-amd64"
     cp "${PROXY_INIT_DIR}/arm64" "${PROXY_INIT_BUILD_CTX}/platform-proxy-init-arm64"
+    cp "${PROXY_DIR}/amd64" "${PROXY_INIT_BUILD_CTX}/platform-proxy-amd64"
+    cp "${PROXY_DIR}/arm64" "${PROXY_INIT_BUILD_CTX}/platform-proxy-arm64"
     docker buildx build \
       --builder platform-oci \
       --file "${PROJECT_DIR}/docker/Dockerfile.platform-proxy-init" \
@@ -178,7 +184,7 @@ else
       "${PROXY_INIT_BUILD_CTX}"
     echo "${PROXY_INIT_IMG_CHECKSUM}" > "${PROXY_INIT_IMG_CHECKSUM_FILE}"
   else
-    echo "    SKIP: proxy-init binaries not found"
+    echo "    SKIP: proxy-init or proxy binaries not found"
   fi
   rm -rf "${PROXY_INIT_BUILD_CTX}"
 fi

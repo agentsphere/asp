@@ -1,5 +1,5 @@
-# Distroless-like init container for transparent proxy iptables setup.
-# Contains only iptables (+ required libs) and the static Rust binary.
+# Combined init container: copies proxy binary + sets up iptables rules.
+# Contains iptables, the platform-proxy binary, and the Rust init binary.
 # Shell and package manager are removed to minimize attack surface.
 FROM alpine:3.21 AS base
 RUN apk add --no-cache iptables \
@@ -8,4 +8,5 @@ RUN apk add --no-cache iptables \
 
 ARG TARGETARCH=amd64
 COPY platform-proxy-init-${TARGETARCH} /platform-proxy-init
+COPY platform-proxy-${TARGETARCH} /platform-proxy
 ENTRYPOINT ["/platform-proxy-init"]

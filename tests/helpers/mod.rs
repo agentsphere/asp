@@ -230,7 +230,7 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         mesh_enabled: std::env::var("PLATFORM_MESH_ENABLED")
             .ok()
             .is_some_and(|v| v == "true"),
-        mesh_transparent: false,
+
         mesh_strict_mtls: false,
         mesh_ca_cert_ttl_secs: 3600,
         mesh_ca_root_ttl_days: 365,
