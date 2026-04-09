@@ -149,6 +149,23 @@ test-doc:
 test-integration filter="":
     bash {{test_script}} --filter '*_integration' {{ if filter != "" { "--expr 'test(" + filter + ")'" } else { "" } }}
 
+# Subsystem filter: integration tests that require real K8s operations (pods, namespaces, etc.)
+subsystem_filter := "binary(executor_integration) | binary(executor_deploy_test_integration) | binary(executor_coverage_integration) | binary(session_integration) | binary(registry_pull_integration) | binary(mesh_integration) | binary(gateway_controller_integration) | binary(deployment_integration)"
+
+# Core integration tests — excludes K8s-heavy subsystem tests for faster iteration
+# just test-core                       → all core integration tests (~87% of suite)
+# just test-core login                 → filter by test name
+[group('test')]
+test-core filter="":
+    bash {{test_script}} --filter '*_integration' --expr 'not ({{subsystem_filter}}){{ if filter != "" { " & test(" + filter + ")" } else { "" } }}'
+
+# Subsystem integration tests — only K8s-heavy tests (executor, deployer, mesh, gateway, registry pull)
+# just test-subsystem                  → all subsystem tests (~13% of suite)
+# just test-subsystem executor         → filter by test name
+[group('test')]
+test-subsystem filter="":
+    bash {{test_script}} --filter '*_integration' --threads 8 --expr '({{subsystem_filter}}){{ if filter != "" { " & test(" + filter + ")" } else { "" } }}'
+
 # Run a specific test binary
 # just test-bin auth_integration           → all tests in binary
 # just test-bin auth_integration login     → filter within binary

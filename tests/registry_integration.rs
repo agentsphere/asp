@@ -8,7 +8,9 @@ mod helpers;
 use axum::http::StatusCode;
 use sqlx::PgPool;
 
-use helpers::{assign_role, create_project, create_user, test_router, test_state};
+use helpers::{
+    assign_role, create_project, create_user, test_router, test_state_with_registry as test_state,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers for registry API calls

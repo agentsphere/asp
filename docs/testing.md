@@ -88,7 +88,7 @@ just test-doc           # cargo test --doc (doc examples)
 
 ## Integration Tests
 
-**Location**: `tests/*_integration.rs` (52 files).
+**Location**: `tests/*_integration.rs` (64 files).
 
 **What they cover**: Single API endpoint + all its side effects against real infrastructure. Each test targets one endpoint and verifies its complete behavior, including async side effects like background workers, K8s pod creation, mock CLI subprocess execution, webhook delivery, and reconciler runs.
 
@@ -98,8 +98,20 @@ just test-doc           # cargo test --doc (doc examples)
 
 **Run**:
 ```bash
-just test-integration   # ephemeral services in cluster, auto port-forward
+just test-integration   # all integration tests (ephemeral cluster services)
+just test-core          # core tests only — excludes K8s-heavy subsystem (~76% of suite)
+just test-subsystem     # subsystem tests only — executor, deployer, mesh, gateway, registry pull
 ```
+
+### Core vs Subsystem tiers
+
+Integration tests are split into two tiers for faster iteration:
+
+- **Core** (56 files, ~1,500 tests): Tests that don't create K8s resources (pods, namespaces, etc.). Covers auth, RBAC, projects, issues, MRs, git, webhooks, secrets, observe, notifications, pipelines (CRUD only), and more. Use `just test-core` during development for fast feedback.
+
+- **Subsystem** (8 files, ~476 tests): Tests that create real K8s resources — executor (pipeline pod execution), deployer (reconciler), mesh (CA bundles), gateway controller, session (agent pods), and registry pull (image pull from cluster). Use `just test-subsystem` when touching these subsystems.
+
+Both tiers deploy ephemeral services via `test-in-cluster.sh`. The split is purely by nextest filter expression — no code changes needed when adding new tests. New tests go into core by default unless they create K8s resources.
 
 ### How it works
 
@@ -130,11 +142,21 @@ No manual port-forwarding, database creation, or migration is needed — the scr
 # All integration tests (default)
 just test-integration
 
-# Custom parallelism
-bash hack/test-in-cluster.sh --filter '*_integration' --threads 8
+# Core only (faster iteration — excludes K8s-heavy subsystem)
+just test-core
+
+# Subsystem only (executor, deployer, mesh, gateway, registry pull)
+just test-subsystem
+
+# Filter within a tier
+just test-core login              # core tests matching "login"
+just test-subsystem executor      # subsystem tests matching "executor"
 
 # Single test file
-bash hack/test-in-cluster.sh --filter 'auth_integration'
+just test-bin auth_integration
+
+# Custom parallelism
+bash hack/test-in-cluster.sh --filter '*_integration' --threads 8
 ```
 
 ### Key pattern — `#[sqlx::test]`

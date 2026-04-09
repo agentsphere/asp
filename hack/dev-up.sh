@@ -115,6 +115,7 @@ PLATFORM_VALKEY_PASSWORD=dev
 
 # --- Namespace prefix (for per-project namespaces) ---
 PLATFORM_NS_PREFIX=${NS}
+PLATFORM_NAMESPACE=${NS}
 
 # --- Storage paths (worktree-scoped) ---
 PLATFORM_GIT_REPOS_PATH=/tmp/platform-e2e/${WORKTREE}/repos

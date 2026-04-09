@@ -1900,6 +1900,6 @@ export function DocsTab({ projectId, defaultBranch }: { projectId: string; defau
   );
 }
 
-/* ---- Observe Tab (re-exported from dedicated file) ---- */
+/* ---- Observe Tab (mock — visual reference on project pages) ---- */
 
-export { ObserveTab } from './ObserveTab';
+export { ObserveTabMock as ObserveTab } from './ObserveTabMock';

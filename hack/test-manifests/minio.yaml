@@ -56,6 +56,8 @@ spec:
           value: platform-minio
         - name: PROXY_HEALTH_PORT
           value: "15020"
+        - name: PROXY_APP_PORT
+          value: "9000"
       ports:
         - containerPort: 9000
         - containerPort: 15020

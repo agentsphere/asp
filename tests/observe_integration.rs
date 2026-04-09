@@ -872,14 +872,15 @@ async fn insert_session_span(pool: &PgPool, session_id: Uuid, span_name: &str) {
     .await
     .expect("insert trace");
 
-    // Insert span linked to trace
+    // Insert span linked to trace, with session_id denormalized
     sqlx::query(
-        "INSERT INTO spans (trace_id, span_id, name, service, kind, status, started_at)
-         VALUES ($1, $2, $3, 'agent-svc', 'server', 'ok', now())",
+        "INSERT INTO spans (trace_id, span_id, name, service, kind, status, started_at, session_id)
+         VALUES ($1, $2, $3, 'agent-svc', 'server', 'ok', now(), $4)",
     )
     .bind(&trace_id)
     .bind(&span_id)
     .bind(span_name)
+    .bind(session_id)
     .execute(pool)
     .await
     .expect("insert span");
@@ -953,6 +954,108 @@ async fn session_timeline_not_found(pool: PgPool) {
     .await;
 
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// Spans denormalization (PR 0)
+// ---------------------------------------------------------------------------
+
+/// write_spans stores project_id, session_id, and user_id on span rows.
+#[sqlx::test(migrations = "./migrations")]
+async fn spans_written_with_project_id(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_id = get_admin_user_id(&app, &admin_token).await;
+
+    let project_id = helpers::create_project(&app, &admin_token, "denorm-proj", "private").await;
+    let session_id = insert_session(&pool, project_id, admin_id).await;
+
+    let trace_id = format!("trace-{}", Uuid::new_v4());
+    let span_id = format!("span-{}", Uuid::new_v4());
+    let now = Utc::now();
+    let span = platform::observe::store::SpanRecord {
+        trace_id: trace_id.clone(),
+        span_id: span_id.clone(),
+        parent_span_id: None,
+        name: "denorm-test".into(),
+        service: "test-svc".into(),
+        kind: "server".into(),
+        status: "ok".into(),
+        attributes: None,
+        events: None,
+        duration_ms: Some(10),
+        started_at: now,
+        finished_at: Some(now + chrono::Duration::milliseconds(10)),
+        project_id: Some(project_id),
+        session_id: Some(session_id),
+        user_id: Some(admin_id),
+    };
+    platform::observe::store::write_spans(&pool, &[span])
+        .await
+        .expect("write_spans failed");
+
+    // Verify the columns are stored
+    let row = sqlx::query("SELECT project_id, session_id, user_id FROM spans WHERE span_id = $1")
+        .bind(&span_id)
+        .fetch_one(&pool)
+        .await
+        .expect("fetch span");
+
+    use sqlx::Row;
+    let stored_project: Option<Uuid> = row.get("project_id");
+    let stored_session: Option<Uuid> = row.get("session_id");
+    let stored_user: Option<Uuid> = row.get("user_id");
+    assert_eq!(stored_project, Some(project_id));
+    assert_eq!(stored_session, Some(session_id));
+    assert_eq!(stored_user, Some(admin_id));
+}
+
+/// Session timeline query returns spans via direct session_id filter (no join).
+#[sqlx::test(migrations = "./migrations")]
+async fn session_timeline_uses_span_session(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+    let admin_id = get_admin_user_id(&app, &admin_token).await;
+
+    let project_id =
+        helpers::create_project(&app, &admin_token, "timeline-direct", "private").await;
+    let session_id = insert_session(&pool, project_id, admin_id).await;
+
+    // Insert a span with session_id directly on the span (no trace.session_id needed)
+    let trace_id = format!("trace-{}", Uuid::new_v4());
+    let span_id = format!("span-{}", Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO traces (trace_id, root_span, service, status, started_at)
+         VALUES ($1, 'root-op', 'test-svc', 'ok', now())",
+    )
+    .bind(&trace_id)
+    .execute(&pool)
+    .await
+    .expect("insert trace");
+
+    sqlx::query(
+        "INSERT INTO spans (trace_id, span_id, name, service, kind, status, started_at, session_id)
+         VALUES ($1, $2, 'direct-span', 'test-svc', 'server', 'ok', now(), $3)",
+    )
+    .bind(&trace_id)
+    .bind(&span_id)
+    .bind(session_id)
+    .execute(&pool)
+    .await
+    .expect("insert span");
+
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        &format!("/api/observe/sessions/{session_id}/timeline"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "timeline query failed: {body}");
+    let entries = body.as_array().unwrap();
+    assert_eq!(entries.len(), 1, "expected 1 span: {body}");
+    assert_eq!(entries[0]["kind"], "span");
+    assert_eq!(entries[0]["message"], "direct-span");
 }
 
 // ---------------------------------------------------------------------------
@@ -2619,4 +2722,351 @@ async fn list_metric_names_project_scoped(pool: PgPool) {
             .any(|n| n["name"].as_str() == Some(&metric_name)),
         "project-scoped metric name should appear"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Aggregation endpoints (PR 2)
+// ---------------------------------------------------------------------------
+
+/// Helper: insert a span with full control over fields.
+async fn insert_span_full(
+    pool: &PgPool,
+    trace_id: &str,
+    span_id: &str,
+    service: &str,
+    kind: &str,
+    status: &str,
+    duration_ms: i32,
+    project_id: Option<Uuid>,
+) {
+    let now = Utc::now();
+    let span = platform::observe::store::SpanRecord {
+        trace_id: trace_id.into(),
+        span_id: span_id.into(),
+        parent_span_id: None,
+        name: "test-op".into(),
+        service: service.into(),
+        kind: kind.into(),
+        status: status.into(),
+        attributes: None,
+        events: None,
+        duration_ms: Some(duration_ms),
+        started_at: now,
+        finished_at: Some(now + chrono::Duration::milliseconds(i64::from(duration_ms))),
+        project_id,
+        session_id: None,
+        user_id: None,
+    };
+    platform::observe::store::write_spans(pool, &[span])
+        .await
+        .expect("write_spans failed");
+}
+
+/// Helper: insert a trace directly.
+async fn insert_trace(
+    pool: &PgPool,
+    trace_id: &str,
+    root_span: &str,
+    service: &str,
+    status: &str,
+    duration_ms: i32,
+    project_id: Option<Uuid>,
+) {
+    sqlx::query(
+        "INSERT INTO traces (trace_id, root_span, service, status, duration_ms, started_at, project_id)
+         VALUES ($1, $2, $3, $4, $5, now(), $6)",
+    )
+    .bind(trace_id)
+    .bind(root_span)
+    .bind(service)
+    .bind(status)
+    .bind(duration_ms)
+    .bind(project_id)
+    .execute(pool)
+    .await
+    .expect("insert trace");
+}
+
+/// Helper: insert a metric sample.
+async fn insert_metric(
+    pool: &PgPool,
+    name: &str,
+    service: &str,
+    value: f64,
+    project_id: Option<Uuid>,
+) {
+    let record = platform::observe::store::MetricRecord {
+        name: name.into(),
+        labels: serde_json::json!({"service": service}),
+        metric_type: "gauge".into(),
+        unit: None,
+        project_id,
+        timestamp: Utc::now(),
+        value,
+    };
+    platform::observe::store::write_metrics(pool, &[record])
+        .await
+        .expect("write_metrics failed");
+}
+
+// --- Topology tests ---
+
+#[sqlx::test(migrations = "./migrations")]
+async fn topology_happy_path(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let svc_a = format!("svc-a-{}", Uuid::new_v4().simple());
+    let svc_b = format!("svc-b-{}", Uuid::new_v4().simple());
+    let trace_id = format!("trace-{}", Uuid::new_v4());
+
+    // Client span from svc_a, server span in svc_b (same trace)
+    insert_span_full(
+        &pool,
+        &trace_id,
+        &format!("c-{}", Uuid::new_v4()),
+        &svc_a,
+        "client",
+        "ok",
+        50,
+        None,
+    )
+    .await;
+    insert_span_full(
+        &pool,
+        &trace_id,
+        &format!("s-{}", Uuid::new_v4()),
+        &svc_b,
+        "server",
+        "ok",
+        40,
+        None,
+    )
+    .await;
+
+    let (status, body) =
+        helpers::get_json(&app, &admin_token, "/api/observe/topology?range=1h").await;
+    assert_eq!(status, StatusCode::OK, "topology failed: {body}");
+
+    let edges = body["edges"].as_array().unwrap();
+    let matching = edges.iter().find(|e| {
+        e["from_service"].as_str() == Some(&svc_a) && e["to_service"].as_str() == Some(&svc_b)
+    });
+    assert!(
+        matching.is_some(),
+        "expected edge from {svc_a} -> {svc_b}: {body}"
+    );
+    assert!(body["services"].as_array().unwrap().len() >= 2);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn topology_empty(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let (status, body) =
+        helpers::get_json(&app, &admin_token, "/api/observe/topology?range=1h").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["edges"].as_array().unwrap().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn topology_requires_admin_global(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let (user_id, user_token) = create_user(&app, &admin_token, "topo-user", "topo@test.com").await;
+    let _ = user_id;
+
+    let (status, _) = helpers::get_json(&app, &user_token, "/api/observe/topology?range=1h").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+// --- Error breakdown tests ---
+
+#[sqlx::test(migrations = "./migrations")]
+async fn errors_happy_path(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let svc = format!("err-svc-{}", Uuid::new_v4().simple());
+    let trace_id = format!("trace-{}", Uuid::new_v4());
+
+    insert_span_full(
+        &pool,
+        &trace_id,
+        &format!("s-{}", Uuid::new_v4()),
+        &svc,
+        "server",
+        "error",
+        100,
+        None,
+    )
+    .await;
+
+    let (status, body) =
+        helpers::get_json(&app, &admin_token, "/api/observe/errors?range=1h").await;
+    assert_eq!(status, StatusCode::OK, "errors failed: {body}");
+
+    let groups = body.as_array().unwrap();
+    assert!(!groups.is_empty(), "expected error groups: {body}");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn errors_empty(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let (status, body) =
+        helpers::get_json(&app, &admin_token, "/api/observe/errors?range=1h").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.as_array().unwrap().is_empty());
+}
+
+// --- Trace aggregation tests ---
+
+#[sqlx::test(migrations = "./migrations")]
+async fn trace_agg_happy_path(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let svc = format!("agg-svc-{}", Uuid::new_v4().simple());
+    for i in 0..5 {
+        let tid = format!("trace-agg-{}-{}", Uuid::new_v4(), i);
+        let status = if i == 0 { "error" } else { "ok" };
+        insert_trace(&pool, &tid, "GET /api/test", &svc, status, 10 + i * 5, None).await;
+    }
+
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        "/api/observe/traces/aggregated?range=1h",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "trace agg failed: {body}");
+
+    let rows = body.as_array().unwrap();
+    let matching = rows
+        .iter()
+        .find(|r| r["name"].as_str() == Some("GET /api/test"));
+    assert!(matching.is_some(), "expected aggregated trace row: {body}");
+    let m = matching.unwrap();
+    assert_eq!(m["count"].as_i64().unwrap(), 5);
+    assert!(m["avg_duration_ms"].as_f64().unwrap() > 0.0);
+    assert!(m["error_rate"].as_f64().unwrap() > 0.0); // 1/5 = 20%
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn trace_agg_empty(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let (status, body) = helpers::get_json(
+        &app,
+        &admin_token,
+        "/api/observe/traces/aggregated?range=1h",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.as_array().unwrap().is_empty());
+}
+
+// --- Load timeline tests ---
+
+#[sqlx::test(migrations = "./migrations")]
+async fn load_happy_path(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let svc = format!("load-svc-{}", Uuid::new_v4().simple());
+    insert_metric(&pool, "http.server.request.count", &svc, 42.0, None).await;
+    insert_metric(&pool, "http.server.error.count", &svc, 2.0, None).await;
+
+    let (status, body) = helpers::get_json(&app, &admin_token, "/api/observe/load?range=1h").await;
+    assert_eq!(status, StatusCode::OK, "load failed: {body}");
+
+    // Should have at least one bucket with data
+    let points = body["points"].as_array().unwrap();
+    assert!(!points.is_empty(), "expected load points: {body}");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn load_empty(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let (status, body) = helpers::get_json(&app, &admin_token, "/api/observe/load?range=1h").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["points"].as_array().unwrap().is_empty());
+}
+
+// --- Component health tests ---
+
+#[sqlx::test(migrations = "./migrations")]
+async fn components_happy_path(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let svc = format!("comp-svc-{}", Uuid::new_v4().simple());
+    insert_metric(&pool, "k8s.deployment.replicas", &svc, 3.0, None).await;
+    insert_metric(&pool, "k8s.deployment.ready_replicas", &svc, 3.0, None).await;
+    insert_metric(&pool, "k8s.pod.ready", &svc, 1.0, None).await;
+    insert_metric(&pool, "process.cpu.utilization", &svc, 250.0, None).await;
+    insert_metric(&pool, "process.memory.rss", &svc, 536_870_912.0, None).await;
+
+    let (status, body) = helpers::get_json(&app, &admin_token, "/api/observe/components").await;
+    assert_eq!(status, StatusCode::OK, "components failed: {body}");
+
+    let components = body.as_array().unwrap();
+    let matching = components.iter().find(|c| c["name"].as_str() == Some(&svc));
+    assert!(matching.is_some(), "expected component {svc}: {body}");
+    let c = matching.unwrap();
+    assert_eq!(c["replicas"].as_i64().unwrap(), 3);
+    assert!(c["ready"].as_bool().unwrap());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn components_empty(pool: PgPool) {
+    let (state, admin_token) = test_state(pool).await;
+    let app = test_router(state);
+
+    let (status, body) = helpers::get_json(&app, &admin_token, "/api/observe/components").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.as_array().unwrap().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn components_admin_required(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let (_, user_token) = create_user(&app, &admin_token, "comp-user", "comp@test.com").await;
+
+    let (status, _) = helpers::get_json(&app, &user_token, "/api/observe/components").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+// --- Cross-cutting permission test ---
+
+#[sqlx::test(migrations = "./migrations")]
+async fn all_new_endpoints_require_permission(pool: PgPool) {
+    let (state, admin_token) = test_state(pool.clone()).await;
+    let app = test_router(state);
+
+    let (_, user_token) = create_user(&app, &admin_token, "perm-user", "perm@test.com").await;
+
+    for endpoint in &[
+        "/api/observe/topology?range=1h",
+        "/api/observe/errors?range=1h",
+        "/api/observe/traces/aggregated?range=1h",
+        "/api/observe/load?range=1h",
+        "/api/observe/components",
+    ] {
+        let (status, _) = helpers::get_json(&app, &user_token, endpoint).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "expected 403 for unprivileged user on {endpoint}"
+        );
+    }
 }

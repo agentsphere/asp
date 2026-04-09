@@ -14,6 +14,7 @@ import { IssueDetail } from './pages/IssueDetail';
 import { MRDetail } from './pages/MRDetail';
 import { PipelineDetail } from './pages/PipelineDetail';
 import { SessionDetail } from './pages/SessionDetail';
+import { Operations } from './pages/observe/Operations';
 import { Logs } from './pages/observe/Logs';
 import { Traces, TraceDetail } from './pages/observe/Traces';
 import { Metrics } from './pages/observe/Metrics';
@@ -94,6 +95,7 @@ function AppRouter() {
           <PipelineDetail path="/projects/:id/pipelines/:pipelineId" />
           <SessionDetail path="/projects/:id/sessions/:sessionId" />
           <Dashboard path="/projects/:id/:tab?" />
+          <Operations path="/observe" />
           <Logs path="/observe/logs" />
           <Traces path="/observe/traces" />
           <TraceDetail path="/observe/traces/:traceId" />

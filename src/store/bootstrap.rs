@@ -337,59 +337,99 @@ pub async fn run(
 }
 
 async fn seed_permissions(pool: &PgPool) -> anyhow::Result<()> {
-    for perm in SYSTEM_PERMISSIONS {
-        sqlx::query(
-            "INSERT INTO permissions (id, name, resource, action, description)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (name) DO NOTHING",
-        )
-        .bind(Uuid::new_v4())
-        .bind(perm.name)
-        .bind(perm.resource)
-        .bind(perm.action)
-        .bind(perm.description)
-        .execute(pool)
-        .await?;
+    // Batch all permissions into a single multi-row INSERT (1 round-trip instead of 23).
+    let mut values = Vec::with_capacity(SYSTEM_PERMISSIONS.len());
+    let mut params: Vec<String> = Vec::new();
+    for (i, perm) in SYSTEM_PERMISSIONS.iter().enumerate() {
+        let base = i * 4 + 1;
+        values.push(format!(
+            "(gen_random_uuid(), ${}, ${}, ${}, ${})",
+            base,
+            base + 1,
+            base + 2,
+            base + 3
+        ));
+        params.push(perm.name.to_string());
+        params.push(perm.resource.to_string());
+        params.push(perm.action.to_string());
+        params.push(perm.description.to_string());
     }
+    let sql = format!(
+        "INSERT INTO permissions (id, name, resource, action, description) VALUES {} ON CONFLICT (name) DO NOTHING",
+        values.join(", ")
+    );
+    let mut query = sqlx::query(&sql);
+    for p in &params {
+        query = query.bind(p);
+    }
+    query.execute(pool).await?;
 
     tracing::info!(count = SYSTEM_PERMISSIONS.len(), "permissions seeded");
     Ok(())
 }
 
 async fn seed_roles(pool: &PgPool) -> anyhow::Result<()> {
-    for role_def in SYSTEM_ROLES {
-        let role_id = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO roles (id, name, description, is_system)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (name) DO NOTHING",
-        )
-        .bind(role_id)
-        .bind(role_def.name)
-        .bind(role_def.description)
-        .bind(role_def.is_system)
-        .execute(pool)
-        .await?;
+    // Batch all roles into a single multi-row INSERT (1 round-trip instead of 11).
+    {
+        let mut value_placeholders = Vec::with_capacity(SYSTEM_ROLES.len());
+        for (i, _) in SYSTEM_ROLES.iter().enumerate() {
+            let base = i * 3 + 1; // 3 bound params per role (name, description, is_system)
+            value_placeholders.push(format!(
+                "(gen_random_uuid(), ${}, ${}, ${})",
+                base,
+                base + 1,
+                base + 2,
+            ));
+        }
+        let sql = format!(
+            "INSERT INTO roles (id, name, description, is_system) VALUES {} ON CONFLICT (name) DO NOTHING",
+            value_placeholders.join(", ")
+        );
+        let mut query = sqlx::query(&sql);
+        for role_def in SYSTEM_ROLES {
+            query = query
+                .bind(role_def.name)
+                .bind(role_def.description)
+                .bind(role_def.is_system);
+        }
+        query.execute(pool).await?;
+    }
 
-        // admin role gets ALL permissions
-        let perms: Vec<&str> = if role_def.name == "admin" {
-            SYSTEM_PERMISSIONS.iter().map(|p| p.name).collect()
-        } else {
-            role_def.permissions.to_vec()
-        };
+    // Batch all role-permission assignments into a single INSERT ... SELECT (1 round-trip instead of ~70).
+    // Build a VALUES list of (role_name, perm_name) pairs, then join against roles and permissions tables.
+    {
+        let mut pairs: Vec<(&str, &str)> = Vec::new();
+        for role_def in SYSTEM_ROLES {
+            let perms: Vec<&str> = if role_def.name == "admin" {
+                SYSTEM_PERMISSIONS.iter().map(|p| p.name).collect()
+            } else {
+                role_def.permissions.to_vec()
+            };
+            for perm_name in perms {
+                pairs.push((role_def.name, perm_name));
+            }
+        }
 
-        for perm_name in perms {
-            sqlx::query(
+        if !pairs.is_empty() {
+            let mut value_placeholders = Vec::with_capacity(pairs.len());
+            for (i, _) in pairs.iter().enumerate() {
+                let base = i * 2 + 1;
+                value_placeholders.push(format!("(${}, ${})", base, base + 1));
+            }
+            let sql = format!(
                 "INSERT INTO role_permissions (role_id, permission_id)
                  SELECT r.id, p.id
-                 FROM roles r, permissions p
-                 WHERE r.name = $1 AND p.name = $2
+                 FROM (VALUES {}) AS v(role_name, perm_name)
+                 JOIN roles r ON r.name = v.role_name
+                 JOIN permissions p ON p.name = v.perm_name
                  ON CONFLICT DO NOTHING",
-            )
-            .bind(role_def.name)
-            .bind(perm_name)
-            .execute(pool)
-            .await?;
+                value_placeholders.join(", ")
+            );
+            let mut query = sqlx::query(&sql);
+            for (role_name, perm_name) in &pairs {
+                query = query.bind(*role_name).bind(*perm_name);
+            }
+            query.execute(pool).await?;
         }
     }
 

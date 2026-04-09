@@ -298,12 +298,8 @@ pub async fn e2e_state_with_api_url(
         registry_max_blob_size_bytes: 5_368_709_120,
     };
 
-    // Seed registry images from OCI tarballs (idempotent, uses file-based cache)
-    if let Err(e) =
-        platform::registry::seed::seed_all(&pool, &minio, &config.seed_images_path).await
-    {
-        tracing::warn!(error = %e, "test registry seed failed (non-fatal)");
-    }
+    // Registry seed is opt-in — E2E tests that need seeded images should call
+    // platform::registry::seed::seed_all() explicitly.
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");
 

@@ -200,6 +200,8 @@ pub fn router() -> Router<AppState> {
         .route("/api/observe/logs", get(search_logs))
         .route("/api/observe/logs/tail", get(live_tail_sse))
         .route("/api/observe/traces", get(list_traces))
+        // Static path MUST come before parameterized {trace_id}
+        .route("/api/observe/traces/aggregated", get(get_trace_aggregation))
         .route("/api/observe/traces/{trace_id}", get(get_trace))
         .route("/api/observe/metrics", get(query_metrics))
         .route("/api/observe/metrics/query", get(query_metrics))
@@ -209,6 +211,10 @@ pub fn router() -> Router<AppState> {
             get(session_timeline),
         )
         .route("/api/projects/{project_id}/logs", get(project_logs))
+        .route("/api/observe/topology", get(get_topology))
+        .route("/api/observe/errors", get(get_error_breakdown))
+        .route("/api/observe/load", get(get_load_timeline))
+        .route("/api/observe/components", get(get_components))
 }
 
 // ---------------------------------------------------------------------------
@@ -769,8 +775,7 @@ async fn session_timeline(
         r"
         SELECT s.started_at as timestamp, s.service, s.name, s.trace_id, s.span_id
         FROM spans s
-        JOIN traces t ON t.trace_id = s.trace_id
-        WHERE t.session_id = $1
+        WHERE s.session_id = $1
         ORDER BY s.started_at ASC LIMIT 1000
         ",
     )
@@ -881,6 +886,509 @@ fn should_forward(text: &str, params: &LiveTailParams) -> bool {
     }
 
     true
+}
+
+// ---------------------------------------------------------------------------
+// Aggregation query types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct AggregateParams {
+    pub project_id: Option<Uuid>,
+    pub range: Option<String>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    pub limit: Option<i64>,
+    pub buckets: Option<i32>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct TopologyEdge {
+    pub from_service: String,
+    pub to_service: String,
+    pub call_count: i64,
+    pub error_count: i64,
+    pub p50_ms: f64,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct TopologyResponse {
+    pub edges: Vec<TopologyEdge>,
+    pub services: Vec<String>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct ErrorGroup {
+    pub error_type: String,
+    pub endpoint: String,
+    pub count: i64,
+    pub last_seen: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct TraceAggRow {
+    pub name: String,
+    pub count: i64,
+    pub avg_duration_ms: f64,
+    pub error_rate: f64,
+    pub p99_duration_ms: f64,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct LoadPoint {
+    pub ts: DateTime<Utc>,
+    pub rps: f64,
+    pub errors: f64,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct DeployMarker {
+    pub ts: DateTime<Utc>,
+    pub image: String,
+    pub env: String,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct LoadResponse {
+    pub points: Vec<LoadPoint>,
+    pub deploys: Vec<DeployMarker>,
+}
+
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct ComponentHealth {
+    pub name: String,
+    pub ready: bool,
+    pub replicas: i32,
+    pub ready_replicas: i32,
+    pub restarts: i32,
+    pub oom_kills: i32,
+    pub cpu_used_millicores: f64,
+    pub cpu_request: i64,
+    pub cpu_limit: i64,
+    pub mem_used_bytes: f64,
+    pub mem_request: i64,
+    pub mem_limit: i64,
+    pub avg_rps: f64,
+    pub cpu_history: Vec<f64>,
+    pub mem_history: Vec<f64>,
+    pub rps_history: Vec<f64>,
+}
+
+// ---------------------------------------------------------------------------
+// 1. Service Topology — GET /api/observe/topology
+// ---------------------------------------------------------------------------
+
+#[tracing::instrument(skip(state), err)]
+async fn get_topology(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Query(params): Query<AggregateParams>,
+) -> Result<Json<TopologyResponse>, ApiError> {
+    require_observe_read(&state, &auth, params.project_id).await?;
+
+    let from = resolve_range(params.from, params.range.as_deref())
+        .unwrap_or_else(|| Utc::now() - chrono::Duration::hours(1));
+
+    let edges = sqlx::query(
+        r"
+        WITH edges AS (
+            SELECT c.service AS from_service, s.service AS to_service,
+                s.status, s.duration_ms
+            FROM spans c
+            JOIN spans s ON c.trace_id = s.trace_id
+                AND s.kind = 'server' AND c.service != s.service
+            WHERE c.kind = 'client'
+              AND c.started_at >= $1
+              AND ($2::timestamptz IS NULL OR c.started_at <= $2)
+              AND c.project_id IS NOT DISTINCT FROM $3::uuid
+        )
+        SELECT from_service, to_service,
+            COUNT(*) AS call_count,
+            COUNT(*) FILTER (WHERE status = 'error') AS error_count,
+            COALESCE((PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms))::float8, 0) AS p50_ms
+        FROM edges GROUP BY from_service, to_service
+        ORDER BY call_count DESC LIMIT 100
+        ",
+    )
+    .bind(from)
+    .bind(params.to)
+    .bind(params.project_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let edge_list: Vec<TopologyEdge> = edges
+        .iter()
+        .map(|r| TopologyEdge {
+            from_service: r.get("from_service"),
+            to_service: r.get("to_service"),
+            call_count: r.get("call_count"),
+            error_count: r.get("error_count"),
+            p50_ms: r.get("p50_ms"),
+        })
+        .collect();
+
+    let svc_rows = sqlx::query(
+        r"
+        SELECT DISTINCT service FROM spans
+        WHERE started_at >= $1
+          AND ($2::timestamptz IS NULL OR started_at <= $2)
+          AND project_id IS NOT DISTINCT FROM $3::uuid
+        ORDER BY service
+        ",
+    )
+    .bind(from)
+    .bind(params.to)
+    .bind(params.project_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let services: Vec<String> = svc_rows.iter().map(|r| r.get("service")).collect();
+
+    Ok(Json(TopologyResponse {
+        edges: edge_list,
+        services,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// 2. Error Breakdown — GET /api/observe/errors
+// ---------------------------------------------------------------------------
+
+#[tracing::instrument(skip(state), err)]
+async fn get_error_breakdown(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Query(params): Query<AggregateParams>,
+) -> Result<Json<Vec<ErrorGroup>>, ApiError> {
+    require_observe_read(&state, &auth, params.project_id).await?;
+
+    let from = resolve_range(params.from, params.range.as_deref())
+        .unwrap_or_else(|| Utc::now() - chrono::Duration::hours(1));
+    let limit = params.limit.unwrap_or(50).min(100);
+
+    let rows = sqlx::query(
+        r"
+        SELECT
+            CASE
+                WHEN attributes->>'http.status_code' ~ '^\d+$'
+                     AND (attributes->>'http.status_code')::int >= 500
+                    THEN (attributes->>'http.status_code') || ' Server Error'
+                WHEN attributes->>'http.status_code' ~ '^\d+$'
+                     AND (attributes->>'http.status_code')::int >= 400
+                    THEN (attributes->>'http.status_code') || ' Client Error'
+                ELSE 'Error'
+            END AS error_type,
+            name AS endpoint,
+            COUNT(*) AS count,
+            MAX(started_at) AS last_seen
+        FROM spans
+        WHERE status = 'error' AND kind = 'server'
+          AND started_at >= $1
+          AND ($2::timestamptz IS NULL OR started_at <= $2)
+          AND project_id IS NOT DISTINCT FROM $3::uuid
+        GROUP BY error_type, endpoint
+        ORDER BY count DESC LIMIT $4
+        ",
+    )
+    .bind(from)
+    .bind(params.to)
+    .bind(params.project_id)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let groups: Vec<ErrorGroup> = rows
+        .iter()
+        .map(|r| ErrorGroup {
+            error_type: r.get("error_type"),
+            endpoint: r.get("endpoint"),
+            count: r.get("count"),
+            last_seen: r.get("last_seen"),
+        })
+        .collect();
+
+    Ok(Json(groups))
+}
+
+// ---------------------------------------------------------------------------
+// 3. Trace Aggregation — GET /api/observe/traces/aggregated
+// ---------------------------------------------------------------------------
+
+#[tracing::instrument(skip(state), err)]
+async fn get_trace_aggregation(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Query(params): Query<AggregateParams>,
+) -> Result<Json<Vec<TraceAggRow>>, ApiError> {
+    require_observe_read(&state, &auth, params.project_id).await?;
+
+    let from = resolve_range(params.from, params.range.as_deref())
+        .unwrap_or_else(|| Utc::now() - chrono::Duration::hours(1));
+    let limit = params.limit.unwrap_or(50).min(100);
+
+    let rows = sqlx::query(
+        r"
+        SELECT root_span AS name, COUNT(*) AS count,
+            COALESCE(AVG(duration_ms)::float8, 0) AS avg_duration_ms,
+            COALESCE((100.0 * COUNT(*) FILTER (WHERE status = 'error')
+                / NULLIF(COUNT(*), 0))::float8, 0) AS error_rate,
+            COALESCE((PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms))::float8, 0)
+                AS p99_duration_ms
+        FROM traces
+        WHERE started_at >= $1
+          AND ($2::timestamptz IS NULL OR started_at <= $2)
+          AND project_id IS NOT DISTINCT FROM $3::uuid
+        GROUP BY root_span ORDER BY count DESC LIMIT $4
+        ",
+    )
+    .bind(from)
+    .bind(params.to)
+    .bind(params.project_id)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let agg: Vec<TraceAggRow> = rows
+        .iter()
+        .map(|r| TraceAggRow {
+            name: r.get("name"),
+            count: r.get("count"),
+            avg_duration_ms: r.get("avg_duration_ms"),
+            error_rate: r.get("error_rate"),
+            p99_duration_ms: r.get("p99_duration_ms"),
+        })
+        .collect();
+
+    Ok(Json(agg))
+}
+
+// ---------------------------------------------------------------------------
+// 4. Request Load Timeline — GET /api/observe/load
+// ---------------------------------------------------------------------------
+
+#[tracing::instrument(skip(state), err)]
+async fn get_load_timeline(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Query(params): Query<AggregateParams>,
+) -> Result<Json<LoadResponse>, ApiError> {
+    require_observe_read(&state, &auth, params.project_id).await?;
+
+    let from = resolve_range(params.from, params.range.as_deref())
+        .unwrap_or_else(|| Utc::now() - chrono::Duration::hours(1));
+    let to = params.to.unwrap_or_else(Utc::now);
+    let buckets = params.buckets.unwrap_or(120).min(500);
+
+    let rows = sqlx::query(
+        r"
+        WITH bucketed AS (
+            SELECT width_bucket(
+                    EXTRACT(EPOCH FROM ms.timestamp),
+                    EXTRACT(EPOCH FROM $1::timestamptz),
+                    EXTRACT(EPOCH FROM $2::timestamptz), $3::int
+                ) AS bucket, ms.value, ser.name
+            FROM metric_samples ms
+            JOIN metric_series ser ON ser.id = ms.series_id
+            WHERE ser.name IN ('http.server.request.count', 'http.server.error.count')
+              AND ser.project_id IS NOT DISTINCT FROM $4::uuid
+              AND ms.timestamp >= $1 AND ms.timestamp <= $2
+        )
+        SELECT bucket,
+            COALESCE(SUM(value) FILTER (WHERE name = 'http.server.request.count'), 0) AS rps,
+            COALESCE(SUM(value) FILTER (WHERE name = 'http.server.error.count'), 0) AS errors
+        FROM bucketed WHERE bucket >= 1 AND bucket <= $3
+        GROUP BY bucket ORDER BY bucket
+        ",
+    )
+    .bind(from)
+    .bind(to)
+    .bind(buckets)
+    .bind(params.project_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    #[allow(clippy::cast_precision_loss)]
+    let bucket_width = (to - from).num_seconds() as f64 / f64::from(buckets);
+    let points: Vec<LoadPoint> = rows
+        .iter()
+        .map(|r| {
+            let bucket: i32 = r.get("bucket");
+            let offset_secs = (f64::from(bucket) - 0.5) * bucket_width;
+            #[allow(clippy::cast_possible_truncation)]
+            let ms = (offset_secs * 1000.0) as i64;
+            LoadPoint {
+                ts: from + chrono::Duration::milliseconds(ms),
+                rps: r.get("rps"),
+                errors: r.get("errors"),
+            }
+        })
+        .collect();
+
+    let deploy_rows = sqlx::query(
+        r"
+        SELECT dr.image_ref AS image, dt.environment AS env, dr.started_at AS ts
+        FROM deploy_releases dr
+        JOIN deploy_targets dt ON dt.id = dr.target_id
+        WHERE dr.project_id IS NOT DISTINCT FROM $1::uuid
+          AND dr.started_at >= $2 AND ($3::timestamptz IS NULL OR dr.started_at <= $3)
+        ORDER BY dr.started_at DESC LIMIT 50
+        ",
+    )
+    .bind(params.project_id)
+    .bind(from)
+    .bind(params.to)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let deploys: Vec<DeployMarker> = deploy_rows
+        .iter()
+        .map(|r| DeployMarker {
+            ts: r.get("ts"),
+            image: r.get("image"),
+            env: r.get("env"),
+        })
+        .collect();
+
+    Ok(Json(LoadResponse { points, deploys }))
+}
+
+// ---------------------------------------------------------------------------
+// 5. Component Health — GET /api/observe/components
+// ---------------------------------------------------------------------------
+
+/// Fetch sparkline history (last 20 samples per service+metric) for component health.
+async fn fetch_sparkline_history(
+    state: &AppState,
+    project_id: Option<Uuid>,
+) -> Result<std::collections::HashMap<(String, String), Vec<f64>>, ApiError> {
+    let history_rows = sqlx::query(
+        r"
+        SELECT ser.labels->>'service' AS service, ser.name, ms.value
+        FROM metric_samples ms
+        JOIN metric_series ser ON ser.id = ms.series_id
+        WHERE ser.name IN ('process.cpu.utilization', 'process.memory.rss', 'http.server.request.count')
+          AND ser.project_id IS NOT DISTINCT FROM $1::uuid
+          AND ms.timestamp >= NOW() - INTERVAL '10 minutes'
+        ORDER BY ms.timestamp DESC
+        ",
+    )
+    .bind(project_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut map: std::collections::HashMap<(String, String), Vec<f64>> =
+        std::collections::HashMap::new();
+    for hr in &history_rows {
+        let svc: String = hr.get("service");
+        let name: String = hr.get("name");
+        let val: f64 = hr.get("value");
+        let entry = map.entry((svc, name)).or_default();
+        if entry.len() < 20 {
+            entry.push(val);
+        }
+    }
+    Ok(map)
+}
+
+#[tracing::instrument(skip(state), err)]
+async fn get_components(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Query(params): Query<AggregateParams>,
+) -> Result<Json<Vec<ComponentHealth>>, ApiError> {
+    require_observe_read(&state, &auth, params.project_id).await?;
+
+    let rows = sqlx::query(
+        r"
+        WITH latest AS (
+            SELECT
+                ser.labels->>'service' AS service,
+                ser.name AS metric_name,
+                (SELECT ms.value FROM metric_samples ms
+                 WHERE ms.series_id = ser.id
+                 ORDER BY ms.timestamp DESC LIMIT 1) AS val
+            FROM metric_series ser
+            WHERE ser.project_id IS NOT DISTINCT FROM $1::uuid
+              AND ser.name IN (
+                  'k8s.deployment.replicas', 'k8s.deployment.ready_replicas',
+                  'k8s.pod.restarts', 'k8s.pod.oom_kills', 'k8s.pod.ready',
+                  'k8s.container.cpu.request', 'k8s.container.cpu.limit',
+                  'k8s.container.memory.request', 'k8s.container.memory.limit',
+                  'process.cpu.utilization', 'process.memory.rss',
+                  'http.server.request.count'
+              )
+        )
+        SELECT
+            service AS name,
+            COALESCE(MAX(val) FILTER (WHERE metric_name = 'k8s.pod.ready'), 0) > 0 AS ready,
+            COALESCE(MAX(val) FILTER (WHERE metric_name = 'k8s.deployment.replicas'), 0)::int AS replicas,
+            COALESCE(MAX(val) FILTER (WHERE metric_name = 'k8s.deployment.ready_replicas'), 0)::int AS ready_replicas,
+            COALESCE(SUM(val) FILTER (WHERE metric_name = 'k8s.pod.restarts'), 0)::int AS restarts,
+            COALESCE(SUM(val) FILTER (WHERE metric_name = 'k8s.pod.oom_kills'), 0)::int AS oom_kills,
+            COALESCE(AVG(val) FILTER (WHERE metric_name = 'process.cpu.utilization'), 0) AS cpu_used_millicores,
+            COALESCE(MAX(val) FILTER (WHERE metric_name = 'k8s.container.cpu.request'), 0)::bigint AS cpu_request,
+            COALESCE(MAX(val) FILTER (WHERE metric_name = 'k8s.container.cpu.limit'), 0)::bigint AS cpu_limit,
+            COALESCE(AVG(val) FILTER (WHERE metric_name = 'process.memory.rss'), 0) AS mem_used_bytes,
+            COALESCE(MAX(val) FILTER (WHERE metric_name = 'k8s.container.memory.request'), 0)::bigint AS mem_request,
+            COALESCE(MAX(val) FILTER (WHERE metric_name = 'k8s.container.memory.limit'), 0)::bigint AS mem_limit,
+            COALESCE(AVG(val) FILTER (WHERE metric_name = 'http.server.request.count'), 0) AS avg_rps
+        FROM latest
+        WHERE service IS NOT NULL
+        GROUP BY service
+        ",
+    )
+    .bind(params.project_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let history_map = fetch_sparkline_history(&state, params.project_id).await?;
+
+    let components: Vec<ComponentHealth> = rows
+        .iter()
+        .map(|r| {
+            let name: String = r.get("name");
+            let cpu_h = history_map
+                .get(&(name.clone(), "process.cpu.utilization".into()))
+                .cloned()
+                .unwrap_or_default();
+            let mem_h = history_map
+                .get(&(name.clone(), "process.memory.rss".into()))
+                .cloned()
+                .unwrap_or_default();
+            let rps_h = history_map
+                .get(&(name.clone(), "http.server.request.count".into()))
+                .cloned()
+                .unwrap_or_default();
+            ComponentHealth {
+                name,
+                ready: r.get("ready"),
+                replicas: r.get("replicas"),
+                ready_replicas: r.get("ready_replicas"),
+                restarts: r.get("restarts"),
+                oom_kills: r.get("oom_kills"),
+                cpu_used_millicores: r.get("cpu_used_millicores"),
+                cpu_request: r.get("cpu_request"),
+                cpu_limit: r.get("cpu_limit"),
+                mem_used_bytes: r.get("mem_used_bytes"),
+                mem_request: r.get("mem_request"),
+                mem_limit: r.get("mem_limit"),
+                avg_rps: r.get("avg_rps"),
+                cpu_history: cpu_h,
+                mem_history: mem_h,
+                rps_history: rps_h,
+            }
+        })
+        .collect();
+
+    Ok(Json(components))
 }
 
 #[cfg(test)]

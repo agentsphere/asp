@@ -34,8 +34,8 @@ use tokio::sync::{mpsc, watch};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use platform_proxy::proxy::{
-    child, config::ProxyConfig, gateway, health, inbound, logs, metrics, otlp, outbound, scraper,
-    tcp_proxy, tls, traces,
+    child, config::ProxyConfig, gateway, health, inbound, logs, metrics, otlp, outbound,
+    process_metrics, scraper, tcp_proxy, tls, traces,
 };
 
 /// Start mTLS bootstrap with retry in the background.
@@ -257,6 +257,7 @@ async fn init_gateway_and_run(args: Vec<String>) {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() {
     // Install rustls crypto provider
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -324,6 +325,14 @@ async fn main() {
     tokio::spawn(health::run_health_server(
         config.health_port,
         config.app_port,
+        shutdown_rx.clone(),
+    ));
+
+    // Start process metrics (cgroup CPU/MEM)
+    tokio::spawn(process_metrics::flush_process_metrics(
+        config.service_name.clone(),
+        metric_tx.clone(),
+        config.metrics_interval,
         shutdown_rx.clone(),
     ));
 

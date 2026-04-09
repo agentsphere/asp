@@ -7,6 +7,7 @@ pub mod logs;
 pub mod metrics;
 pub mod otlp;
 pub mod outbound;
+pub mod process_metrics;
 pub mod scraper;
 pub mod tcp_proxy;
 pub mod tls;

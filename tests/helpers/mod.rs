@@ -70,6 +70,25 @@ pub async fn test_state_with_cli(pool: PgPool, cli_spawn_enabled: bool) -> (AppS
     (state, token)
 }
 
+/// Build a test `AppState` with registry images pre-seeded from OCI tarballs.
+///
+/// Use this instead of `test_state()` for tests that depend on system images
+/// (e.g., `platform-runner`) being present in the registry.
+/// Most tests don't need this — only `registry_integration` and `registry_pull_integration`.
+pub async fn test_state_with_registry(pool: PgPool) -> (AppState, String) {
+    let (state, token) = test_state(pool).await;
+    if let Err(e) = platform::registry::seed::seed_all(
+        &state.pool,
+        &state.minio,
+        &state.config.seed_images_path,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "test registry seed failed (non-fatal)");
+    }
+    (state, token)
+}
+
 /// Build a test `AppState` and pre-authenticated admin API token.
 ///
 /// - Bootstraps permissions, roles, admin user (password = "testpassword")
@@ -268,12 +287,9 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         registry_max_blob_size_bytes: 5_368_709_120,
     };
 
-    // Seed registry images from OCI tarballs (idempotent, uses file-based cache)
-    if let Err(e) =
-        platform::registry::seed::seed_all(&pool, &minio, &config.seed_images_path).await
-    {
-        tracing::warn!(error = %e, "test registry seed failed (non-fatal)");
-    }
+    // Registry seed is opt-in — call test_state_with_registry() for tests that need
+    // seeded OCI images (registry_integration, registry_pull_integration).
+    // Skipping here saves 0.3-0.5s per test (6-10s on first-test cache miss).
 
     // Build WebAuthn
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");
@@ -650,7 +666,7 @@ pub async fn start_test_server(pool: PgPool) -> (AppState, String, ServerGuard) 
     socket.set_nonblocking(true).expect("set nonblocking");
     let listener =
         tokio::net::TcpListener::from_std(socket.into()).expect("convert to tokio listener");
-    let (state, token) = test_state(pool).await;
+    let (state, token) = test_state_with_registry(pool).await;
     let app = test_router(state.clone());
     let handle = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();

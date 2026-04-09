@@ -7,6 +7,7 @@ pub mod alert;
 pub mod correlation;
 pub mod error;
 pub mod ingest;
+pub mod k8s_watcher;
 pub mod parquet;
 pub mod proto;
 pub mod query;
@@ -94,7 +95,14 @@ pub fn spawn_background_tasks(
         });
     }
 
-    tokio::spawn(alert::evaluate_alerts_loop(state, shutdown_rx));
+    tokio::spawn(alert::evaluate_alerts_loop(
+        state.clone(),
+        shutdown_rx.clone(),
+    ));
+
+    // K8s watcher: stream pod/deployment state into metric_samples
+    let ns = state.config.platform_namespace.clone();
+    tokio::spawn(k8s_watcher::run(state, ns, shutdown_rx));
 
     channels
 }

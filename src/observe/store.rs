@@ -96,15 +96,20 @@ pub async fn write_spans(pool: &PgPool, spans: &[SpanRecord]) -> Result<(), Obse
     let durations: Vec<Option<i32>> = spans.iter().map(|s| s.duration_ms).collect();
     let started: Vec<DateTime<Utc>> = spans.iter().map(|s| s.started_at).collect();
     let finished: Vec<Option<DateTime<Utc>>> = spans.iter().map(|s| s.finished_at).collect();
+    let project_ids: Vec<Option<Uuid>> = spans.iter().map(|s| s.project_id).collect();
+    let session_ids: Vec<Option<Uuid>> = spans.iter().map(|s| s.session_id).collect();
+    let user_ids: Vec<Option<Uuid>> = spans.iter().map(|s| s.user_id).collect();
 
     sqlx::query(
         r"
         INSERT INTO spans (trace_id, span_id, parent_span_id, name, service, kind, status,
-                           attributes, events, duration_ms, started_at, finished_at)
+                           attributes, events, duration_ms, started_at, finished_at,
+                           project_id, session_id, user_id)
         SELECT * FROM UNNEST(
             $1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
             $6::text[], $7::text[], $8::jsonb[], $9::jsonb[], $10::int[],
-            $11::timestamptz[], $12::timestamptz[]
+            $11::timestamptz[], $12::timestamptz[],
+            $13::uuid[], $14::uuid[], $15::uuid[]
         )
         ON CONFLICT (span_id) DO NOTHING
         ",
@@ -121,6 +126,9 @@ pub async fn write_spans(pool: &PgPool, spans: &[SpanRecord]) -> Result<(), Obse
     .bind(&durations)
     .bind(&started)
     .bind(&finished)
+    .bind(&project_ids)
+    .bind(&session_ids)
+    .bind(&user_ids)
     .execute(pool)
     .await?;
 

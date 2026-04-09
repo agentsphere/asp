@@ -230,7 +230,7 @@ pub async fn rotate_spans(state: &AppState) -> Result<u64, ObserveError> {
     let rows = sqlx::query(
         r"
         SELECT id, trace_id, span_id, parent_span_id, name, service, kind, status,
-               attributes, duration_ms, started_at
+               attributes, duration_ms, started_at, project_id, session_id, user_id
         FROM spans
         WHERE started_at < $1
         ORDER BY started_at ASC
@@ -262,6 +262,9 @@ pub async fn rotate_spans(state: &AppState) -> Result<u64, ObserveError> {
             duration_ms: r.get("duration_ms"),
             started_at: r.get("started_at"),
             attributes: r.get("attributes"),
+            project_id: r.get("project_id"),
+            session_id: r.get("session_id"),
+            user_id: r.get("user_id"),
         })
         .collect();
 
@@ -304,6 +307,9 @@ fn span_schema() -> Arc<Schema> {
             false,
         ),
         Field::new("attributes", DataType::Utf8, true),
+        Field::new("project_id", DataType::Utf8, true),
+        Field::new("session_id", DataType::Utf8, true),
+        Field::new("user_id", DataType::Utf8, true),
     ]))
 }
 
@@ -318,6 +324,9 @@ struct SpanQueryRow {
     duration_ms: Option<i32>,
     started_at: chrono::DateTime<chrono::Utc>,
     attributes: Option<serde_json::Value>,
+    project_id: Option<uuid::Uuid>,
+    session_id: Option<uuid::Uuid>,
+    user_id: Option<uuid::Uuid>,
 }
 
 fn build_span_batch(rows: &[SpanQueryRow]) -> Result<RecordBatch, ObserveError> {
@@ -333,6 +342,10 @@ fn build_span_batch(rows: &[SpanQueryRow]) -> Result<RecordBatch, ObserveError> 
     let mut started_vec = Vec::with_capacity(len);
     let mut attrs: Vec<Option<String>> = Vec::with_capacity(len);
 
+    let mut proj_ids: Vec<Option<String>> = Vec::with_capacity(len);
+    let mut sess_ids: Vec<Option<String>> = Vec::with_capacity(len);
+    let mut usr_ids: Vec<Option<String>> = Vec::with_capacity(len);
+
     for row in rows {
         trace_ids.push(row.trace_id.clone());
         span_ids.push(row.span_id.clone());
@@ -344,6 +357,9 @@ fn build_span_batch(rows: &[SpanQueryRow]) -> Result<RecordBatch, ObserveError> 
         durations.push(row.duration_ms);
         started_vec.push(row.started_at.timestamp_micros());
         attrs.push(row.attributes.as_ref().map(ToString::to_string));
+        proj_ids.push(row.project_id.map(|u| u.to_string()));
+        sess_ids.push(row.session_id.map(|u| u.to_string()));
+        usr_ids.push(row.user_id.map(|u| u.to_string()));
     }
 
     let schema = span_schema();
@@ -358,6 +374,9 @@ fn build_span_batch(rows: &[SpanQueryRow]) -> Result<RecordBatch, ObserveError> 
         Arc::new(Int32Array::from(durations)),
         Arc::new(TimestampMicrosecondArray::from(started_vec).with_timezone("UTC")),
         Arc::new(StringArray::from(attrs)),
+        Arc::new(StringArray::from(proj_ids)),
+        Arc::new(StringArray::from(sess_ids)),
+        Arc::new(StringArray::from(usr_ids)),
     ];
 
     Ok(RecordBatch::try_new(schema, columns)?)
@@ -522,13 +541,16 @@ mod tests {
     }
 
     #[test]
-    fn span_schema_has_10_fields() {
+    fn span_schema_has_13_fields() {
         let schema = span_schema();
-        assert_eq!(schema.fields().len(), 10);
+        assert_eq!(schema.fields().len(), 13);
         assert_eq!(schema.field(0).name(), "trace_id");
         assert!(!schema.field(0).is_nullable());
         assert!(schema.field(2).is_nullable()); // parent_span_id
         assert!(schema.field(7).is_nullable()); // duration_ms
+        assert!(schema.field(10).is_nullable()); // project_id
+        assert!(schema.field(11).is_nullable()); // session_id
+        assert!(schema.field(12).is_nullable()); // user_id
     }
 
     #[test]
@@ -603,6 +625,9 @@ mod tests {
             duration_ms: Some(42),
             started_at: Utc::now(),
             attributes: Some(serde_json::json!({"http.status_code": 200})),
+            project_id: None,
+            session_id: None,
+            user_id: None,
         }
     }
 
@@ -610,7 +635,7 @@ mod tests {
     fn build_span_batch_single_row() {
         let batch = build_span_batch(&[sample_span_row()]).unwrap();
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 10);
+        assert_eq!(batch.num_columns(), 13);
     }
 
     #[test]
@@ -730,6 +755,9 @@ mod tests {
             duration_ms: None,
             started_at: Utc::now(),
             attributes: None,
+            project_id: None,
+            session_id: None,
+            user_id: None,
         };
         let batch = build_span_batch(&[row]).unwrap();
         assert_eq!(batch.num_rows(), 1);
@@ -772,7 +800,7 @@ mod tests {
     fn build_span_batch_empty_input() {
         let batch = build_span_batch(&[]).unwrap();
         assert_eq!(batch.num_rows(), 0);
-        assert_eq!(batch.num_columns(), 10);
+        assert_eq!(batch.num_columns(), 13);
     }
 
     #[test]
@@ -854,7 +882,10 @@ mod tests {
                 "status",
                 "duration_ms",
                 "started_at",
-                "attributes"
+                "attributes",
+                "project_id",
+                "session_id",
+                "user_id"
             ]
         );
     }
@@ -1035,6 +1066,9 @@ mod tests {
                 } else {
                     None
                 },
+                project_id: None,
+                session_id: None,
+                user_id: None,
             })
             .collect();
         let batch = build_span_batch(&rows).unwrap();

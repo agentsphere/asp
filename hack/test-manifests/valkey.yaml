@@ -35,6 +35,8 @@ spec:
           value: "redis://:dev@localhost:6379"
         - name: PROXY_HEALTH_PORT
           value: "15020"
+        - name: PROXY_APP_PORT
+          value: "6379"
       ports:
         - containerPort: 6379
         - containerPort: 15020

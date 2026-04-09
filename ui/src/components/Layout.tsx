@@ -43,6 +43,7 @@ const NAV: NavItem[] = [
 ];
 
 const OBSERVE_NAV: NavItem[] = [
+  { href: '/observe', label: 'Operations', icon: 'heart' },
   { href: '/observe/logs', label: 'Logs', icon: 'log' },
   { href: '/observe/traces', label: 'Traces', icon: 'trace' },
   { href: '/observe/metrics', label: 'Metrics', icon: 'chart' },
