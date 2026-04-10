@@ -22,27 +22,25 @@ use uuid::Uuid;
 
 /// RAII guard that spawns the pipeline executor and shuts it down on drop.
 struct ExecutorGuard {
-    shutdown_tx: tokio::sync::watch::Sender<()>,
+    cancel: tokio_util::sync::CancellationToken,
     #[allow(dead_code)]
     handle: tokio::task::JoinHandle<()>,
 }
 
 impl ExecutorGuard {
     fn spawn(state: &platform::store::AppState) -> Self {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let cancel = tokio_util::sync::CancellationToken::new();
         let executor_state = state.clone();
+        let token = cancel.clone();
         let handle = tokio::spawn(async move {
-            platform::pipeline::executor::run(executor_state, shutdown_rx).await;
+            platform::pipeline::executor::run(executor_state, token).await;
         });
-        Self {
-            shutdown_tx,
-            handle,
-        }
+        Self { cancel, handle }
     }
 
     #[allow(dead_code)]
     async fn shutdown(self) {
-        let _ = self.shutdown_tx.send(());
+        self.cancel.cancel();
         let _ = self.handle.await;
     }
 }
@@ -883,22 +881,22 @@ async fn demo_otel_ingest_and_query(pool: PgPool) {
     let (channels, spans_rx, logs_rx, metrics_rx) = platform::observe::ingest::create_channels();
     let app = e2e_helpers::observe_pipeline_test_router(state.clone(), channels);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     {
         let p = pool.clone();
-        let rx = shutdown_rx.clone();
-        tokio::spawn(platform::observe::ingest::flush_spans(p, spans_rx, rx));
+        let c = cancel.clone();
+        tokio::spawn(platform::observe::ingest::flush_spans(p, spans_rx, c));
     }
     {
         let p = pool.clone();
         let v = state.valkey.clone();
-        let rx = shutdown_rx.clone();
-        tokio::spawn(platform::observe::ingest::flush_logs(p, v, logs_rx, rx));
+        let c = cancel.clone();
+        tokio::spawn(platform::observe::ingest::flush_logs(p, v, logs_rx, c));
     }
     {
         let p = pool.clone();
-        let rx = shutdown_rx.clone();
-        tokio::spawn(platform::observe::ingest::flush_metrics(p, metrics_rx, rx));
+        let c = cancel.clone();
+        tokio::spawn(platform::observe::ingest::flush_metrics(p, metrics_rx, c));
     }
 
     let (project_id, _) = platform::onboarding::demo_project::create_demo_project(&state, admin_id)
@@ -1013,7 +1011,7 @@ async fn demo_otel_ingest_and_query(pool: PgPool) {
     );
 
     // Clean up flush tasks
-    let _ = shutdown_tx.send(());
+    cancel.cancel();
 }
 
 /// Test 9: Pipeline executor creates OTEL token for pipeline steps.
@@ -1066,82 +1064,76 @@ async fn demo_pipeline_otel_token_created(pool: PgPool) {
 
 /// RAII guard for the deployer reconciler background task.
 struct ReconcilerGuard {
-    shutdown_tx: tokio::sync::watch::Sender<()>,
+    cancel: tokio_util::sync::CancellationToken,
     #[allow(dead_code)]
     handle: tokio::task::JoinHandle<()>,
 }
 
 impl ReconcilerGuard {
     fn spawn(state: &platform::store::AppState) -> Self {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let cancel = tokio_util::sync::CancellationToken::new();
         let s = state.clone();
+        let token = cancel.clone();
         let handle = tokio::spawn(async move {
-            platform::deployer::reconciler::run(s, shutdown_rx).await;
+            platform::deployer::reconciler::run(s, token).await;
         });
-        Self {
-            shutdown_tx,
-            handle,
-        }
+        Self { cancel, handle }
     }
 }
 
 impl Drop for ReconcilerGuard {
     fn drop(&mut self) {
-        let _ = self.shutdown_tx.send(());
+        self.cancel.cancel();
     }
 }
 
 /// RAII guard for the eventbus subscriber background task.
 struct EventBusGuard {
-    shutdown_tx: tokio::sync::watch::Sender<()>,
+    cancel: tokio_util::sync::CancellationToken,
     #[allow(dead_code)]
     handle: tokio::task::JoinHandle<()>,
 }
 
 impl EventBusGuard {
     fn spawn(state: &platform::store::AppState) -> Self {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let cancel = tokio_util::sync::CancellationToken::new();
         let s = state.clone();
+        let token = cancel.clone();
         let handle = tokio::spawn(async move {
-            platform::store::eventbus::run(s, shutdown_rx).await;
+            platform::store::eventbus::run(s, token).await;
         });
-        Self {
-            shutdown_tx,
-            handle,
-        }
+        Self { cancel, handle }
     }
 }
 
 impl Drop for EventBusGuard {
     fn drop(&mut self) {
-        let _ = self.shutdown_tx.send(());
+        self.cancel.cancel();
     }
 }
 
 /// RAII guard for the canary analysis background task.
 struct AnalysisGuard {
-    shutdown_tx: tokio::sync::watch::Sender<()>,
+    cancel: tokio_util::sync::CancellationToken,
     #[allow(dead_code)]
     handle: tokio::task::JoinHandle<()>,
 }
 
 impl AnalysisGuard {
     fn spawn(state: &platform::store::AppState) -> Self {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let cancel = tokio_util::sync::CancellationToken::new();
         let s = state.clone();
+        let token = cancel.clone();
         let handle = tokio::spawn(async move {
-            platform::deployer::analysis::run(s, shutdown_rx).await;
+            platform::deployer::analysis::run(s, token).await;
         });
-        Self {
-            shutdown_tx,
-            handle,
-        }
+        Self { cancel, handle }
     }
 }
 
 impl Drop for AnalysisGuard {
     fn drop(&mut self) {
-        let _ = self.shutdown_tx.send(());
+        self.cancel.cancel();
     }
 }
 
@@ -1177,7 +1169,7 @@ async fn demo_full_lifecycle(pool: PgPool) {
     // TEST_LOG_FILE so logs are captured even when the test passes.
 
     // --- Setup: real TCP server + all background tasks ---
-    let (state, token, _server, shutdown_tx) =
+    let (state, token, _server, flush_cancel) =
         e2e_helpers::start_observe_pipeline_server(pool.clone()).await;
 
     let _executor = ExecutorGuard::spawn(&state);
@@ -2047,6 +2039,6 @@ async fn demo_full_lifecycle(pool: PgPool) {
     // ===================================================================
     // Cleanup
     // ===================================================================
-    let _ = shutdown_tx.send(());
+    flush_cancel.cancel();
     tracing::info!("demo_full_lifecycle test completed successfully");
 }

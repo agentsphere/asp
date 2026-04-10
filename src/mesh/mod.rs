@@ -23,7 +23,7 @@ use crate::store::AppState;
 ///
 /// Runs every 5 minutes to cover newly created namespaces. If the mesh CA is
 /// not enabled (`state.mesh_ca` is `None`), the task returns immediately.
-pub async fn sync_trust_bundles(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>) {
+pub async fn sync_trust_bundles(state: AppState, cancel: tokio_util::sync::CancellationToken) {
     let Some(ref mesh_ca) = state.mesh_ca else {
         return;
     };
@@ -61,7 +61,7 @@ pub async fn sync_trust_bundles(state: AppState, mut shutdown: tokio::sync::watc
                 .instrument(span)
                 .await;
             }
-            _ = shutdown.changed() => {
+            () = cancel.cancelled() => {
                 tracing::info!("mesh trust bundle sync shutting down");
                 break;
             }

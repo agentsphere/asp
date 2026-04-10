@@ -15,7 +15,6 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, DynamicObject, Patch, PatchParams, PostParams};
 use kube::discovery::ApiResource;
-use tokio::sync::watch;
 use tracing::Instrument;
 
 use crate::config::Config;
@@ -29,7 +28,7 @@ const SA_NAME: &str = "platform-gateway";
 const CLUSTER_ROLE_NAME: &str = "platform-gateway";
 
 /// Background task: ensure the platform gateway is running in the cluster.
-pub async fn reconcile_gateway(state: AppState, mut shutdown: watch::Receiver<()>) {
+pub async fn reconcile_gateway(state: AppState, cancel: tokio_util::sync::CancellationToken) {
     // Wait for registry seeding to complete before attempting deployment
     tokio::time::sleep(Duration::from_secs(10)).await;
 
@@ -58,7 +57,7 @@ pub async fn reconcile_gateway(state: AppState, mut shutdown: watch::Receiver<()
                 .instrument(span)
                 .await;
             }
-            _ = shutdown.changed() => {
+            () = cancel.cancelled() => {
                 tracing::info!("gateway reconciler shutting down");
                 break;
             }

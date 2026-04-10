@@ -7,7 +7,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use fred::interfaces::KeysInterface;
+use futures_util::StreamExt;
 use serde::Deserialize;
+use sha2::Digest as Sha2Digest;
 use uuid::Uuid;
 
 use super::auth::{OptionalRegistryUser, RegistryUser};
@@ -88,13 +90,16 @@ pub async fn get_blob(
     if state.config.registry_proxy_blobs {
         // Stream blob through the platform — needed when MinIO is not directly
         // reachable from clients (e.g. kaniko pods in Kind clusters).
-        let data = state.minio.read(&blob.minio_path).await?;
+        // Uses streaming from MinIO to avoid loading entire blob into memory.
+        let reader = state.minio.reader(&blob.minio_path).await?;
+        let stream = reader.into_bytes_stream(..).await?;
+        let body = axum::body::Body::from_stream(stream);
         headers.insert("content-length", HeaderValue::from(blob.size_bytes));
         headers.insert(
             "content-type",
             HeaderValue::from_static("application/octet-stream"),
         );
-        Ok((StatusCode::OK, headers, data.to_vec()).into_response())
+        Ok((StatusCode::OK, headers, body).into_response())
     } else {
         // A21: presigned URL redirect (default — avoids loading blobs into memory)
         let presigned = state
@@ -175,7 +180,7 @@ pub async fn upload_chunk(
     State(state): State<AppState>,
     user: RegistryUser,
     Path((name, upload_id)): Path<(String, String)>,
-    body: axum::body::Bytes,
+    body: axum::body::Body,
 ) -> Result<Response, RegistryError> {
     let _access = resolve_repo_with_access(&state, &user, &name, true).await?;
 
@@ -198,13 +203,19 @@ pub async fn upload_chunk(
         return Err(RegistryError::BlobUploadUnknown);
     }
 
-    let chunk_data = body.to_vec();
-    let chunk_size = i64::try_from(chunk_data.len())
-        .map_err(|e| RegistryError::Internal(anyhow::anyhow!("chunk size overflow: {e}")))?;
-
-    // Write chunk to MinIO
+    // Stream body to MinIO — constant memory usage regardless of chunk size
     let part_path = format!("registry/uploads/{upload_uuid}/part-{}", session.part_count);
-    state.minio.write(&part_path, chunk_data).await?;
+    let mut writer = state.minio.writer(&part_path).await?;
+
+    let mut chunk_size: i64 = 0;
+    let mut body_stream = body.into_data_stream();
+    while let Some(frame) = body_stream.next().await {
+        let frame = frame.map_err(|e| RegistryError::Internal(e.into()))?;
+        chunk_size += i64::try_from(frame.len())
+            .map_err(|e| RegistryError::Internal(anyhow::anyhow!("chunk size overflow: {e}")))?;
+        writer.write(frame).await?;
+    }
+    writer.close().await?;
 
     session.offset += chunk_size;
     session.part_count += 1;
@@ -284,33 +295,53 @@ pub async fn complete_upload(
         .parse()
         .map_err(|e: uuid::Error| RegistryError::Internal(e.into()))?;
 
-    // Collect all data: existing parts + final body
-    let mut full_data = Vec::new();
+    // Stream all parts + final body through incremental SHA-256 into final MinIO path.
+    // Peak memory is one read chunk (~few MB), not the entire blob.
+    let minio_path = expected_digest.minio_path();
+    let mut writer = state
+        .minio
+        .writer_with(&minio_path)
+        .chunk(5 * 1024 * 1024)
+        .concurrent(4)
+        .await?;
+
+    let mut hasher = sha2::Sha256::new();
+    let mut total_size: i64 = 0;
+
+    // Stream existing parts through hasher into final blob
     for i in 0..session.part_count {
         let part_path = format!("registry/uploads/{upload_uuid}/part-{i}");
-        let part = state.minio.read(&part_path).await?.to_vec();
-        full_data.extend_from_slice(&part);
+        let part_data = state.minio.read(&part_path).await?;
+        let bytes = part_data.to_bytes();
+        hasher.update(&bytes);
+        total_size += i64::try_from(bytes.len()).unwrap_or(0);
+        writer.write(bytes).await?;
     }
 
-    // Append final chunk if non-empty
+    // Stream final chunk through hasher into final blob
     if !body.is_empty() {
-        full_data.extend_from_slice(&body);
+        hasher.update(&body);
+        total_size += i64::try_from(body.len()).unwrap_or(0);
+        writer.write(body).await?;
     }
+
+    writer.close().await?;
 
     // Verify digest
-    let actual_digest = sha256_digest(&full_data);
+    let actual_hash = hex::encode(hasher.finalize());
+    let actual_digest = Digest {
+        algorithm: "sha256".into(),
+        hex: actual_hash,
+    };
     if actual_digest != expected_digest {
+        // Delete the incorrectly-written blob
+        let _ = state.minio.delete(&minio_path).await;
         return Err(RegistryError::DigestInvalid(format!(
             "expected {expected_digest}, got {actual_digest}"
         )));
     }
 
-    let size_bytes = i64::try_from(full_data.len())
-        .map_err(|e| RegistryError::Internal(anyhow::anyhow!("data size overflow: {e}")))?;
-
-    // Write to final path in MinIO
-    let minio_path = expected_digest.minio_path();
-    state.minio.write(&minio_path, full_data).await?;
+    let size_bytes = total_size;
 
     // Insert blob (ON CONFLICT: blob already exists, that's fine — content-addressable)
     sqlx::query!(
@@ -385,7 +416,7 @@ pub async fn upload_chunk_ns(
     state: State<AppState>,
     user: RegistryUser,
     Path((ns, repo, uuid)): Path<(String, String, String)>,
-    body: axum::body::Bytes,
+    body: axum::body::Body,
 ) -> Result<Response, RegistryError> {
     upload_chunk(state, user, Path((format!("{ns}/{repo}"), uuid)), body).await
 }

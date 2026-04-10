@@ -26,10 +26,11 @@ async fn health_run_populates_snapshot_with_all_subsystems(pool: PgPool) {
     let mut state = state;
     state.config = Arc::new(config);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let run_state = state.clone();
+    let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        platform::health::checks::run(run_state, shutdown_rx).await;
+        platform::health::checks::run(run_state, cancel_clone).await;
     });
 
     // Wait for at least one tick to complete
@@ -100,7 +101,7 @@ async fn health_run_populates_snapshot_with_all_subsystems(pool: PgPool) {
     assert!(age.num_seconds() < 10, "snapshot too old: {age}");
 
     // Shutdown the loop
-    let _ = shutdown_tx.send(());
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -118,15 +119,16 @@ async fn health_run_shutdown_signal_stops_loop(pool: PgPool) {
     let mut state = state;
     state.config = Arc::new(config);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
 
     let run_state = state.clone();
+    let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        platform::health::checks::run(run_state, shutdown_rx).await;
+        platform::health::checks::run(run_state, cancel_clone).await;
     });
 
     // Immediately send shutdown
-    let _ = shutdown_tx.send(());
+    cancel.cancel();
 
     // The task should complete without panic within a reasonable time
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
@@ -208,10 +210,11 @@ async fn health_query_pod_failures_empty_db(pool: PgPool) {
     let mut state = state;
     state.config = Arc::new(config);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let run_state = state.clone();
+    let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        platform::health::checks::run(run_state, shutdown_rx).await;
+        platform::health::checks::run(run_state, cancel_clone).await;
     });
 
     // Wait for at least one tick
@@ -225,7 +228,7 @@ async fn health_query_pod_failures_empty_db(pool: PgPool) {
     assert_eq!(snapshot.pod_failures.pipeline_failures, 0);
     assert!(snapshot.pod_failures.recent_failures.is_empty());
 
-    let _ = shutdown_tx.send(());
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -297,10 +300,11 @@ async fn health_query_pod_failures_with_data(pool: PgPool) {
     let mut state = state;
     state.config = Arc::new(config);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let run_state = state.clone();
+    let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        platform::health::checks::run(run_state, shutdown_rx).await;
+        platform::health::checks::run(run_state, cancel_clone).await;
     });
 
     // Wait for a tick
@@ -345,7 +349,7 @@ async fn health_query_pod_failures_with_data(pool: PgPool) {
         "recent failures should contain 'pipeline', got {kinds:?}"
     );
 
-    let _ = shutdown_tx.send(());
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -363,10 +367,11 @@ async fn health_check_minio_healthy(pool: PgPool) {
     let mut state = state;
     state.config = Arc::new(config);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let run_state = state.clone();
+    let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        platform::health::checks::run(run_state, shutdown_rx).await;
+        platform::health::checks::run(run_state, cancel_clone).await;
     });
 
     // Wait for a tick
@@ -389,7 +394,7 @@ async fn health_check_minio_healthy(pool: PgPool) {
     // Latency should be reasonable
     assert!(minio.latency_ms < 2000, "minio latency too high");
 
-    let _ = shutdown_tx.send(());
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -417,10 +422,11 @@ async fn health_run_publishes_to_valkey(pool: PgPool) {
     let mut msg_rx = subscriber.message_rx();
 
     // Start the health loop
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let run_state = state.clone();
+    let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        platform::health::checks::run(run_state, shutdown_rx).await;
+        platform::health::checks::run(run_state, cancel_clone).await;
     });
 
     // Wait for a message (with timeout)
@@ -454,7 +460,7 @@ async fn health_run_publishes_to_valkey(pool: PgPool) {
 
     // Cleanup
     let _ = subscriber.unsubscribe("health:stream").await;
-    let _ = shutdown_tx.send(());
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -587,10 +593,11 @@ async fn health_snapshot_includes_background_tasks(pool: PgPool) {
     let mut state = state;
     state.config = Arc::new(config);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let run_state = state.clone();
+    let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        platform::health::checks::run(run_state, shutdown_rx).await;
+        platform::health::checks::run(run_state, cancel_clone).await;
     });
 
     // Wait for a tick
@@ -608,6 +615,6 @@ async fn health_snapshot_includes_background_tasks(pool: PgPool) {
         snapshot.background_tasks
     );
 
-    let _ = shutdown_tx.send(());
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }

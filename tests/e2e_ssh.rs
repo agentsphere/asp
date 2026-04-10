@@ -61,7 +61,7 @@ async fn setup_ssh_e2e(
     u16,
     std::path::PathBuf,
     Vec<tempfile::TempDir>,
-    tokio::sync::watch::Sender<()>,
+    tokio_util::sync::CancellationToken,
 ) {
     let (state, admin_token) = e2e_helpers::e2e_state(pool).await;
     let app = e2e_helpers::test_router(state.clone());
@@ -143,14 +143,14 @@ async fn setup_ssh_e2e(
     config.ssh_host_key_path = host_key_path.to_str().unwrap().to_string();
     ssh_state.config = std::sync::Arc::new(config);
 
-    // Create shutdown channel
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
+    // Create cancellation token
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let cancel_clone = cancel.clone();
 
     // Spawn the SSH server
     tokio::spawn(async move {
         if let Err(e) =
-            platform::git::ssh_server::run_with_listener(ssh_state, listener, &mut shutdown_rx)
-                .await
+            platform::git::ssh_server::run_with_listener(ssh_state, listener, &cancel_clone).await
         {
             eprintln!("SSH server error: {e}");
         }
@@ -177,7 +177,7 @@ async fn setup_ssh_e2e(
         ssh_port,
         key_path,
         dirs,
-        shutdown_tx,
+        cancel,
     )
 }
 

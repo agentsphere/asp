@@ -296,6 +296,11 @@ pub async fn e2e_state_with_api_url(
         acme_contact_email: None,
         registry_http_body_limit_bytes: 2 * 1024 * 1024 * 1024,
         registry_max_blob_size_bytes: 5_368_709_120,
+        db_max_connections: 5,
+        db_acquire_timeout_secs: 10,
+        valkey_pool_size: 2,
+        git_http_timeout_secs: 600,
+        request_timeout_secs: 300,
     };
 
     // Registry seed is opt-in — E2E tests that need seeded images should call
@@ -956,15 +961,15 @@ pub fn observe_pipeline_test_router(
 /// deployed pods to send telemetry.
 ///
 /// Spawns flush tasks for traces/logs/metrics so ingested data reaches the DB.
-/// Returns `(state, token, server_handle, shutdown_tx)`.
-/// Send to `shutdown_tx` to stop the flush tasks cleanly.
+/// Returns `(state, token, server_handle, cancel)`.
+/// Call `cancel.cancel()` to stop the flush tasks cleanly.
 pub async fn start_observe_pipeline_server(
     pool: PgPool,
 ) -> (
     AppState,
     String,
     tokio::task::JoinHandle<()>,
-    tokio::sync::watch::Sender<()>,
+    tokio_util::sync::CancellationToken,
 ) {
     // Bind to the port the test script allocated (PLATFORM_LISTEN_PORT).
     // This keeps registry_url, DaemonSet proxy, and API URL all consistent.
@@ -985,29 +990,29 @@ pub async fn start_observe_pipeline_server(
     let app = observe_pipeline_test_router(state.clone(), channels);
 
     // Spawn flush tasks so ingested OTLP data reaches the DB
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     {
         let p = pool.clone();
-        let rx = shutdown_rx.clone();
-        tokio::spawn(platform::observe::ingest::flush_spans(p, spans_rx, rx));
+        let c = cancel.clone();
+        tokio::spawn(platform::observe::ingest::flush_spans(p, spans_rx, c));
     }
     {
         let p = pool.clone();
         let v = state.valkey.clone();
-        let rx = shutdown_rx.clone();
-        tokio::spawn(platform::observe::ingest::flush_logs(p, v, logs_rx, rx));
+        let c = cancel.clone();
+        tokio::spawn(platform::observe::ingest::flush_logs(p, v, logs_rx, c));
     }
     {
         let p = pool.clone();
-        let rx = shutdown_rx.clone();
-        tokio::spawn(platform::observe::ingest::flush_metrics(p, metrics_rx, rx));
+        let c = cancel.clone();
+        tokio::spawn(platform::observe::ingest::flush_metrics(p, metrics_rx, c));
     }
 
     let handle = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
 
-    (state, token, handle, shutdown_tx)
+    (state, token, handle, cancel)
 }
 
 /// Extract JSON body from a response.

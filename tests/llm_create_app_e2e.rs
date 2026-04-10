@@ -35,19 +35,20 @@ use uuid::Uuid;
 
 /// RAII guard that spawns the pipeline executor and shuts it down on drop.
 struct ExecutorGuard {
-    shutdown_tx: tokio::sync::watch::Sender<()>,
+    cancel: tokio_util::sync::CancellationToken,
     _handle: tokio::task::JoinHandle<()>,
 }
 
 impl ExecutorGuard {
     fn spawn(state: &platform::store::AppState) -> Self {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let cancel = tokio_util::sync::CancellationToken::new();
         let s = state.clone();
+        let token = cancel.clone();
         let handle = tokio::spawn(async move {
-            platform::pipeline::executor::run(s, shutdown_rx).await;
+            platform::pipeline::executor::run(s, token).await;
         });
         Self {
-            shutdown_tx,
+            cancel,
             _handle: handle,
         }
     }
@@ -55,25 +56,26 @@ impl ExecutorGuard {
 
 impl Drop for ExecutorGuard {
     fn drop(&mut self) {
-        let _ = self.shutdown_tx.send(());
+        self.cancel.cancel();
     }
 }
 
 /// RAII guard that spawns the deployer reconciler.
 struct ReconcilerGuard {
-    shutdown_tx: tokio::sync::watch::Sender<()>,
+    cancel: tokio_util::sync::CancellationToken,
     _handle: tokio::task::JoinHandle<()>,
 }
 
 impl ReconcilerGuard {
     fn spawn(state: &platform::store::AppState) -> Self {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let cancel = tokio_util::sync::CancellationToken::new();
         let s = state.clone();
+        let token = cancel.clone();
         let handle = tokio::spawn(async move {
-            platform::deployer::reconciler::run(s, shutdown_rx).await;
+            platform::deployer::reconciler::run(s, token).await;
         });
         Self {
-            shutdown_tx,
+            cancel,
             _handle: handle,
         }
     }
@@ -81,25 +83,26 @@ impl ReconcilerGuard {
 
 impl Drop for ReconcilerGuard {
     fn drop(&mut self) {
-        let _ = self.shutdown_tx.send(());
+        self.cancel.cancel();
     }
 }
 
 /// RAII guard that spawns the event bus subscriber (Valkey pub/sub → deployment creation).
 struct EventBusGuard {
-    shutdown_tx: tokio::sync::watch::Sender<()>,
+    cancel: tokio_util::sync::CancellationToken,
     _handle: tokio::task::JoinHandle<()>,
 }
 
 impl EventBusGuard {
     fn spawn(state: &platform::store::AppState) -> Self {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let cancel = tokio_util::sync::CancellationToken::new();
         let s = state.clone();
+        let token = cancel.clone();
         let handle = tokio::spawn(async move {
-            platform::store::eventbus::run(s, shutdown_rx).await;
+            platform::store::eventbus::run(s, token).await;
         });
         Self {
-            shutdown_tx,
+            cancel,
             _handle: handle,
         }
     }
@@ -107,25 +110,26 @@ impl EventBusGuard {
 
 impl Drop for EventBusGuard {
     fn drop(&mut self) {
-        let _ = self.shutdown_tx.send(());
+        self.cancel.cancel();
     }
 }
 
 /// RAII guard that spawns the agent session reaper.
 struct ReaperGuard {
-    shutdown_tx: tokio::sync::watch::Sender<()>,
+    cancel: tokio_util::sync::CancellationToken,
     _handle: tokio::task::JoinHandle<()>,
 }
 
 impl ReaperGuard {
     fn spawn(state: &platform::store::AppState) -> Self {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let cancel = tokio_util::sync::CancellationToken::new();
         let s = state.clone();
+        let token = cancel.clone();
         let handle = tokio::spawn(async move {
-            platform::agent::service::run_reaper(s, shutdown_rx).await;
+            platform::agent::service::run_reaper(s, token).await;
         });
         Self {
-            shutdown_tx,
+            cancel,
             _handle: handle,
         }
     }
@@ -133,7 +137,7 @@ impl ReaperGuard {
 
 impl Drop for ReaperGuard {
     fn drop(&mut self) {
-        let _ = self.shutdown_tx.send(());
+        self.cancel.cancel();
     }
 }
 

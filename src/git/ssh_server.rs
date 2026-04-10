@@ -591,10 +591,10 @@ async fn generate_host_key(key_path: &Path) -> Result<(), anyhow::Error> {
 // ---------------------------------------------------------------------------
 
 /// Run the SSH git server. Spawned as a background task from `main.rs`.
-#[tracing::instrument(skip(state, shutdown), err)]
+#[tracing::instrument(skip(state, cancel), err)]
 pub async fn run(
     state: AppState,
-    mut shutdown: tokio::sync::watch::Receiver<()>,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(), anyhow::Error> {
     let listen_addr = match &state.config.ssh_listen {
         Some(addr) => addr.clone(),
@@ -604,7 +604,7 @@ pub async fn run(
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     tracing::info!(addr = %listen_addr, "SSH server listening");
 
-    run_with_listener(state, listener, &mut shutdown).await
+    run_with_listener(state, listener, &cancel).await
 }
 
 /// Run the SSH server on a pre-bound listener. Returns when shutdown is signalled.
@@ -614,7 +614,7 @@ pub async fn run(
 pub async fn run_with_listener(
     state: AppState,
     listener: tokio::net::TcpListener,
-    shutdown: &mut tokio::sync::watch::Receiver<()>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), anyhow::Error> {
     let key_pair = load_or_generate_host_key(&state.config.ssh_host_key_path).await?;
 
@@ -649,7 +649,7 @@ pub async fn run_with_listener(
                     }
                 }
             }
-            _ = shutdown.changed() => {
+            () = cancel.cancelled() => {
                 tracing::info!("SSH server shutting down");
                 break;
             }

@@ -21,13 +21,13 @@ use super::error::ObserveError;
 // ---------------------------------------------------------------------------
 
 /// Background task: rotate old data to Parquet every 15 minutes.
-pub async fn rotation_loop(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>) {
+pub async fn rotation_loop(state: AppState, cancel: tokio_util::sync::CancellationToken) {
     tracing::info!("parquet rotation started");
     state.task_registry.register("parquet_rotation", 1800);
 
     loop {
         tokio::select! {
-            _ = shutdown.changed() => {
+            () = cancel.cancelled() => {
                 tracing::info!("parquet rotation shutting down");
                 break;
             }

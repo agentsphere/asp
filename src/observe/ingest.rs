@@ -561,15 +561,18 @@ fn events_to_json(events: &[proto::SpanEvent]) -> Option<serde_json::Value> {
 pub async fn flush_spans(
     pool: sqlx::PgPool,
     mut rx: mpsc::Receiver<SpanRecord>,
-    mut shutdown: tokio::sync::watch::Receiver<()>,
+    cancel: tokio_util::sync::CancellationToken,
 ) {
     let mut buffer = Vec::with_capacity(128);
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
 
     loop {
         tokio::select! {
-            _ = shutdown.changed() => {
-                drain_spans(&pool, &mut rx, &mut buffer).await;
+            () = cancel.cancelled() => {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    drain_spans(&pool, &mut rx, &mut buffer),
+                ).await;
                 break;
             }
             _ = interval.tick() => {
@@ -603,15 +606,18 @@ pub async fn flush_logs(
     pool: sqlx::PgPool,
     valkey: fred::clients::Pool,
     mut rx: mpsc::Receiver<LogEntryRecord>,
-    mut shutdown: tokio::sync::watch::Receiver<()>,
+    cancel: tokio_util::sync::CancellationToken,
 ) {
     let mut buffer = Vec::with_capacity(128);
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
 
     loop {
         tokio::select! {
-            _ = shutdown.changed() => {
-                drain_and_publish_logs(&pool, &valkey, &mut rx, &mut buffer).await;
+            () = cancel.cancelled() => {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    drain_and_publish_logs(&pool, &valkey, &mut rx, &mut buffer),
+                ).await;
                 break;
             }
             _ = interval.tick() => {
@@ -665,15 +671,18 @@ async fn drain_and_publish_logs(
 pub async fn flush_metrics(
     pool: sqlx::PgPool,
     mut rx: mpsc::Receiver<MetricRecord>,
-    mut shutdown: tokio::sync::watch::Receiver<()>,
+    cancel: tokio_util::sync::CancellationToken,
 ) {
     let mut buffer = Vec::with_capacity(128);
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
 
     loop {
         tokio::select! {
-            _ = shutdown.changed() => {
-                drain_metrics(&pool, &mut rx, &mut buffer).await;
+            () = cancel.cancelled() => {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    drain_metrics(&pool, &mut rx, &mut buffer),
+                ).await;
                 break;
             }
             _ = interval.tick() => {

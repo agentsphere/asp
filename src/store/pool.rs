@@ -7,11 +7,16 @@ use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 
 #[tracing::instrument(skip(url), err)]
-pub async fn connect(url: &str) -> anyhow::Result<PgPool> {
+pub async fn connect(
+    url: &str,
+    max_connections: u32,
+    acquire_timeout_secs: u64,
+) -> anyhow::Result<PgPool> {
     let pool = PgPoolOptions::new()
-        .max_connections(20)
-        .acquire_timeout(Duration::from_secs(10))
+        .max_connections(max_connections)
+        .acquire_timeout(Duration::from_secs(acquire_timeout_secs))
         .idle_timeout(Duration::from_secs(300))
+        .max_lifetime(Duration::from_secs(1800)) // 30 min — recycle stale conns
         .connect(url)
         .await?;
 

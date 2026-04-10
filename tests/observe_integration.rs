@@ -2414,8 +2414,10 @@ async fn rotate_metrics_no_old_data(pool: PgPool) {
 async fn spawn_background_tasks_and_shutdown(pool: PgPool) {
     let (state, _admin_token) = test_state(pool.clone()).await;
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
-    let channels = platform::observe::spawn_background_tasks(state.clone(), shutdown_rx);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let tracker = tokio_util::task::TaskTracker::new();
+    let channels =
+        platform::observe::spawn_background_tasks(state.clone(), cancel.clone(), &tracker);
 
     // Verify channels are functional by sending a span
     let span = platform::observe::store::SpanRecord {
@@ -2438,7 +2440,7 @@ async fn spawn_background_tasks_and_shutdown(pool: PgPool) {
     channels.spans_tx.send(span).await.unwrap();
 
     // Signal shutdown — all tasks should drain and exit
-    shutdown_tx.send(()).unwrap();
+    cancel.cancel();
 
     // Wait for flush to complete
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;

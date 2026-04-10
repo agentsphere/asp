@@ -29,7 +29,7 @@ pub const REGISTRY_PULL_SECRET_NAME: &str = "platform-registry-pull";
 // ---------------------------------------------------------------------------
 
 /// Background task that polls for pending releases and reconciles them.
-pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>) {
+pub async fn run(state: AppState, cancel: tokio_util::sync::CancellationToken) {
     tracing::info!("deployer reconciler started");
 
     let mut interval = tokio::time::interval(Duration::from_secs(10));
@@ -37,7 +37,7 @@ pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>
 
     loop {
         tokio::select! {
-            _ = shutdown.changed() => {
+            () = cancel.cancelled() => {
                 tracing::info!("deployer reconciler shutting down");
                 break;
             }
@@ -79,6 +79,8 @@ pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>
 }
 
 /// Find releases needing reconciliation and spawn tasks for each.
+///
+/// Uses `FOR UPDATE OF r SKIP LOCKED` so multiple replicas don't race on the same rows.
 async fn reconcile(state: &AppState) -> Result<(), DeployerError> {
     let pending = sqlx::query(
         "SELECT r.id, r.target_id, r.project_id, r.image_ref, r.commit_sha,
@@ -92,7 +94,8 @@ async fn reconcile(state: &AppState) -> Result<(), DeployerError> {
          JOIN projects p ON p.id = r.project_id AND p.is_active = true
          WHERE r.phase IN ('pending','progressing','holding','promoting','rolling_back')
          ORDER BY r.created_at ASC
-         LIMIT 10",
+         LIMIT 10
+         FOR UPDATE OF r SKIP LOCKED",
     )
     .fetch_all(&state.pool)
     .await?;

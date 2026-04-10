@@ -18,7 +18,7 @@ const PARTITIONED_TABLES: &[&str] = &["spans", "log_entries", "metric_samples"];
 const MONTHS_AHEAD: u32 = 3;
 
 /// Run the partition manager loop until shutdown.
-pub async fn run(pool: PgPool, mut shutdown_rx: tokio::sync::watch::Receiver<()>) {
+pub async fn run(pool: PgPool, cancel: tokio_util::sync::CancellationToken) {
     // Run once immediately at startup, then daily.
     let mut interval = tokio::time::interval(Duration::from_secs(86_400));
     loop {
@@ -28,7 +28,7 @@ pub async fn run(pool: PgPool, mut shutdown_rx: tokio::sync::watch::Receiver<()>
                     tracing::warn!(error = %e, "partition management failed");
                 }
             }
-            _ = shutdown_rx.changed() => break,
+            () = cancel.cancelled() => break,
         }
     }
 }

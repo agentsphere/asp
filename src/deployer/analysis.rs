@@ -16,14 +16,14 @@ use crate::store::AppState;
 use super::types::{AnalysisVerdict, MetricGate};
 
 /// Background task: evaluate metrics for progressing/holding releases.
-pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>) {
+pub async fn run(state: AppState, cancel: tokio_util::sync::CancellationToken) {
     tracing::info!("analysis loop started");
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
     state.task_registry.register("analysis_loop", 30);
 
     loop {
         tokio::select! {
-            _ = shutdown.changed() => {
+            () = cancel.cancelled() => {
                 tracing::info!("analysis loop shutting down");
                 break;
             }

@@ -22,11 +22,7 @@ use crate::store::AppState;
 /// Background task: stream K8s events into in-memory reflector stores,
 /// flush state as gauge metrics to `metric_samples` every 30s.
 #[tracing::instrument(skip_all, fields(namespace = %namespace))]
-pub async fn run(
-    state: AppState,
-    namespace: String,
-    mut shutdown: tokio::sync::watch::Receiver<()>,
-) {
+pub async fn run(state: AppState, namespace: String, cancel: tokio_util::sync::CancellationToken) {
     let pods_api: Api<Pod> = Api::namespaced(state.kube.clone(), &namespace);
     let deps_api: Api<Deployment> = Api::namespaced(state.kube.clone(), &namespace);
 
@@ -63,7 +59,7 @@ pub async fn run(
                     tracing::warn!(error = %e, "k8s metric flush failed");
                 }
             }
-            _ = shutdown.changed() => break,
+            () = cancel.cancelled() => break,
         }
     }
 }

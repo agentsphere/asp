@@ -283,7 +283,7 @@ async fn query_pod_failures(pool: &sqlx::PgPool) -> PodFailureSummary {
 
 /// Background task that periodically checks all subsystems and updates the
 /// shared health snapshot.
-pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>) {
+pub async fn run(state: AppState, cancel: tokio_util::sync::CancellationToken) {
     tracing::info!("health check loop started");
     let start_time = Instant::now();
     let interval_secs = state.config.health_check_interval_secs;
@@ -291,7 +291,7 @@ pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>
 
     loop {
         tokio::select! {
-            _ = shutdown.changed() => {
+            () = cancel.cancelled() => {
                 tracing::info!("health check loop shutting down");
                 break;
             }

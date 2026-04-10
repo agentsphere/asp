@@ -46,27 +46,25 @@ async fn setup_deploy_project(
 
 /// RAII guard that spawns the deployer reconciler and shuts it down on drop.
 struct ReconcilerGuard {
-    shutdown_tx: tokio::sync::watch::Sender<()>,
+    cancel: tokio_util::sync::CancellationToken,
     #[allow(dead_code)]
     handle: tokio::task::JoinHandle<()>,
 }
 
 impl ReconcilerGuard {
     fn spawn(state: &platform::store::AppState) -> Self {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let cancel = tokio_util::sync::CancellationToken::new();
         let reconciler_state = state.clone();
+        let token = cancel.clone();
         let handle = tokio::spawn(async move {
-            platform::deployer::reconciler::run(reconciler_state, shutdown_rx).await;
+            platform::deployer::reconciler::run(reconciler_state, token).await;
         });
-        Self {
-            shutdown_tx,
-            handle,
-        }
+        Self { cancel, handle }
     }
 
     #[allow(dead_code)]
     async fn shutdown(self) {
-        let _ = self.shutdown_tx.send(());
+        self.cancel.cancel();
         let _ = self.handle.await;
     }
 }
@@ -329,10 +327,11 @@ async fn preview_expired_cleanup(pool: PgPool) {
     .unwrap();
 
     // Spawn the reconciler (which handles preview TTL cleanup)
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let recon_state = state.clone();
+    let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        platform::deployer::reconciler::run(recon_state, shutdown_rx).await;
+        platform::deployer::reconciler::run(recon_state, cancel_clone).await;
     });
 
     // Poll until the reconciler deactivates the expired preview (runs every 10s)
@@ -353,7 +352,7 @@ async fn preview_expired_cleanup(pool: PgPool) {
     }
 
     // Shut down reconciler
-    let _ = shutdown_tx.send(());
+    cancel.cancel();
     let _ = handle.await;
 
     if let Some(active) = is_active {

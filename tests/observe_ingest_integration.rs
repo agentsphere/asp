@@ -229,15 +229,15 @@ async fn ingest_traces_protobuf(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     // Manually flush by spawning a short-lived flush
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let flush_cancel = tokio_util::sync::CancellationToken::new();
     let flush_pool = pool.clone();
     let handle = tokio::spawn(platform::observe::ingest::flush_spans(
         flush_pool,
         spans_rx,
-        shutdown_rx,
+        flush_cancel.clone(),
     ));
     // Signal shutdown — the flush task drains remaining items before exiting
-    let _ = shutdown_tx.send(());
+    flush_cancel.cancel();
     let _ = handle.await;
 
     // Verify via query
@@ -267,15 +267,15 @@ async fn ingest_logs_protobuf(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     // Flush
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let flush_cancel = tokio_util::sync::CancellationToken::new();
     let handle = tokio::spawn(platform::observe::ingest::flush_logs(
         pool.clone(),
         state.valkey.clone(),
         logs_rx,
-        shutdown_rx,
+        flush_cancel.clone(),
     ));
     // Signal shutdown — the flush task drains remaining items before exiting
-    let _ = shutdown_tx.send(());
+    flush_cancel.cancel();
     let _ = handle.await;
 
     // Query
@@ -305,14 +305,14 @@ async fn ingest_metrics_protobuf(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     // Flush
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let flush_cancel = tokio_util::sync::CancellationToken::new();
     let handle = tokio::spawn(platform::observe::ingest::flush_metrics(
         pool.clone(),
         metrics_rx,
-        shutdown_rx,
+        flush_cancel.clone(),
     ));
     // Signal shutdown — the flush task drains remaining items before exiting
-    let _ = shutdown_tx.send(());
+    flush_cancel.cancel();
     let _ = handle.await;
 
     // Query
@@ -373,16 +373,16 @@ async fn flush_shutdown_drains_remaining(pool: PgPool) {
     drop(tx); // Close sender
 
     // Start flush with immediate shutdown
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let flush_cancel = tokio_util::sync::CancellationToken::new();
     let flush_pool = pool.clone();
     let handle = tokio::spawn(platform::observe::ingest::flush_spans(
         flush_pool,
         rx,
-        shutdown_rx,
+        flush_cancel.clone(),
     ));
 
     // Signal shutdown — the flush task drains remaining items before exiting
-    let _ = shutdown_tx.send(());
+    flush_cancel.cancel();
     let _ = handle.await;
 
     // Verify the span was written
@@ -768,13 +768,13 @@ async fn ingest_sum_monotonic_metric(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     // Flush
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let flush_cancel = tokio_util::sync::CancellationToken::new();
     let handle = tokio::spawn(platform::observe::ingest::flush_metrics(
         pool.clone(),
         metrics_rx,
-        shutdown_rx,
+        flush_cancel.clone(),
     ));
-    let _ = shutdown_tx.send(());
+    flush_cancel.cancel();
     let _ = handle.await;
 
     // Query
@@ -837,13 +837,13 @@ async fn ingest_sum_non_monotonic_metric(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     // Flush
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let flush_cancel = tokio_util::sync::CancellationToken::new();
     let handle = tokio::spawn(platform::observe::ingest::flush_metrics(
         pool.clone(),
         metrics_rx,
-        shutdown_rx,
+        flush_cancel.clone(),
     ));
-    let _ = shutdown_tx.send(());
+    flush_cancel.cancel();
     let _ = handle.await;
 
     let (status, body) = helpers::get_json(
@@ -903,13 +903,13 @@ async fn ingest_histogram_metric(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     // Flush
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let flush_cancel = tokio_util::sync::CancellationToken::new();
     let handle = tokio::spawn(platform::observe::ingest::flush_metrics(
         pool.clone(),
         metrics_rx,
-        shutdown_rx,
+        flush_cancel.clone(),
     ));
-    let _ = shutdown_tx.send(());
+    flush_cancel.cancel();
     let _ = handle.await;
 
     let (status, body) = helpers::get_json(
@@ -996,14 +996,14 @@ async fn ingest_logs_with_integer_body(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     // Flush
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let flush_cancel = tokio_util::sync::CancellationToken::new();
     let handle = tokio::spawn(platform::observe::ingest::flush_logs(
         pool.clone(),
         state.valkey.clone(),
         logs_rx,
-        shutdown_rx,
+        flush_cancel.clone(),
     ));
-    let _ = shutdown_tx.send(());
+    flush_cancel.cancel();
     let _ = handle.await;
 
     let (status, body) =
@@ -1050,14 +1050,14 @@ async fn ingest_logs_with_zero_timestamp(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     // Flush
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let flush_cancel = tokio_util::sync::CancellationToken::new();
     let handle = tokio::spawn(platform::observe::ingest::flush_logs(
         pool.clone(),
         state.valkey.clone(),
         logs_rx,
-        shutdown_rx,
+        flush_cancel.clone(),
     ));
-    let _ = shutdown_tx.send(());
+    flush_cancel.cancel();
     let _ = handle.await;
 
     let (status, body) =
@@ -1103,14 +1103,14 @@ async fn ingest_logs_with_no_body(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     // Flush
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let flush_cancel = tokio_util::sync::CancellationToken::new();
     let handle = tokio::spawn(platform::observe::ingest::flush_logs(
         pool.clone(),
         state.valkey.clone(),
         logs_rx,
-        shutdown_rx,
+        flush_cancel.clone(),
     ));
-    let _ = shutdown_tx.send(());
+    flush_cancel.cancel();
     let _ = handle.await;
 
     let (status, body) =
@@ -1183,13 +1183,13 @@ async fn ingest_trace_with_parent_span(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     // Flush
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let flush_cancel = tokio_util::sync::CancellationToken::new();
     let handle = tokio::spawn(platform::observe::ingest::flush_spans(
         pool.clone(),
         spans_rx,
-        shutdown_rx,
+        flush_cancel.clone(),
     ));
-    let _ = shutdown_tx.send(());
+    flush_cancel.cancel();
     let _ = handle.await;
 
     // Verify spans were written
@@ -1219,14 +1219,14 @@ async fn flush_logs_publishes_to_valkey(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     // Flush — this should publish to Valkey channel `logs:{project_id}`
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let flush_cancel = tokio_util::sync::CancellationToken::new();
     let handle = tokio::spawn(platform::observe::ingest::flush_logs(
         pool.clone(),
         state.valkey.clone(),
         logs_rx,
-        shutdown_rx,
+        flush_cancel.clone(),
     ));
-    let _ = shutdown_tx.send(());
+    flush_cancel.cancel();
     let _ = handle.await;
 
     // Verify the log was written to DB at minimum

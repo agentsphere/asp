@@ -27,7 +27,7 @@ use super::error::PipelineError;
 // ---------------------------------------------------------------------------
 
 /// Background task that polls for pending pipelines and executes them.
-pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>) {
+pub async fn run(state: AppState, cancel: tokio_util::sync::CancellationToken) {
     tracing::info!("pipeline executor started");
 
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -36,7 +36,7 @@ pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>
 
     loop {
         tokio::select! {
-            _ = shutdown.changed() => {
+            () = cancel.cancelled() => {
                 tracing::info!("pipeline executor shutting down");
                 break;
             }
@@ -79,20 +79,28 @@ pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>
     }
 }
 
-/// Find pending pipelines and spawn execution tasks.
+/// Find pending pipelines, atomically claim them, and spawn execution tasks.
+///
+/// Uses `FOR UPDATE SKIP LOCKED` so multiple replicas don't race on the same rows.
 async fn poll_pending(state: &AppState) -> Result<(), PipelineError> {
-    let pending = sqlx::query_scalar!(
+    let claimed = sqlx::query_scalar!(
         r#"
-        SELECT id FROM pipelines
-        WHERE status = 'pending'
-        ORDER BY created_at ASC
-        LIMIT 5
+        UPDATE pipelines
+        SET status = 'running', started_at = now()
+        WHERE id IN (
+            SELECT id FROM pipelines
+            WHERE status = 'pending'
+            ORDER BY created_at ASC
+            LIMIT 5
+            FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id
         "#,
     )
     .fetch_all(&state.pool)
     .await?;
 
-    for pipeline_id in pending {
+    for pipeline_id in claimed {
         let state = state.clone();
         tokio::spawn(async move {
             if let Err(e) = execute_pipeline(&state, pipeline_id).await {
@@ -110,31 +118,18 @@ async fn poll_pending(state: &AppState) -> Result<(), PipelineError> {
 // ---------------------------------------------------------------------------
 
 /// Execute a single pipeline: run each step as a K8s pod sequentially.
+///
+/// The pipeline has already been claimed (status set to 'running') by `poll_pending()`.
 #[allow(clippy::too_many_lines)]
 #[tracing::instrument(skip(state), fields(%pipeline_id), err)]
 async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), PipelineError> {
-    // Claim the pipeline by setting status to running (validated via PipelineStatus state machine)
-    let from = PipelineStatus::Pending;
-    let to = PipelineStatus::Running;
-    debug_assert!(from.can_transition_to(to));
-
-    let claimed = sqlx::query_scalar!(
-        r#"
-        UPDATE pipelines SET status = $2, started_at = now()
-        WHERE id = $1 AND status = $3
-        RETURNING project_id
-        "#,
+    // Pipeline already claimed by poll_pending() — just fetch the project_id.
+    let project_id = sqlx::query_scalar!(
+        r#"SELECT project_id FROM pipelines WHERE id = $1"#,
         pipeline_id,
-        to.as_str(),
-        from.as_str(),
     )
-    .fetch_optional(&state.pool)
+    .fetch_one(&state.pool)
     .await?;
-
-    let Some(project_id) = claimed else {
-        tracing::debug!(%pipeline_id, "pipeline already claimed or not in pending state");
-        return Ok(());
-    };
 
     // Load pipeline metadata
     let pipeline = sqlx::query!(

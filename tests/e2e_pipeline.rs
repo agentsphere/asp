@@ -27,22 +27,20 @@ pipeline:
 /// RAII guard that spawns the pipeline executor and shuts it down on drop.
 struct ExecutorGuard {
     #[allow(dead_code)]
-    shutdown_tx: tokio::sync::watch::Sender<()>,
+    cancel: tokio_util::sync::CancellationToken,
     #[allow(dead_code)]
     handle: tokio::task::JoinHandle<()>,
 }
 
 impl ExecutorGuard {
     fn spawn(state: &platform::store::AppState) -> Self {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let cancel = tokio_util::sync::CancellationToken::new();
         let executor_state = state.clone();
+        let token = cancel.clone();
         let handle = tokio::spawn(async move {
-            platform::pipeline::executor::run(executor_state, shutdown_rx).await;
+            platform::pipeline::executor::run(executor_state, token).await;
         });
-        Self {
-            shutdown_tx,
-            handle,
-        }
+        Self { cancel, handle }
     }
 }
 

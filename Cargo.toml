@@ -23,7 +23,7 @@ tower-http = { version = "0.6", features = ["cors", "compression-gzip", "trace",
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-tokio-util = { version = "0.7", features = ["io", "compat"] }
+tokio-util = { version = "0.7", features = ["io", "compat", "rt"] }
 futures-util = "0.3"
 
 # Database

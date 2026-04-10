@@ -564,13 +564,13 @@ pub async fn run_reaper_once(state: &AppState) {
 
 /// Background task that periodically checks for terminated agent pods and
 /// finalizes their sessions.
-pub async fn run_reaper(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>) {
+pub async fn run_reaper(state: AppState, cancel: tokio_util::sync::CancellationToken) {
     tracing::info!("agent session reaper started");
     state.task_registry.register("agent_reaper", 60);
 
     loop {
         tokio::select! {
-            _ = shutdown.changed() => {
+            () = cancel.cancelled() => {
                 tracing::info!("agent session reaper shutting down");
                 break;
             }

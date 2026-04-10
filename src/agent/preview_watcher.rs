@@ -23,7 +23,7 @@ use crate::store::AppState;
 /// Watches all namespaces for Services with `platform.io/component=iframe-preview`.
 /// Restarts the watcher stream on error (with backoff).
 #[tracing::instrument(skip_all)]
-pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>) {
+pub async fn run(state: AppState, cancel: tokio_util::sync::CancellationToken) {
     use futures_util::TryStreamExt;
 
     loop {
@@ -34,7 +34,7 @@ pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>
 
         loop {
             tokio::select! {
-                _ = shutdown.changed() => return,
+                () = cancel.cancelled() => return,
                 event = stream.try_next() => {
                     match event {
                         Ok(Some(watcher::Event::Apply(svc) | watcher::Event::InitApply(svc))) => {
