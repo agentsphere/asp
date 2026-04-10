@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use kube::api::{Api, DynamicObject, ListParams, ObjectMeta, Patch, PatchParams, PostParams};
 use kube::discovery::ApiResource;
-use tokio::sync::watch;
 
 use crate::config::Config;
 
@@ -78,7 +77,7 @@ impl CertState {
 pub async fn run_acme_manager(
     kube_client: kube::Client,
     acme_config: AcmeConfig,
-    mut shutdown: watch::Receiver<()>,
+    cancel: tokio_util::sync::CancellationToken,
 ) {
     let mut cert_state = CertState::new();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(
@@ -101,7 +100,7 @@ pub async fn run_acme_manager(
                     tracing::warn!(error = %e, "ACME provisioning cycle failed");
                 }
             }
-            _ = shutdown.changed() => {
+            () = cancel.cancelled() => {
                 tracing::info!("ACME manager shutting down");
                 break;
             }

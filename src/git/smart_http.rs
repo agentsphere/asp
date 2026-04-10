@@ -11,7 +11,6 @@ use axum::http::header::AUTHORIZATION;
 use axum::response::Response;
 use axum::routing::{get, post};
 use futures_util::StreamExt;
-use http_body_util::BodyExt;
 use serde::Deserialize;
 use sqlx::PgPool;
 use tokio::io::AsyncReadExt;
@@ -381,7 +380,12 @@ async fn upload_pack(
 
     check_access(&state, request.headers(), &project, true).await?;
 
-    run_git_service(&project.repo_disk_path, "upload-pack", request.into_body())
+    run_git_service(
+        &project.repo_disk_path,
+        "upload-pack",
+        request.into_body(),
+        state.config.git_http_timeout_secs,
+    )
 }
 
 /// Check branch protection rules for all ref updates in a push.
@@ -512,37 +516,49 @@ async fn receive_pack(
     let mut stdout = child.stdout.take().expect("stdout piped");
 
     // Phase 2: Pipe buffered pkt-line header + stream remaining body to git stdin
-    let (stdin_result, stdout_bytes) = tokio::join!(
-        async {
-            // Write the buffered pkt-line header
-            stdin.write_all(&pkt_buf).await?;
-            // Write any PACK data that arrived in the same frame as the flush-pkt
-            if let Some(remaining) = remaining_frame {
-                stdin.write_all(&remaining).await?;
+    let git_timeout = std::time::Duration::from_secs(state.config.git_http_timeout_secs);
+
+    let git_result = tokio::time::timeout(git_timeout, async {
+        let (stdin_result, stdout_bytes) = tokio::join!(
+            async {
+                stdin.write_all(&pkt_buf).await?;
+                if let Some(remaining) = remaining_frame {
+                    stdin.write_all(&remaining).await?;
+                }
+                while let Some(frame_result) = body_stream.next().await {
+                    let frame = frame_result.map_err(std::io::Error::other)?;
+                    stdin.write_all(&frame).await?;
+                }
+                stdin.shutdown().await?;
+                Ok::<(), std::io::Error>(())
+            },
+            async {
+                let mut buf = Vec::new();
+                stdout.read_to_end(&mut buf).await?;
+                Ok::<Vec<u8>, std::io::Error>(buf)
             }
-            // Stream remaining body frames directly to stdin (no buffering)
-            while let Some(frame_result) = body_stream.next().await {
-                let frame = frame_result.map_err(std::io::Error::other)?;
-                stdin.write_all(&frame).await?;
-            }
-            stdin.shutdown().await?;
-            Ok::<(), std::io::Error>(())
-        },
-        async {
-            let mut buf = Vec::new();
-            stdout.read_to_end(&mut buf).await?;
-            Ok::<Vec<u8>, std::io::Error>(buf)
+        );
+        stdin_result.map_err(|e| anyhow::anyhow!("stdin write: {e}"))?;
+        let output = stdout_bytes.map_err(|e| anyhow::anyhow!("stdout read: {e}"))?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| anyhow::anyhow!("git wait: {e}"))?;
+        Ok::<(Vec<u8>, std::process::ExitStatus), anyhow::Error>((output, status))
+    })
+    .await;
+
+    let (output, status) = match git_result {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => return Err(ApiError::Internal(e)),
+        Err(_elapsed) => {
+            let _ = child.kill().await;
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "git receive-pack timed out after {}s",
+                state.config.git_http_timeout_secs
+            )));
         }
-    );
-
-    stdin_result.map_err(|e| ApiError::Internal(anyhow::anyhow!("stdin write: {e}")))?;
-    let output =
-        stdout_bytes.map_err(|e| ApiError::Internal(anyhow::anyhow!("stdout read: {e}")))?;
-
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("git wait: {e}")))?;
+    };
 
     if status.success() {
         tracing::info!(
@@ -695,7 +711,12 @@ fn pkt_line_header(service: &str) -> Vec<u8> {
 /// Run a git service (upload-pack or receive-pack) with bidirectional streaming.
 ///
 /// Used for upload-pack where we can stream the response progressively.
-fn run_git_service(repo_path: &Path, service: &str, body: Body) -> Result<Response, ApiError> {
+fn run_git_service(
+    repo_path: &Path,
+    service: &str,
+    body: Body,
+    timeout_secs: u64,
+) -> Result<Response, ApiError> {
     let mut child = tokio::process::Command::new("git")
         .arg(service)
         .arg("--stateless-rpc")
@@ -709,21 +730,23 @@ fn run_git_service(repo_path: &Path, service: &str, body: Body) -> Result<Respon
     let mut stdin = child.stdin.take().expect("stdin piped");
     let stdout = child.stdout.take().expect("stdout piped");
 
-    // Pipe request body to stdin in background
+    // Pipe request body to stdin in background — stream frame-by-frame, with timeout
+    let git_timeout = std::time::Duration::from_secs(timeout_secs);
     tokio::spawn(async move {
-        let result = async {
-            let bytes = body
-                .collect()
-                .await
-                .map_err(|e| anyhow::anyhow!("body read: {e}"))?
-                .to_bytes();
-            stdin.write_all(&bytes).await?;
+        let result = tokio::time::timeout(git_timeout, async {
+            let mut body_stream = body.into_data_stream();
+            while let Some(frame_result) = body_stream.next().await {
+                let frame = frame_result.map_err(|e| anyhow::anyhow!("body read: {e}"))?;
+                stdin.write_all(&frame).await?;
+            }
             stdin.shutdown().await?;
             Ok::<(), anyhow::Error>(())
-        }
+        })
         .await;
-        if let Err(e) = result {
-            tracing::warn!(error = %e, "stdin pipe failed");
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(error = %e, "stdin pipe failed"),
+            Err(_) => tracing::warn!("git upload-pack stdin pipe timed out"),
         }
     });
 

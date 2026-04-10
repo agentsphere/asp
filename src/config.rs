@@ -155,6 +155,16 @@ pub struct Config {
     pub acme_directory_url: String,
     /// ACME contact email for account registration.
     pub acme_contact_email: Option<String>,
+    /// Maximum `PostgreSQL` connections (default 20).
+    pub db_max_connections: u32,
+    /// `PostgreSQL` connection acquire timeout in seconds (default 10).
+    pub db_acquire_timeout_secs: u64,
+    /// Maximum Valkey connections (default 6).
+    pub valkey_pool_size: usize,
+    /// Git smart HTTP operation timeout in seconds (default 600 = 10 min).
+    pub git_http_timeout_secs: u64,
+    /// Global HTTP request timeout in seconds (default 300 = 5 min).
+    pub request_timeout_secs: u64,
 }
 
 fn parse_cors_origins(s: &str) -> Vec<String> {
@@ -410,6 +420,26 @@ impl Config {
             acme_directory_url: env::var("PLATFORM_ACME_DIRECTORY_URL")
                 .unwrap_or_else(|_| "https://acme-v02.api.letsencrypt.org/directory".into()),
             acme_contact_email: env::var("PLATFORM_ACME_CONTACT_EMAIL").ok(),
+            db_max_connections: env::var("PLATFORM_DB_MAX_CONNECTIONS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(20),
+            db_acquire_timeout_secs: env::var("PLATFORM_DB_ACQUIRE_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
+            valkey_pool_size: env::var("PLATFORM_VALKEY_POOL_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(6),
+            git_http_timeout_secs: env::var("PLATFORM_GIT_HTTP_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(600),
+            request_timeout_secs: env::var("PLATFORM_REQUEST_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300),
         }
     }
 
@@ -518,6 +548,11 @@ impl Config {
             acme_enabled: false,
             acme_directory_url: "https://acme-staging-v02.api.letsencrypt.org/directory".into(),
             acme_contact_email: None,
+            db_max_connections: 20,
+            db_acquire_timeout_secs: 10,
+            valkey_pool_size: 6,
+            git_http_timeout_secs: 600,
+            request_timeout_secs: 300,
         }
     }
 }

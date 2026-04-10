@@ -656,14 +656,14 @@ pub struct AlertState {
 }
 
 /// Background task that evaluates alert rules every 30 seconds.
-pub async fn evaluate_alerts_loop(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>) {
+pub async fn evaluate_alerts_loop(state: AppState, cancel: tokio_util::sync::CancellationToken) {
     tracing::info!("alert evaluator started");
     state.task_registry.register("alert_evaluator", 60);
     let mut alert_states: HashMap<Uuid, AlertState> = HashMap::new();
 
     loop {
         tokio::select! {
-            _ = shutdown.changed() => {
+            () = cancel.cancelled() => {
                 tracing::info!("alert evaluator shutting down");
                 break;
             }

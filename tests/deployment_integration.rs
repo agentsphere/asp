@@ -1730,14 +1730,17 @@ async fn demo_project_creates_mr_and_triggers_pipeline(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn reconcile_loop_starts_and_shuts_down(pool: PgPool) {
     let (state, _admin_token) = test_state(pool.clone()).await;
-    let (tx, rx) = tokio::sync::watch::channel(());
-    let handle = tokio::spawn(platform::deployer::reconciler::run(state.clone(), rx));
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(platform::deployer::reconciler::run(
+        state.clone(),
+        cancel.clone(),
+    ));
 
     // Let it tick at least once
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Send shutdown
-    drop(tx);
+    cancel.cancel();
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
     assert!(result.is_ok(), "reconciler should shut down within 5s");
 }
@@ -1762,14 +1765,15 @@ async fn reconcile_skips_already_claimed(pool: PgPool) {
     .unwrap();
 
     // Run a reconciler tick — it should find no releases to process
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
+    let value = cancel.clone();
     let handle = tokio::spawn(async move {
-        platform::deployer::reconciler::run(s, rx).await;
+        platform::deployer::reconciler::run(s, value).await;
     });
     // Give it a tick
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     // Release should still be completed (not changed to anything else)
@@ -1828,12 +1832,12 @@ async fn canary_progress_pass_advances_step(pool: PgPool) {
     .unwrap();
 
     // Spawn reconciler, wake it, wait for processing
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     // Should have advanced to step 1 with weight 50
@@ -1894,12 +1898,12 @@ async fn canary_progress_pass_final_step_promotes(pool: PgPool) {
     .await
     .unwrap();
 
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     let phase: String = sqlx::query_scalar("SELECT phase FROM deploy_releases WHERE id = $1")
@@ -1960,12 +1964,12 @@ async fn canary_progress_fail_within_threshold_holds(pool: PgPool) {
     .await
     .unwrap();
 
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     let phase: String = sqlx::query_scalar("SELECT phase FROM deploy_releases WHERE id = $1")
@@ -2025,12 +2029,12 @@ async fn canary_progress_fail_exceeds_max_failures_rolls_back(pool: PgPool) {
         .unwrap();
     }
 
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     let phase: String = sqlx::query_scalar("SELECT phase FROM deploy_releases WHERE id = $1")
@@ -2090,12 +2094,12 @@ async fn canary_progress_inconclusive_waits(pool: PgPool) {
     .await
     .unwrap();
 
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     let (phase, step): (String, i32) =
@@ -2148,12 +2152,12 @@ async fn ab_test_duration_elapsed_promotes(pool: PgPool) {
     .await
     .unwrap();
 
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     let phase: String = sqlx::query_scalar("SELECT phase FROM deploy_releases WHERE id = $1")
@@ -2206,12 +2210,12 @@ async fn ab_test_duration_not_elapsed_waits(pool: PgPool) {
     .await
     .unwrap();
 
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     let phase: String = sqlx::query_scalar("SELECT phase FROM deploy_releases WHERE id = $1")
@@ -2255,12 +2259,12 @@ async fn promoting_completes_release(pool: PgPool) {
     .await
     .unwrap();
 
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     let (phase, health): (String, String) =
@@ -2313,12 +2317,12 @@ async fn rolling_back_completes(pool: PgPool) {
     .await
     .unwrap();
 
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     let (phase, health): (String, String) =
@@ -2373,12 +2377,12 @@ async fn cleanup_expired_previews_deactivates(pool: PgPool) {
     .unwrap();
 
     // Run reconciler (cleanup happens in the reconcile tick)
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     // Target should be deactivated
@@ -2505,12 +2509,12 @@ async fn fire_webhook_dispatches(pool: PgPool) {
     .unwrap();
 
     // Run reconciler — promoting should complete and fire webhook
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     // Verify release completed (webhook dispatch itself is fire-and-forget)
@@ -2567,11 +2571,11 @@ async fn analysis_tick_creates_record(pool: PgPool) {
     .unwrap();
 
     // Spawn analysis loop for one tick
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::analysis::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::analysis::run(s, cancel.clone()));
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     // Verify analysis record was created
@@ -2632,11 +2636,11 @@ async fn analysis_ensure_record_reuses_existing(pool: PgPool) {
     .unwrap();
 
     // Run analysis tick — should reuse the existing record, not create a new one
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::analysis::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::analysis::run(s, cancel.clone()));
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     // There should still be only 1 record with step_index=0 (the pre-created running one may
@@ -2716,11 +2720,11 @@ async fn analysis_rollback_trigger_breached(pool: PgPool) {
         .unwrap();
 
     // Run analysis loop
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::analysis::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::analysis::run(s, cancel.clone()));
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     // Verify a 'fail' verdict was written
@@ -2799,11 +2803,11 @@ async fn analysis_progress_gates_all_pass(pool: PgPool) {
         .unwrap();
 
     // Run analysis
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::analysis::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::analysis::run(s, cancel.clone()));
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     let verdict: Option<String> = sqlx::query_scalar(
@@ -2880,11 +2884,11 @@ async fn analysis_progress_gates_one_fails(pool: PgPool) {
         .await
         .unwrap();
 
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::analysis::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::analysis::run(s, cancel.clone()));
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     let verdict: Option<String> = sqlx::query_scalar(
@@ -2961,11 +2965,11 @@ async fn analysis_insufficient_traffic_inconclusive(pool: PgPool) {
         .await
         .unwrap();
 
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::analysis::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::analysis::run(s, cancel.clone()));
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     let verdict: Option<String> = sqlx::query_scalar(
@@ -3019,11 +3023,11 @@ async fn analysis_no_progress_gates_returns_pass(pool: PgPool) {
     .await
     .unwrap();
 
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::analysis::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::analysis::run(s, cancel.clone()));
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 
     let verdict: Option<String> = sqlx::query_scalar(
@@ -3044,14 +3048,17 @@ async fn analysis_no_progress_gates_returns_pass(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn analysis_loop_starts_and_shuts_down(pool: PgPool) {
     let (state, _admin_token) = test_state(pool.clone()).await;
-    let (tx, rx) = tokio::sync::watch::channel(());
-    let handle = tokio::spawn(platform::deployer::analysis::run(state.clone(), rx));
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(platform::deployer::analysis::run(
+        state.clone(),
+        cancel.clone(),
+    ));
 
     // Let it tick at least once
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Send shutdown
-    drop(tx);
+    cancel.cancel();
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
     assert!(result.is_ok(), "analysis loop should shut down within 5s");
 }
@@ -3398,14 +3405,17 @@ async fn ensure_registry_pull_secret_no_registry_url(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn reconciler_loop_starts_and_shuts_down(pool: PgPool) {
     let (state, _admin_token) = test_state(pool.clone()).await;
-    let (tx, rx) = tokio::sync::watch::channel(());
-    let handle = tokio::spawn(platform::deployer::reconciler::run(state.clone(), rx));
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(platform::deployer::reconciler::run(
+        state.clone(),
+        cancel.clone(),
+    ));
 
     // Let it tick at least once
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Send shutdown
-    drop(tx);
+    cancel.cancel();
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
     assert!(result.is_ok(), "reconciler loop should shut down within 5s");
 }
@@ -3414,15 +3424,18 @@ async fn reconciler_loop_starts_and_shuts_down(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn reconciler_wakes_on_notify(pool: PgPool) {
     let (state, _admin_token) = test_state(pool.clone()).await;
-    let (tx, rx) = tokio::sync::watch::channel(());
-    let handle = tokio::spawn(platform::deployer::reconciler::run(state.clone(), rx));
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(platform::deployer::reconciler::run(
+        state.clone(),
+        cancel.clone(),
+    ));
 
     // Wake the reconciler via notify
     state.deploy_notify.notify_one();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Send shutdown
-    drop(tx);
+    cancel.cancel();
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
     assert!(
         result.is_ok(),
@@ -3447,9 +3460,9 @@ async fn reconciler_skips_phase_changed_release(pool: PgPool) {
         .unwrap();
 
     // Start reconciler — it should skip this release (optimistic lock fails)
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -3465,7 +3478,7 @@ async fn reconciler_skips_phase_changed_release(pool: PgPool) {
         "completed release should not be re-processed"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -3507,9 +3520,9 @@ async fn reconciler_cleanup_expired_previews(pool: PgPool) {
     .unwrap();
 
     // Run reconciler — should clean up expired preview
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     // Wait for cleanup
@@ -3534,7 +3547,7 @@ async fn reconciler_cleanup_expired_previews(pool: PgPool) {
         "active release should be cancelled on expired preview"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -3582,9 +3595,9 @@ async fn canary_pass_advances_step(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     // Wait for canary step advancement
@@ -3610,7 +3623,7 @@ async fn canary_pass_advances_step(pool: PgPool) {
     .unwrap();
     assert!(count >= 1, "step_advanced history should exist");
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -3658,9 +3671,9 @@ async fn canary_all_steps_pass_promotes(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     // Wait for promotion
@@ -3670,7 +3683,7 @@ async fn canary_all_steps_pass_promotes(pool: PgPool) {
         "release should transition to promoting after all steps pass"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -3720,9 +3733,9 @@ async fn canary_max_failures_triggers_rollback(pool: PgPool) {
     }
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     // Wait for rollback
@@ -3740,7 +3753,7 @@ async fn canary_max_failures_triggers_rollback(pool: PgPool) {
         .unwrap();
     assert_eq!(health, "unhealthy");
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -3788,9 +3801,9 @@ async fn canary_single_fail_holds(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     // Wait for holding state
@@ -3805,7 +3818,7 @@ async fn canary_single_fail_holds(pool: PgPool) {
         .unwrap();
     assert_eq!(health, "degraded");
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -3853,9 +3866,9 @@ async fn canary_inconclusive_waits(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     // Wait a bit
@@ -3872,7 +3885,7 @@ async fn canary_inconclusive_waits(pool: PgPool) {
         "inconclusive verdict should not change phase"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -3910,9 +3923,9 @@ async fn canary_no_verdict_stays_progressing(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -3925,7 +3938,7 @@ async fn canary_no_verdict_stays_progressing(pool: PgPool) {
         .unwrap();
     assert_eq!(phase, "progressing");
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -3962,9 +3975,9 @@ async fn promoting_transitions_to_completed(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     // Wait for completion
@@ -4002,7 +4015,7 @@ async fn promoting_transitions_to_completed(pool: PgPool) {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -4039,9 +4052,9 @@ async fn rolling_back_transitions_to_rolled_back(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     // Wait for rolled_back
@@ -4087,7 +4100,7 @@ async fn rolling_back_transitions_to_rolled_back(pool: PgPool) {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -4120,15 +4133,15 @@ async fn rolling_promoting_completes(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     let phase = poll_release_phase(&pool, release_id, "completed", 10000).await;
     assert_eq!(phase, "completed");
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -4168,9 +4181,9 @@ async fn reconciler_ab_test_elapsed_promotes(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     let phase = poll_release_phase(&pool, release_id, "promoting", 5000).await;
@@ -4179,7 +4192,7 @@ async fn reconciler_ab_test_elapsed_promotes(pool: PgPool) {
         "A/B test with elapsed duration should promote"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -4216,9 +4229,9 @@ async fn reconciler_ab_test_not_elapsed_waits(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -4233,7 +4246,7 @@ async fn reconciler_ab_test_not_elapsed_waits(pool: PgPool) {
         "A/B test with remaining duration should stay progressing"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -4266,9 +4279,9 @@ async fn rolling_progressing_is_noop(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -4284,7 +4297,7 @@ async fn rolling_progressing_is_noop(pool: PgPool) {
         "rolling progressing should be a no-op"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -4317,15 +4330,15 @@ async fn rolling_back_rolling_strategy(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     let phase = poll_release_phase(&pool, release_id, "rolled_back", 10000).await;
     assert_eq!(phase, "rolled_back");
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -4373,9 +4386,9 @@ async fn holding_phase_handled_by_canary(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
@@ -4393,7 +4406,7 @@ async fn holding_phase_handled_by_canary(pool: PgPool) {
     );
     assert_eq!(weight, 50);
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -4432,9 +4445,9 @@ async fn multiple_releases_reconciled(pool: PgPool) {
     }
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     // Both should complete
@@ -4443,7 +4456,7 @@ async fn multiple_releases_reconciled(pool: PgPool) {
         assert_eq!(phase, "completed", "release {rid} should complete");
     }
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -4471,9 +4484,9 @@ async fn non_expired_preview_not_cleaned(pool: PgPool) {
     .unwrap();
 
     // Run reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -4486,7 +4499,7 @@ async fn non_expired_preview_not_cleaned(pool: PgPool) {
         .unwrap();
     assert!(is_active, "non-expired preview target should remain active");
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -4543,9 +4556,9 @@ async fn reconciler_ignores_unknown_strategy(pool: PgPool) {
     .unwrap();
 
     // Start reconciler — should not crash
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -4561,7 +4574,7 @@ async fn reconciler_ignores_unknown_strategy(pool: PgPool) {
         "rolling progressing should be skipped"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -4655,9 +4668,9 @@ async fn canary_holding_with_max_failures_rolls_back(pool: PgPool) {
     }
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     let phase = poll_release_phase(&pool, release_id, "rolling_back", 5000).await;
@@ -4666,7 +4679,7 @@ async fn canary_holding_with_max_failures_rolls_back(pool: PgPool) {
         "holding with max failures should trigger rollback"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -4724,9 +4737,9 @@ async fn terminal_phases_not_processed(pool: PgPool) {
     }
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -4746,7 +4759,7 @@ async fn terminal_phases_not_processed(pool: PgPool) {
         "terminal phases should not produce history entries"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -4787,9 +4800,9 @@ async fn bad_tracked_resources_json_handled(pool: PgPool) {
     .unwrap();
 
     // Start reconciler — should not crash with bad tracked_resources
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     // Should still complete (promoting → completed)
@@ -4799,7 +4812,7 @@ async fn bad_tracked_resources_json_handled(pool: PgPool) {
         "bad tracked_resources should not prevent promotion"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -8803,9 +8816,9 @@ async fn canary_holding_fail_stays_holding(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -8821,7 +8834,7 @@ async fn canary_holding_fail_stays_holding(pool: PgPool) {
         "holding phase should remain when fail count < max_failures and already holding"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -8869,9 +8882,9 @@ async fn canary_holding_pass_advances_step(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
@@ -8889,7 +8902,7 @@ async fn canary_holding_pass_advances_step(pool: PgPool) {
         "traffic_weight should be 50 after step advance from holding"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -8939,9 +8952,9 @@ async fn canary_holding_max_failures_rolls_back(pool: PgPool) {
     }
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     let phase = poll_release_phase(&pool, release_id, "rolling_back", 5000).await;
@@ -8950,7 +8963,7 @@ async fn canary_holding_max_failures_rolls_back(pool: PgPool) {
         "holding with max failures should transition to rolling_back"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -8990,9 +9003,9 @@ async fn canary_promoting_completes(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     let phase = poll_release_phase(&pool, release_id, "completed", 10000).await;
@@ -9024,7 +9037,7 @@ async fn canary_promoting_completes(pool: PgPool) {
     }
     assert!(count >= 1, "promoted history entry should exist");
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -9064,9 +9077,9 @@ async fn canary_rolling_back_completes(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     let phase = poll_release_phase(&pool, release_id, "rolled_back", 10000).await;
@@ -9080,7 +9093,7 @@ async fn canary_rolling_back_completes(pool: PgPool) {
         .unwrap();
     assert_eq!(health, "unhealthy");
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -9123,15 +9136,15 @@ async fn ab_test_promoting_completes(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     let phase = poll_release_phase(&pool, release_id, "completed", 10000).await;
     assert_eq!(phase, "completed", "AB test promoting should complete");
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -9172,15 +9185,15 @@ async fn ab_test_rolling_back_completes(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     let phase = poll_release_phase(&pool, release_id, "rolled_back", 10000).await;
     assert_eq!(phase, "rolled_back", "AB test rolling_back should complete");
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -9222,9 +9235,9 @@ async fn ab_test_recent_start_waits(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -9240,7 +9253,7 @@ async fn ab_test_recent_start_waits(pool: PgPool) {
         "AB test with 86400s duration should still be progressing"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -9400,9 +9413,9 @@ async fn canary_unknown_verdict_ignored(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -9418,7 +9431,7 @@ async fn canary_unknown_verdict_ignored(pool: PgPool) {
         "running verdict should not change phase"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -9465,15 +9478,15 @@ async fn canary_empty_steps_pass_promotes(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     let phase = poll_release_phase(&pool, release_id, "promoting", 5000).await;
     assert_eq!(phase, "promoting", "empty steps with pass should promote");
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -9523,9 +9536,9 @@ async fn canary_default_max_failures(pool: PgPool) {
     }
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     let phase = poll_release_phase(&pool, release_id, "rolling_back", 5000).await;
@@ -9534,7 +9547,7 @@ async fn canary_default_max_failures(pool: PgPool) {
         "default max_failures=3 should trigger rollback"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -9587,9 +9600,9 @@ async fn reconciler_cleanup_multiple_expired_previews(pool: PgPool) {
     }
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
@@ -9618,7 +9631,7 @@ async fn reconciler_cleanup_multiple_expired_previews(pool: PgPool) {
         assert_eq!(phase, "cancelled", "release {rid} should be cancelled");
     }
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -9646,9 +9659,9 @@ async fn reconciler_non_expired_preview_preserved(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -9661,7 +9674,7 @@ async fn reconciler_non_expired_preview_preserved(pool: PgPool) {
         .unwrap();
     assert!(is_active, "non-expired preview target should remain active");
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -9763,9 +9776,9 @@ async fn canary_pass_uses_config_weight(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
@@ -9780,7 +9793,7 @@ async fn canary_pass_uses_config_weight(pool: PgPool) {
     assert_eq!(step, 2, "current_step should advance to 2");
     assert_eq!(weight, 75, "traffic_weight should be 75 from steps[2]");
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -9807,9 +9820,9 @@ async fn reconciler_preview_without_expires_not_cleaned(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -9825,7 +9838,7 @@ async fn reconciler_preview_without_expires_not_cleaned(pool: PgPool) {
         "preview without expires_at should not be cleaned up"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -9922,9 +9935,9 @@ async fn reconciler_completed_rolling_release_is_noop(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -9940,7 +9953,7 @@ async fn reconciler_completed_rolling_release_is_noop(pool: PgPool) {
         "already-completed releases should remain completed (no-op)"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -9982,9 +9995,9 @@ async fn ab_test_elapsed_custom_duration_promotes(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     let phase = poll_release_phase(&pool, release_id, "promoting", 5000).await;
@@ -9993,7 +10006,7 @@ async fn ab_test_elapsed_custom_duration_promotes(pool: PgPool) {
         "AB test with 1s duration elapsed should promote"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -10035,9 +10048,9 @@ async fn ab_test_holding_elapsed_promotes(pool: PgPool) {
     .unwrap();
 
     // Start reconciler
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
     state.deploy_notify.notify_one();
 
     let phase = poll_release_phase(&pool, release_id, "promoting", 5000).await;
@@ -10046,7 +10059,7 @@ async fn ab_test_holding_elapsed_promotes(pool: PgPool) {
         "AB test in progressing with elapsed duration should promote"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -10056,9 +10069,9 @@ async fn reconciler_heartbeats_on_empty_run(pool: PgPool) {
     let (state, _admin_token) = test_state(pool.clone()).await;
 
     // Start reconciler with no pending releases
-    let (tx, rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let s = state.clone();
-    let handle = tokio::spawn(platform::deployer::reconciler::run(s, rx));
+    let handle = tokio::spawn(platform::deployer::reconciler::run(s, cancel.clone()));
 
     // Let it tick
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -10076,6 +10089,6 @@ async fn reconciler_heartbeats_on_empty_run(pool: PgPool) {
         "should have heartbeat after tick"
     );
 
-    drop(tx);
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }

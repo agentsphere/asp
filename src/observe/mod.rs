@@ -32,33 +32,34 @@ pub fn router(channels: ingest::IngestChannels) -> Router<AppState> {
 /// Spawn all observe background tasks. Returns `IngestChannels` for the router.
 pub fn spawn_background_tasks(
     state: AppState,
-    shutdown_rx: tokio::sync::watch::Receiver<()>,
+    cancel: tokio_util::sync::CancellationToken,
+    tracker: &tokio_util::task::TaskTracker,
 ) -> ingest::IngestChannels {
     let (channels, spans_rx, logs_rx, metrics_rx) = ingest::create_channels();
 
-    tokio::spawn(ingest::flush_spans(
+    tracker.spawn(ingest::flush_spans(
         state.pool.clone(),
         spans_rx,
-        shutdown_rx.clone(),
+        cancel.clone(),
     ));
-    tokio::spawn(ingest::flush_logs(
+    tracker.spawn(ingest::flush_logs(
         state.pool.clone(),
         state.valkey.clone(),
         logs_rx,
-        shutdown_rx.clone(),
+        cancel.clone(),
     ));
-    tokio::spawn(ingest::flush_metrics(
+    tracker.spawn(ingest::flush_metrics(
         state.pool.clone(),
         metrics_rx,
-        shutdown_rx.clone(),
+        cancel.clone(),
     ));
-    tokio::spawn(parquet::rotation_loop(state.clone(), shutdown_rx.clone()));
+    tracker.spawn(parquet::rotation_loop(state.clone(), cancel.clone()));
     // S94: Observability data retention — purge old data hourly
     {
         let pool = state.pool.clone();
         let retention_days = state.config.observe_retention_days;
-        let mut shutdown = shutdown_rx.clone();
-        tokio::spawn(async move {
+        let cancel = cancel.clone();
+        tracker.spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
             loop {
                 tokio::select! {
@@ -89,20 +90,17 @@ pub fn spawn_background_tasks(
                             }
                         }
                     }
-                    _ = shutdown.changed() => break,
+                    () = cancel.cancelled() => break,
                 }
             }
         });
     }
 
-    tokio::spawn(alert::evaluate_alerts_loop(
-        state.clone(),
-        shutdown_rx.clone(),
-    ));
+    tracker.spawn(alert::evaluate_alerts_loop(state.clone(), cancel.clone()));
 
     // K8s watcher: stream pod/deployment state into metric_samples
     let ns = state.config.platform_namespace.clone();
-    tokio::spawn(k8s_watcher::run(state, ns, shutdown_rx));
+    tracker.spawn(k8s_watcher::run(state, ns, cancel));
 
     channels
 }
@@ -126,7 +124,7 @@ mod tests {
 
         // We need a minimal AppState — use dummy connections since the tasks
         // will shut down before they try to use them.
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let cancel = tokio_util::sync::CancellationToken::new();
 
         // Build a minimal pool config — tasks won't actually query before shutdown.
         // We can't use a real pool in unit tests, but we CAN verify that
@@ -140,8 +138,7 @@ mod tests {
         drop(channels);
 
         // Signal immediate shutdown
-        shutdown_tx.send(()).unwrap();
-        drop(shutdown_rx);
+        cancel.cancel();
     }
 
     #[test]

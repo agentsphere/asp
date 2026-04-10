@@ -285,6 +285,11 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
         acme_contact_email: None,
         registry_http_body_limit_bytes: 2 * 1024 * 1024 * 1024,
         registry_max_blob_size_bytes: 5_368_709_120,
+        db_max_connections: 5,
+        db_acquire_timeout_secs: 10,
+        valkey_pool_size: 2,
+        git_http_timeout_secs: 600,
+        request_timeout_secs: 300,
     };
 
     // Registry seed is opt-in — call test_state_with_registry() for tests that need

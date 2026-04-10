@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderName, HeaderValue};
+use axum::response::IntoResponse;
 use tokio::signal;
+use tower::ServiceBuilder;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -125,10 +127,15 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Connect to Postgres and run migrations
-    let pool = store::pool::connect(&cfg.database_url).await?;
+    let pool = store::pool::connect(
+        &cfg.database_url,
+        cfg.db_max_connections,
+        cfg.db_acquire_timeout_secs,
+    )
+    .await?;
 
     // Connect to Valkey
-    let valkey = store::valkey::connect(&cfg.valkey_url).await?;
+    let valkey = store::valkey::connect(&cfg.valkey_url, cfg.valkey_pool_size).await?;
 
     // Create MinIO operator (opendal S3 backend)
     let minio = {
@@ -250,10 +257,13 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!(error = %e, "command seeding failed");
     }
 
-    let (shutdown_tx, observe_channels) = spawn_background_tasks(&state, &pool);
+    let (cancel_token, task_tracker, observe_channels) = spawn_background_tasks(&state, &pool);
 
     // Bridge platform tracing logs into the observe pipeline
     observe::tracing_layer::spawn_bridge(platform_logs_rx, observe_channels.logs_tx.clone());
+
+    let request_timeout = std::time::Duration::from_secs(cfg.request_timeout_secs);
+    let long_timeout = std::time::Duration::from_secs(1800); // 30 min for git/registry
 
     // Build router
     let ready_state = state.clone();
@@ -280,21 +290,44 @@ async fn main() -> anyhow::Result<()> {
         // an *additional* Limited wrapper from DefaultBodyLimit (see axum-core
         // with_limited_body()). Without disabling it, the outer 10 MB default would
         // cap these routes even though RequestBodyLimitLayer allows more.
+        // Per-route 30-min timeout overrides the global 5-min timeout.
         .merge(
             git::git_protocol_router()
                 .layer(DefaultBodyLimit::disable())
-                .layer(RequestBodyLimitLayer::new(cfg.registry_http_body_limit_bytes)),
+                .layer(RequestBodyLimitLayer::new(cfg.registry_http_body_limit_bytes))
+                .layer(
+                    ServiceBuilder::new()
+                        .layer(axum::error_handling::HandleErrorLayer::new(
+                            handle_timeout_error,
+                        ))
+                        .timeout(long_timeout),
+                ),
         )
         .merge(
             registry::router()
                 .layer(DefaultBodyLimit::disable())
-                .layer(RequestBodyLimitLayer::new(cfg.registry_http_body_limit_bytes)),
+                .layer(RequestBodyLimitLayer::new(cfg.registry_http_body_limit_bytes))
+                .layer(
+                    ServiceBuilder::new()
+                        .layer(axum::error_handling::HandleErrorLayer::new(
+                            handle_timeout_error,
+                        ))
+                        .timeout(long_timeout),
+                ),
         )
         .layer(axum::middleware::from_fn(request_tracing_middleware))
         .with_state(state)
         .fallback(ui::static_handler)
         // Default body limit: 10 MB for API endpoints.
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+        // Global request timeout
+        .layer(
+            ServiceBuilder::new()
+                .layer(axum::error_handling::HandleErrorLayer::new(
+                    handle_timeout_error,
+                ))
+                .timeout(request_timeout),
+        )
         // Security response headers
         .layer(SetResponseHeaderLayer::if_not_present(
             HeaderName::from_static("x-frame-options"),
@@ -334,8 +367,19 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
-    // Signal background tasks to stop
-    let _ = shutdown_tx.send(());
+    // Signal all background tasks to stop
+    tracing::info!("http server stopped, draining background tasks...");
+    cancel_token.cancel();
+    task_tracker.close();
+
+    // Wait for all tracked tasks to finish, with a hard deadline
+    let drain_timeout = std::time::Duration::from_secs(30);
+    if tokio::time::timeout(drain_timeout, task_tracker.wait())
+        .await
+        .is_err()
+    {
+        tracing::warn!("background tasks did not drain within 30s, forcing exit");
+    }
 
     tracing::info!("platform stopped");
     Ok(())
@@ -369,58 +413,39 @@ fn spawn_background_tasks(
     state: &store::AppState,
     pool: &sqlx::PgPool,
 ) -> (
-    tokio::sync::watch::Sender<()>,
+    tokio_util::sync::CancellationToken,
+    tokio_util::task::TaskTracker,
     observe::ingest::IngestChannels,
 ) {
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let token = tokio_util::sync::CancellationToken::new();
+    let tracker = tokio_util::task::TaskTracker::new();
 
-    // Label the platform namespace so NetworkPolicies allow ingress from it
-    // (preview proxy, gateway, etc. need to reach deployed app pods).
+    // One-shot setup (no shutdown needed)
     tokio::spawn(label_platform_namespace(state.clone()));
 
-    tokio::spawn(pipeline::executor::run(state.clone(), shutdown_rx.clone()));
-    tokio::spawn(store::eventbus::run(state.clone(), shutdown_tx.subscribe()));
-    tokio::spawn(deployer::reconciler::run(
-        state.clone(),
-        shutdown_tx.subscribe(),
-    ));
-    // Preview cleanup merged into reconciler::cleanup_expired_previews()
-    // deployer::preview::run() removed — preview_deployments table dropped.
-    tokio::spawn(deployer::analysis::run(
-        state.clone(),
-        shutdown_tx.subscribe(),
-    ));
-    tokio::spawn(agent::service::run_reaper(
-        state.clone(),
-        shutdown_tx.subscribe(),
-    ));
-    tokio::spawn(agent::preview_watcher::run(
-        state.clone(),
-        shutdown_tx.subscribe(),
-    ));
-    let observe_channels = observe::spawn_background_tasks(state.clone(), shutdown_tx.subscribe());
-    tokio::spawn(registry::gc::run(state.clone(), shutdown_tx.subscribe()));
+    tracker.spawn(pipeline::executor::run(state.clone(), token.clone()));
+    tracker.spawn(store::eventbus::run(state.clone(), token.clone()));
+    tracker.spawn(deployer::reconciler::run(state.clone(), token.clone()));
+    tracker.spawn(deployer::analysis::run(state.clone(), token.clone()));
+    tracker.spawn(agent::service::run_reaper(state.clone(), token.clone()));
+    tracker.spawn(agent::preview_watcher::run(state.clone(), token.clone()));
+    let observe_channels = observe::spawn_background_tasks(state.clone(), token.clone(), &tracker);
+    tracker.spawn(registry::gc::run(state.clone(), token.clone()));
     if state.config.ssh_listen.is_some() {
-        tokio::spawn(git::ssh_server::run(state.clone(), shutdown_tx.subscribe()));
+        tracker.spawn(git::ssh_server::run(state.clone(), token.clone()));
     }
-    tokio::spawn(run_session_cleanup(
+    tracker.spawn(run_session_cleanup(
         pool.clone(),
         state.minio.clone(),
         state.secret_requests.clone(),
-        shutdown_tx.subscribe(),
+        token.clone(),
     ));
-    tokio::spawn(health::checks::run(state.clone(), shutdown_tx.subscribe()));
-    tokio::spawn(mesh::sync_trust_bundles(
-        state.clone(),
-        shutdown_tx.subscribe(),
-    ));
+    tracker.spawn(health::checks::run(state.clone(), token.clone()));
+    tracker.spawn(mesh::sync_trust_bundles(state.clone(), token.clone()));
     if state.config.gateway_auto_deploy {
-        tokio::spawn(gateway::reconcile_gateway(
-            state.clone(),
-            shutdown_tx.subscribe(),
-        ));
+        tracker.spawn(gateway::reconcile_gateway(state.clone(), token.clone()));
     }
-    (shutdown_tx, observe_channels)
+    (token, tracker, observe_channels)
 }
 
 async fn label_platform_namespace(state: store::AppState) {
@@ -449,7 +474,7 @@ async fn run_session_cleanup(
     pool: sqlx::PgPool,
     minio: opendal::Operator,
     secret_requests: crate::secrets::request::SecretRequests,
-    mut shutdown: tokio::sync::watch::Receiver<()>,
+    cancel: tokio_util::sync::CancellationToken,
 ) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
     loop {
@@ -494,7 +519,7 @@ async fn run_session_cleanup(
                 .instrument(span)
                 .await;
             }
-            _ = shutdown.changed() => {
+            () = cancel.cancelled() => {
                 tracing::info!("session cleanup shutting down");
                 break;
             }
@@ -554,6 +579,16 @@ async fn cleanup_expired_artifacts(pool: &sqlx::PgPool, minio: &opendal::Operato
     }
 
     tracing::debug!(count = rows.len(), "cleaned up expired artifacts");
+}
+
+/// Convert tower service-layer errors (e.g. timeout) into JSON API responses.
+async fn handle_timeout_error(err: axum::BoxError) -> axum::response::Response {
+    if err.is::<tower::timeout::error::Elapsed>() {
+        error::ApiError::ServiceUnavailable("request timeout".into()).into_response()
+    } else {
+        tracing::error!(error = %err, "unhandled tower service error");
+        error::ApiError::Internal(anyhow::anyhow!("service error")).into_response()
+    }
 }
 
 async fn shutdown_signal() {

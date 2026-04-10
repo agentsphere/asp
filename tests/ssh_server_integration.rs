@@ -231,18 +231,19 @@ async fn test_ssh_server_shutdown_graceful(pool: PgPool) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let _local_addr = listener.local_addr().unwrap();
 
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let state_clone = state.clone();
+    let cancel_clone = cancel.clone();
 
     let handle = tokio::spawn(async move {
-        platform::git::ssh_server::run_with_listener(state_clone, listener, &mut shutdown_rx).await
+        platform::git::ssh_server::run_with_listener(state_clone, listener, &cancel_clone).await
     });
 
     // Give the server a moment to start accepting
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Signal shutdown
-    shutdown_tx.send(()).unwrap();
+    cancel.cancel();
 
     // The server should exit cleanly within a reasonable timeout
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
@@ -276,11 +277,12 @@ async fn test_ssh_server_generates_host_key(pool: PgPool) {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let state_clone = state.clone();
+    let cancel_clone = cancel.clone();
 
     let handle = tokio::spawn(async move {
-        platform::git::ssh_server::run_with_listener(state_clone, listener, &mut shutdown_rx).await
+        platform::git::ssh_server::run_with_listener(state_clone, listener, &cancel_clone).await
     });
 
     // Let the server start (it generates the key during startup)
@@ -298,7 +300,7 @@ async fn test_ssh_server_generates_host_key(pool: PgPool) {
     );
 
     // Clean shutdown
-    shutdown_tx.send(()).unwrap();
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 
@@ -333,11 +335,12 @@ async fn test_ssh_server_loads_existing_host_key(pool: PgPool) {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let state_clone = state.clone();
+    let cancel_clone = cancel.clone();
 
     let handle = tokio::spawn(async move {
-        platform::git::ssh_server::run_with_listener(state_clone, listener, &mut shutdown_rx).await
+        platform::git::ssh_server::run_with_listener(state_clone, listener, &cancel_clone).await
     });
 
     // Let the server start
@@ -352,7 +355,7 @@ async fn test_ssh_server_loads_existing_host_key(pool: PgPool) {
     );
 
     // Clean shutdown
-    shutdown_tx.send(()).unwrap();
+    cancel.cancel();
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
         .await
         .expect("server should shut down within 5s")
@@ -611,9 +614,9 @@ async fn test_ssh_server_run_no_listen(pool: PgPool) {
     let (state, _admin_token) = helpers::test_state(pool).await;
     // state.config.ssh_listen is already None from test_state()
 
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
 
-    let result = platform::git::ssh_server::run(state, shutdown_rx).await;
+    let result = platform::git::ssh_server::run(state, cancel).await;
     assert!(
         result.is_ok(),
         "run() with ssh_listen=None should return Ok immediately"
@@ -641,11 +644,12 @@ async fn test_ssh_host_key_permissions(pool: PgPool) {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let state_clone = state.clone();
+    let cancel_clone = cancel.clone();
 
     let handle = tokio::spawn(async move {
-        platform::git::ssh_server::run_with_listener(state_clone, listener, &mut shutdown_rx).await
+        platform::git::ssh_server::run_with_listener(state_clone, listener, &cancel_clone).await
     });
 
     // Let the server start and generate the key
@@ -660,7 +664,7 @@ async fn test_ssh_host_key_permissions(pool: PgPool) {
         mode & 0o777
     );
 
-    shutdown_tx.send(()).unwrap();
+    cancel.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
 }
 

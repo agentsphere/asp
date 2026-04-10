@@ -3,9 +3,9 @@
 
 use axum::http::{StatusCode, Uri, header};
 use axum::response::{Html, IntoResponse, Response};
-use rust_embed::Embed;
+use rust_embed::RustEmbed;
 
-#[derive(Embed)]
+#[derive(RustEmbed)]
 #[folder = "ui/dist/"]
 struct UiAssets;
 

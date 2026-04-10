@@ -57,10 +57,11 @@ async fn webhook_fires_on_pipeline_complete(pool: PgPool) {
     let token = admin_token.clone();
 
     // Spawn pipeline executor so pipelines actually get picked up
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let cancel = tokio_util::sync::CancellationToken::new();
     let executor_state = state.clone();
+    let cancel_clone = cancel.clone();
     let executor_handle = tokio::spawn(async move {
-        platform::pipeline::executor::run(executor_state, shutdown_rx).await;
+        platform::pipeline::executor::run(executor_state, cancel_clone).await;
     });
 
     let mock_server = MockServer::start().await;
@@ -124,7 +125,7 @@ async fn webhook_fires_on_pipeline_complete(pool: PgPool) {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Shutdown executor
-    let _ = shutdown_tx.send(());
+    cancel.cancel();
     let _ = executor_handle.await;
 
     // Verify at least one webhook was received

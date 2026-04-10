@@ -3,7 +3,6 @@
 
 use std::time::Duration;
 
-use tokio::sync::watch;
 use tracing::Instrument;
 
 use crate::store::AppState;
@@ -12,12 +11,12 @@ use crate::store::AppState;
 /// Runs hourly to clean up:
 /// - Orphaned blobs (no `blob_links`, older than 24h grace period)
 /// - Expired upload temp files in `MinIO`
-pub async fn run(state: AppState, mut shutdown: watch::Receiver<()>) {
+pub async fn run(state: AppState, cancel: tokio_util::sync::CancellationToken) {
     let mut interval = tokio::time::interval(Duration::from_secs(3600));
     state.task_registry.register("registry_gc", 7200);
     loop {
         tokio::select! {
-            _ = shutdown.changed() => {
+            () = cancel.cancelled() => {
                 tracing::info!("registry GC shutting down");
                 break;
             }
@@ -96,26 +95,20 @@ pub async fn collect_garbage(state: &AppState) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    // Verify the shutdown signal causes the GC loop to exit immediately.
+    // Verify the cancellation token causes the GC loop to exit immediately.
     #[tokio::test]
     async fn gc_run_shuts_down_on_signal() {
         // We can't easily construct a full AppState in a unit test, but we can
-        // verify the run function's structure by testing the shutdown path.
+        // verify the cancellation behavior in isolation.
         // The actual GC logic is integration-tested.
 
-        // Instead, test the shutdown channel behavior in isolation.
-        let (tx, rx) = watch::channel(());
-        // Sending shutdown signal immediately
-        drop(tx);
-        // The receiver should detect the change
-        let mut rx_clone = rx.clone();
-        // changed() will return immediately since sender is dropped
-        let result = rx_clone.changed().await;
-        assert!(
-            result.is_err(),
-            "shutdown signal should be detected when sender drops"
-        );
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel2 = cancel.clone();
+
+        // Cancel immediately
+        cancel.cancel();
+
+        // The child token should also be cancelled
+        assert!(cancel2.is_cancelled(), "cancellation should propagate");
     }
 }

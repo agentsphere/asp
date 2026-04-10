@@ -119,7 +119,7 @@ pub async fn publish(valkey: &fred::clients::Pool, event: &PlatformEvent) -> any
 // ---------------------------------------------------------------------------
 
 /// Background task: subscribe to platform events and dispatch to handlers.
-pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>) {
+pub async fn run(state: AppState, cancel: tokio_util::sync::CancellationToken) {
     tracing::info!("event bus subscriber started");
 
     // Create a dedicated subscriber client from the pool's config
@@ -143,7 +143,7 @@ pub async fn run(state: AppState, mut shutdown: tokio::sync::watch::Receiver<()>
 
     loop {
         tokio::select! {
-            _ = shutdown.changed() => {
+            () = cancel.cancelled() => {
                 tracing::info!("event bus subscriber shutting down");
                 let _ = subscriber.unsubscribe(CHANNEL).await;
                 break;

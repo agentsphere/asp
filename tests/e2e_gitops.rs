@@ -22,28 +22,26 @@ use e2e_helpers::*;
 // ---------------------------------------------------------------------------
 
 struct ReconcilerGuard {
-    shutdown_tx: tokio::sync::watch::Sender<()>,
+    cancel: tokio_util::sync::CancellationToken,
     #[allow(dead_code)]
     handle: tokio::task::JoinHandle<()>,
 }
 
 impl ReconcilerGuard {
     fn spawn(state: &platform::store::AppState) -> Self {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let cancel = tokio_util::sync::CancellationToken::new();
         let reconciler_state = state.clone();
+        let token = cancel.clone();
         let handle = tokio::spawn(async move {
-            platform::deployer::reconciler::run(reconciler_state, shutdown_rx).await;
+            platform::deployer::reconciler::run(reconciler_state, token).await;
         });
-        Self {
-            shutdown_tx,
-            handle,
-        }
+        Self { cancel, handle }
     }
 }
 
 impl Drop for ReconcilerGuard {
     fn drop(&mut self) {
-        let _ = self.shutdown_tx.send(());
+        self.cancel.cancel();
     }
 }
 
@@ -600,38 +598,38 @@ async fn otlp_ingest_and_query_for_project(pool: PgPool) {
     let (status, _) = post_protobuf(&app, &otel_token, "/v1/metrics", metric_body).await;
     assert_eq!(status, StatusCode::OK, "metric ingest should succeed");
 
-    // Flush by spawning flush tasks and signaling shutdown
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    // Flush by spawning flush tasks and signaling cancellation
+    let flush_cancel = tokio_util::sync::CancellationToken::new();
 
     let flush_pool = pool.clone();
-    let flush_shutdown = shutdown_rx.clone();
+    let flush_token = flush_cancel.clone();
     let spans_handle = tokio::spawn(platform::observe::ingest::flush_spans(
         flush_pool,
         spans_rx,
-        flush_shutdown,
+        flush_token,
     ));
 
     let flush_pool = pool.clone();
     let flush_valkey = state.valkey.clone();
-    let flush_shutdown = shutdown_rx.clone();
+    let flush_token = flush_cancel.clone();
     let logs_handle = tokio::spawn(platform::observe::ingest::flush_logs(
         flush_pool,
         flush_valkey,
         logs_rx,
-        flush_shutdown,
+        flush_token,
     ));
 
     let flush_pool = pool.clone();
-    let flush_shutdown = shutdown_rx.clone();
+    let flush_token = flush_cancel.clone();
     let metrics_handle = tokio::spawn(platform::observe::ingest::flush_metrics(
         flush_pool,
         metrics_rx,
-        flush_shutdown,
+        flush_token,
     ));
 
     // Give the flush tasks a tick to process
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-    let _ = shutdown_tx.send(());
+    flush_cancel.cancel();
 
     // Wait for flush tasks to complete
     let _ = spans_handle.await;

@@ -1131,3 +1131,20 @@ New environment variables added by this plan:
 | `tokio-util` | Add `rt` feature (for `TaskTracker`) |
 
 No new crate dependencies.
+
+---
+
+## Implementation Status
+
+All 6 sections implemented. 3145 unit tests pass, fmt + clippy clean.
+
+| Section | Status | Notes |
+|---------|--------|-------|
+| 1. Graceful shutdown | Done | `CancellationToken` + `TaskTracker` in all 16 background tasks |
+| 2. Queue locking | Done | `FOR UPDATE SKIP LOCKED` in executor + reconciler |
+| 3. Connection pools | Done | 5 new config env vars, `max_lifetime` added |
+| 4. Global request timeout | Done | 5-min global, 30-min git/registry per-route |
+| 5. Git process timeouts | Done | `git_http_timeout_secs` config, timeout + kill on hung process |
+| 6. Registry streaming | Done | Streaming chunk upload, incremental SHA256, streaming GET |
+
+Additional fix: `rust_embed::Embed` → `RustEmbed` in `src/ui.rs` (pre-existing compile error).

@@ -6,9 +6,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 #[tracing::instrument(skip(url), err)]
-pub async fn connect(url: &str) -> anyhow::Result<fred::clients::Pool> {
+pub async fn connect(url: &str, pool_size: usize) -> anyhow::Result<fred::clients::Pool> {
     let config = fred::types::config::Config::from_url(url)?;
-    let pool = fred::clients::Pool::new(config, None, None, None, 4)?;
+    let pool = fred::clients::Pool::new(config, None, None, None, pool_size)?;
     pool.init().await?;
 
     tracing::info!("connected to valkey");
