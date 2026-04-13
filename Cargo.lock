@@ -4023,6 +4023,92 @@ dependencies = [
 ]
 
 [[package]]
+name = "platform-auth"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "axum",
+ "chrono",
+ "fred",
+ "hex",
+ "ipnetwork",
+ "platform-types",
+ "rand 0.10.0",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "platform-ingest"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "clap",
+ "fred",
+ "platform-auth",
+ "platform-observe",
+ "platform-types",
+ "prost",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "platform-k8s"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "k8s-openapi",
+ "kube",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "platform-observe"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "chrono",
+ "flate2",
+ "fred",
+ "hex",
+ "platform-types",
+ "prost",
+ "rstest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "platform-proxy"
 version = "0.1.0"
 dependencies = [
@@ -4061,6 +4147,49 @@ dependencies = [
 [[package]]
 name = "platform-proxy-init"
 version = "0.1.0"
+
+[[package]]
+name = "platform-secrets"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "chrono",
+ "hex",
+ "platform-types",
+ "rand 0.10.0",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "platform-types"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "fred",
+ "ipnetwork",
+ "kube",
+ "opendal",
+ "proptest",
+ "rstest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "ts-rs",
+ "uuid",
+]
 
 [[package]]
 name = "poly1305"

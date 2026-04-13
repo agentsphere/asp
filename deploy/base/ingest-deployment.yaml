@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-ingest
+  labels:
+    app: platform-ingest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: platform-ingest
+  template:
+    metadata:
+      labels:
+        app: platform-ingest
+    spec:
+      serviceAccountName: platform
+      containers:
+        - name: ingest
+          image: platform:dev
+          command: ["/platform-ingest"]
+          ports:
+            - containerPort: 8081
+              name: http
+          envFrom:
+            - configMapRef:
+                name: platform-config
+            - secretRef:
+                name: platform-secrets
+          env:
+            - name: INGEST_LISTEN
+              value: "0.0.0.0:8081"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 1
+            periodSeconds: 5

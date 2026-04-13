@@ -6,6 +6,8 @@ namespace: platform
 resources:
   - deployment.yaml
   - service.yaml
+  - ingest-deployment.yaml
+  - ingest-service.yaml
   - configmap.yaml
   - secret.yaml
   - rbac.yaml

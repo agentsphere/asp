@@ -1,5 +1,15 @@
 [workspace]
-members = [".", "crates/proxy", "crates/proxy-init"]
+members = [
+    ".",
+    "crates/platform-proxy",
+    "crates/platform-proxy-init",
+    "crates/platform-types",
+    "crates/platform-auth",
+    "crates/platform-observe",
+    "crates/platform-secrets",
+    "crates/platform-ingest",
+    "crates/platform-k8s",
+]
 
 [package]
 name = "platform"
