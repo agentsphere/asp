@@ -28,8 +28,10 @@ server.log
 # Coverage artifacts
 *.lcov
 coverage-html/
+crate-coverage-html/
 
 # Test artefacts (test-{RUN_ID}-{type})
+test-report.txt
 test-*-report.txt
 test-*-output.txt
 test-*-logs.jsonl

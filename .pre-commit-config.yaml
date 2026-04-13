@@ -8,11 +8,11 @@ repos:
       - id: check-yaml
         args: ['--allow-multiple-documents']
         # Exclude embedded templates: they contain Go/Rust template syntax ({{ }}) that is not valid YAML.
-        exclude: '^(src/git/templates/|helm/|src/onboarding/templates/)'
+        exclude: '^(src/git/templates/|crates/libs/platform-git/src/templates/|helm/|src/onboarding/templates/)'
       - id: check-toml
       - id: check-merge-conflict
       - id: detect-private-key
-        exclude: '^(src/mesh/ca\.rs|tests/mesh_integration\.rs|src/proxy/gateway/tls_external\.rs|crates/platform-proxy/src/proxy/gateway/tls_external\.rs)$'
+        exclude: '^(src/mesh/ca\.rs|tests/mesh_integration\.rs|src/proxy/gateway/tls_external\.rs|crates/bins/platform-proxy/src/proxy/gateway/tls_external\.rs)$'
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.22.1

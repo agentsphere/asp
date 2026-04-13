@@ -1,14 +1,19 @@
 [workspace]
 members = [
     ".",
-    "crates/platform-proxy",
-    "crates/platform-proxy-init",
-    "crates/platform-types",
-    "crates/platform-auth",
-    "crates/platform-observe",
-    "crates/platform-secrets",
-    "crates/platform-ingest",
-    "crates/platform-k8s",
+    # foundation — core types used by almost everything
+    "crates/foundation/platform-types",
+    # libs — domain modules shared across binaries
+    "crates/libs/platform-auth",
+    "crates/libs/platform-observe",
+    "crates/libs/platform-secrets",
+    "crates/libs/platform-k8s",
+    "crates/libs/platform-git",
+    "crates/libs/platform-registry",
+    # bins — standalone deployable binaries
+    "crates/bins/platform-ingest",
+    "crates/bins/platform-proxy",
+    "crates/bins/platform-proxy-init",
 ]
 
 [package]

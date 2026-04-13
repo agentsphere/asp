@@ -4046,6 +4046,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "platform-git"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "hex",
+ "pgp",
+ "serde",
+ "serde_json",
+ "ssh-key",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "platform-ingest"
 version = "0.1.0"
 dependencies = [
@@ -4076,6 +4095,7 @@ dependencies = [
  "anyhow",
  "k8s-openapi",
  "kube",
+ "rustls",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4147,6 +4167,35 @@ dependencies = [
 [[package]]
 name = "platform-proxy-init"
 version = "0.1.0"
+
+[[package]]
+name = "platform-registry"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "flate2",
+ "fred",
+ "fs2",
+ "hex",
+ "k8s-openapi",
+ "kube",
+ "opendal",
+ "platform-auth",
+ "platform-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "platform-secrets"

@@ -92,8 +92,8 @@ mkdir -p "${PROXY_DIR}" "${PROXY_INIT_DIR}"
 echo "  Platform-proxy + proxy-init binaries (→ ${PROXY_DIR}, ${PROXY_INIT_DIR}):"
 PROXY_CHECKSUM_FILE="${PROXY_DIR}/.checksum"
 PROXY_CURRENT_CHECKSUM=$(
-  { find "${PROJECT_DIR}/crates/platform-proxy/src" "${PROJECT_DIR}/crates/platform-proxy-init/src" -name '*.rs' -exec shasum -a 256 {} +
-    shasum -a 256 "${PROJECT_DIR}/crates/platform-proxy/Cargo.toml" "${PROJECT_DIR}/crates/platform-proxy-init/Cargo.toml" "${PROJECT_DIR}/Cargo.lock"
+  { find "${PROJECT_DIR}/crates/bins/platform-proxy/src" "${PROJECT_DIR}/crates/bins/platform-proxy-init/src" -name '*.rs' -exec shasum -a 256 {} +
+    shasum -a 256 "${PROJECT_DIR}/crates/bins/platform-proxy/Cargo.toml" "${PROJECT_DIR}/crates/bins/platform-proxy-init/Cargo.toml" "${PROJECT_DIR}/Cargo.lock"
   } | sort | shasum -a 256 | awk '{print $1}'
 )
 

@@ -210,9 +210,9 @@ test-all: test-unit test-integration test-e2e
 # -- Crate Tests ----------------------------------------------------
 
 # All workspace crates (package names from Cargo.toml)
-_crate_all := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-ingest -p platform-proxy -p platform-proxy-init"
+_crate_all := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-registry -p platform-ingest -p platform-proxy -p platform-proxy-init"
 # Library crates only (excludes binary crates that crash llvm-cov: proxy, proxy-init, ingest)
-_crate_lib := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s"
+_crate_lib := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-registry"
 # Crates with integration tests (need DB + Valkey from .env.dev)
 _crate_int := "-p platform-auth -p platform-observe -p platform-secrets -p platform-types"
 # Crates with K8s integration tests (need Kind cluster)
@@ -257,7 +257,7 @@ crate-test-kubernetes crate="" filter="":
 [group('crate')]
 crate-test-all crate="":
     just crate-test-unit {{crate}}
-    {{ if crate == "platform-proxy" { "" } else if crate == "platform-proxy-init" { "" } else if crate == "platform-ingest" { "" } else if crate == "platform-k8s" { "" } else { "just crate-test-integration " + crate } }}
+    {{ if crate == "platform-proxy" { "" } else if crate == "platform-proxy-init" { "" } else if crate == "platform-ingest" { "" } else if crate == "platform-k8s" { "" } else if crate == "platform-registry" { "" } else { "just crate-test-integration " + crate } }}
     just crate-test-kubernetes
 
 # Coverage for workspace crates (unit + integration + K8s, uses DB/Valkey/K8s)
@@ -342,18 +342,18 @@ db-revert:
 [group('db')]
 db-prepare:
     cargo sqlx prepare
-    cd crates/platform-types && cargo sqlx prepare
-    cd crates/platform-auth && cargo sqlx prepare
-    cd crates/platform-observe && cargo sqlx prepare
-    cd crates/platform-secrets && cargo sqlx prepare
+    cd crates/foundation/platform-types && cargo sqlx prepare
+    cd crates/libs/platform-auth && cargo sqlx prepare
+    cd crates/libs/platform-observe && cargo sqlx prepare
+    cd crates/libs/platform-secrets && cargo sqlx prepare
 
 [group('db')]
 db-check:
     cargo sqlx prepare --check
-    cd crates/platform-types && cargo sqlx prepare --check
-    cd crates/platform-auth && cargo sqlx prepare --check
-    cd crates/platform-observe && cargo sqlx prepare --check
-    cd crates/platform-secrets && cargo sqlx prepare --check
+    cd crates/foundation/platform-types && cargo sqlx prepare --check
+    cd crates/libs/platform-auth && cargo sqlx prepare --check
+    cd crates/libs/platform-observe && cargo sqlx prepare --check
+    cd crates/libs/platform-secrets && cargo sqlx prepare --check
 
 # -- Build ----------------------------------------------------------
 [group('build')]
