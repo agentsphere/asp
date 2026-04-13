@@ -7,6 +7,8 @@ pub mod audit;
 pub mod auth_user;
 pub mod error;
 pub mod events;
+pub mod git_error;
+pub mod git_traits;
 pub mod permission;
 pub mod pool;
 pub mod traits;
@@ -19,6 +21,8 @@ pub use audit::{AuditEntry, AuditLog, send_audit};
 pub use auth_user::{AuthUser, PermissionChecker, PermissionResolver, parse_user_type};
 pub use error::ApiError;
 pub use events::PlatformEvent;
+pub use git_error::GitError;
+pub use git_traits::{GitCoreRead, GitMerger, GitWriter};
 pub use permission::Permission;
 pub use traits::{
     AuditLogger, MergeRequestHandler, NotificationDispatcher, NotifyParams, OpsRepoManager,
@@ -27,6 +31,7 @@ pub use traits::{
 #[cfg(feature = "kube")]
 pub use traits::{ManifestApplier, RegistryCredentialProvider};
 pub use user_type::UserType;
+pub use validation::slugify_branch;
 
 /// Generic paginated list response.
 #[derive(Debug, serde::Serialize)]

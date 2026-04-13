@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::error::GitError;
 use crate::lock;
-use crate::traits::{GitMerger, GitWorktreeWriter};
+use crate::traits::{GitMerger, GitWriter};
 
 // ---------------------------------------------------------------------------
 // CliGitMerger
@@ -41,9 +41,20 @@ impl GitMerger for CliGitMerger {
         )
         .await?;
 
-        // Merge source into target with --no-ff
-        let merge_result =
-            run_git_with_env(&worktree_dir, &["merge", "--no-ff", source, "-m", message]).await;
+        // Merge source into target with --no-ff (--allow-unrelated-histories is a
+        // no-op when histories share a common ancestor, but needed for ops-repo merges)
+        let merge_result = run_git_with_env(
+            &worktree_dir,
+            &[
+                "merge",
+                "--no-ff",
+                "--allow-unrelated-histories",
+                source,
+                "-m",
+                message,
+            ],
+        )
+        .await;
 
         // Get the merge commit SHA before cleanup
         let sha = if merge_result.is_ok() {
@@ -156,10 +167,10 @@ impl GitMerger for CliGitMerger {
 // CliGitWorktreeWriter
 // ---------------------------------------------------------------------------
 
-/// Default [`GitWorktreeWriter`] implementation using temporary worktrees.
+/// Default [`GitWriter`] implementation using temporary worktrees.
 pub struct CliGitWorktreeWriter;
 
-impl GitWorktreeWriter for CliGitWorktreeWriter {
+impl GitWriter for CliGitWorktreeWriter {
     async fn commit_files(
         &self,
         repo: &Path,
@@ -219,6 +230,111 @@ impl GitWorktreeWriter for CliGitWorktreeWriter {
             // Commit
             run_git_with_env(&worktree_dir, &["commit", "-m", message]).await?;
 
+            let sha = run_git(&worktree_dir, &["rev-parse", "HEAD"]).await?;
+            Ok(sha.trim().to_string())
+        }
+        .await;
+
+        cleanup_worktree(repo, &worktree_dir).await;
+        result
+    }
+
+    async fn commit_all(
+        &self,
+        repo: &Path,
+        branch: &str,
+        files: &[(&str, &[u8])],
+        remove_dirs: &[&str],
+        message: &str,
+    ) -> Result<String, GitError> {
+        let _lock = lock::repo_lock(repo).await;
+
+        ensure_branch_exists(repo, branch).await?;
+
+        let worktree_dir = repo.join(format!("_commitall_worktree_{}", Uuid::new_v4()));
+
+        run_git(
+            repo,
+            &[
+                "worktree",
+                "add",
+                worktree_dir.to_str().unwrap_or_default(),
+                branch,
+            ],
+        )
+        .await?;
+
+        let result = async {
+            // Remove specified directories
+            for dir in remove_dirs {
+                let target = worktree_dir.join(dir);
+                if target.exists() {
+                    tokio::fs::remove_dir_all(&target)
+                        .await
+                        .map_err(GitError::Io)?;
+                }
+            }
+
+            // Write all files
+            for (path, content) in files {
+                let dest = worktree_dir.join(path);
+                if let Some(parent) = dest.parent() {
+                    tokio::fs::create_dir_all(parent)
+                        .await
+                        .map_err(GitError::Io)?;
+                }
+                tokio::fs::write(&dest, content)
+                    .await
+                    .map_err(GitError::Io)?;
+            }
+
+            // Stage ALL changes including deletions
+            run_git(&worktree_dir, &["add", "-A"]).await?;
+
+            // Check if there are staged changes
+            let diff_output = tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&worktree_dir)
+                .args(["diff", "--cached", "--quiet"])
+                .status()
+                .await;
+
+            if diff_output.map(|s| s.success()).unwrap_or(false) {
+                // No changes — return current HEAD
+                let sha = run_git(&worktree_dir, &["rev-parse", "HEAD"]).await?;
+                return Ok(sha.trim().to_string());
+            }
+
+            // Commit
+            run_git_with_env(&worktree_dir, &["commit", "-m", message]).await?;
+
+            let sha = run_git(&worktree_dir, &["rev-parse", "HEAD"]).await?;
+            Ok(sha.trim().to_string())
+        }
+        .await;
+
+        cleanup_worktree(repo, &worktree_dir).await;
+        result
+    }
+
+    async fn revert_head(&self, repo: &Path, branch: &str) -> Result<String, GitError> {
+        let _lock = lock::repo_lock(repo).await;
+
+        let worktree_dir = repo.join(format!("_revert_worktree_{}", Uuid::new_v4()));
+
+        run_git(
+            repo,
+            &[
+                "worktree",
+                "add",
+                worktree_dir.to_str().unwrap_or_default(),
+                branch,
+            ],
+        )
+        .await?;
+
+        let result = async {
+            run_git_with_env(&worktree_dir, &["revert", "HEAD", "--no-edit"]).await?;
             let sha = run_git(&worktree_dir, &["rev-parse", "HEAD"]).await?;
             Ok(sha.trim().to_string())
         }
@@ -606,6 +722,124 @@ mod tests {
             .await
             .unwrap();
         assert!(check2.status.success(), "branch should exist now");
+    }
+
+    // -----------------------------------------------------------------------
+    // revert_head
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn revert_head_restores_previous() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let writer = CliGitWorktreeWriter;
+
+        // Write a file
+        writer
+            .commit_files(&repo, "main", &[("data.txt", b"original")], "add data")
+            .await
+            .unwrap();
+
+        // Overwrite it
+        writer
+            .commit_files(&repo, "main", &[("data.txt", b"modified")], "modify data")
+            .await
+            .unwrap();
+
+        // Revert — should restore "original"
+        let sha = writer.revert_head(&repo, "main").await.unwrap();
+        assert_eq!(sha.len(), 40);
+
+        let git = crate::ops::CliGitRepo;
+        let content = crate::traits::GitCoreRead::read_file(&git, &repo, "main", "data.txt")
+            .await
+            .unwrap();
+        assert_eq!(content, Some("original".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // commit_all
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn commit_all_stages_deletions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let writer = CliGitWorktreeWriter;
+
+        // First: write two files under deploy/
+        writer
+            .commit_files(
+                &repo,
+                "main",
+                &[
+                    ("deploy/a.yaml", b"file a"),
+                    ("deploy/b.yaml", b"file b"),
+                    ("values/prod.yaml", b"replicas: 1"),
+                ],
+                "initial deploy",
+            )
+            .await
+            .unwrap();
+
+        // Now commit_all with only a.yaml (remove deploy/ dir first, b.yaml should be gone)
+        let sha = writer
+            .commit_all(
+                &repo,
+                "main",
+                &[("deploy/a.yaml", b"file a updated")],
+                &["deploy"],
+                "sync deploy",
+            )
+            .await
+            .unwrap();
+        assert_eq!(sha.len(), 40);
+
+        let git = crate::ops::CliGitRepo;
+        // a.yaml should be updated
+        let a_content = crate::traits::GitCoreRead::read_file(&git, &repo, "main", "deploy/a.yaml")
+            .await
+            .unwrap();
+        assert_eq!(a_content, Some("file a updated".to_string()));
+
+        // b.yaml should be gone
+        let b_content = crate::traits::GitCoreRead::read_file(&git, &repo, "main", "deploy/b.yaml")
+            .await
+            .unwrap();
+        assert_eq!(b_content, None);
+
+        // values/prod.yaml should still exist (not in remove_dirs)
+        let vals = crate::traits::GitCoreRead::read_file(&git, &repo, "main", "values/prod.yaml")
+            .await
+            .unwrap();
+        assert_eq!(vals, Some("replicas: 1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn commit_all_no_changes_returns_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let writer = CliGitWorktreeWriter;
+
+        // Write a file
+        let sha1 = writer
+            .commit_files(&repo, "main", &[("deploy/a.yaml", b"content")], "add file")
+            .await
+            .unwrap();
+
+        // commit_all with same content and no removals — should be a no-op
+        let sha2 = writer
+            .commit_all(
+                &repo,
+                "main",
+                &[("deploy/a.yaml", b"content")],
+                &[],
+                "no-op sync",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(sha1, sha2, "no changes should return same HEAD");
     }
 
     #[tokio::test]

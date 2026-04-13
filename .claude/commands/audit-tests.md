@@ -175,7 +175,7 @@ _Missing tier for coverage:_
 **Verify test infrastructure quality:**
 
 _Mock CLI:_
-- [ ] `cli/claude-mock/claude` — does its output match real Claude CLI format?
+- [ ] `tests/fixtures/claude-mock/claude` — does its output match real Claude CLI format?
 - [ ] Mock NDJSON events: do they cover all `ProgressKind` variants?
 - [ ] Mock errors: are error scenarios covered?
 

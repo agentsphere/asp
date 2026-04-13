@@ -14,7 +14,7 @@ Drop-in mock replacement for the `claude` CLI binary. Used by platform and agent
 Set `CLAUDE_CLI_PATH` to point to this mock:
 
 ```bash
-export CLAUDE_CLI_PATH=/path/to/cli/claude-mock/claude
+export CLAUDE_CLI_PATH=/path/to/tests/fixtures/claude-mock/claude
 ```
 
 The platform's `test_state()` / `test_state_with_cli()` helpers set this automatically.

@@ -3,8 +3,13 @@
 
 //! Trait definitions for git operations.
 //!
+//! Core traits (`GitCoreRead`, `GitWriter`, `GitMerger`) are defined in
+//! `platform-types` and re-exported here. This module extends them with
+//! browser-specific traits (`GitRepo`) and app-specific traits that require
+//! DB access.
+//!
 //! Traits with default CLI implementations in this crate:
-//! - [`GitRepo`], [`GitRepoManager`], [`GitMerger`], [`GitWorktreeWriter`]
+//! - [`GitRepo`], [`GitRepoManager`]
 //!
 //! Traits without default implementations (require DB access):
 //! - [`PostReceiveHandler`], [`BranchProtectionProvider`], [`GitAuthenticator`],
@@ -20,35 +25,19 @@ use crate::protection::BranchProtection;
 use crate::templates::TemplateFile;
 use crate::types::{GitUser, MrSyncEvent, PushEvent, ResolvedProject, TagEvent};
 
+// Re-export core traits from platform-types.
+pub use platform_types::{GitCoreRead, GitMerger, GitWriter};
+
 // ---------------------------------------------------------------------------
-// 1. GitRepo — Read operations on bare repos
+// 1. GitRepo — Browser/UI read operations on bare repos
 // ---------------------------------------------------------------------------
 
-/// Read-only operations on a git repository.
-pub trait GitRepo: Send + Sync {
-    /// Resolve a refspec to a commit SHA.
-    fn rev_parse(
-        &self,
-        repo: &Path,
-        refspec: &str,
-    ) -> impl Future<Output = Result<String, GitError>> + Send;
-
-    /// Read a file at a given ref. Returns `None` if the file doesn't exist.
-    fn read_file(
-        &self,
-        repo: &Path,
-        git_ref: &str,
-        path: &str,
-    ) -> impl Future<Output = Result<Option<String>, GitError>> + Send;
-
-    /// List directory entries at a given ref (one level, not recursive).
-    fn list_dir(
-        &self,
-        repo: &Path,
-        git_ref: &str,
-        dir: &str,
-    ) -> impl Future<Output = Result<Vec<String>, GitError>> + Send;
-
+/// Extended read-only operations on a git repository.
+///
+/// Inherits core read methods from [`GitCoreRead`]. Adds browser/UI-specific
+/// methods (tree listing with metadata, blob content, branch listing,
+/// commit log, commit detail).
+pub trait GitRepo: GitCoreRead {
     /// List tree entries at a given ref/path via `git ls-tree`.
     fn list_tree(
         &self,
@@ -87,21 +76,6 @@ pub trait GitRepo: Send + Sync {
         repo: &Path,
         sha: &str,
     ) -> impl Future<Output = Result<CommitInfo, GitError>> + Send;
-
-    /// Check if `potential_ancestor` is an ancestor of `commit`.
-    fn is_ancestor(
-        &self,
-        repo: &Path,
-        potential_ancestor: &str,
-        commit: &str,
-    ) -> impl Future<Output = Result<bool, GitError>> + Send;
-
-    /// Check if a branch exists in the repo.
-    fn branch_exists(
-        &self,
-        repo: &Path,
-        branch: &str,
-    ) -> impl Future<Output = Result<bool, GitError>> + Send;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,57 +114,7 @@ pub trait GitRepoManager: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// 3. GitMerger — Merge strategies via worktrees
-// ---------------------------------------------------------------------------
-
-/// Merge operations on bare repos using worktrees.
-pub trait GitMerger: Send + Sync {
-    /// No-fast-forward merge of source into target.
-    fn merge_no_ff(
-        &self,
-        repo: &Path,
-        source: &str,
-        target: &str,
-        message: &str,
-    ) -> impl Future<Output = Result<String, GitError>> + Send;
-
-    /// Squash merge: all source commits into a single commit on target.
-    fn squash_merge(
-        &self,
-        repo: &Path,
-        source: &str,
-        target: &str,
-        message: &str,
-    ) -> impl Future<Output = Result<String, GitError>> + Send;
-
-    /// Rebase merge: fast-forward target to source (source must be rebased on target).
-    fn rebase_merge(
-        &self,
-        repo: &Path,
-        source: &str,
-        target: &str,
-    ) -> impl Future<Output = Result<String, GitError>> + Send;
-}
-
-// ---------------------------------------------------------------------------
-// 4. GitWorktreeWriter — Write files via worktrees (locked)
-// ---------------------------------------------------------------------------
-
-/// Write files to a bare repo branch via worktrees.
-/// Per-repo locking is handled by the implementation.
-pub trait GitWorktreeWriter: Send + Sync {
-    /// Commit one or more files on a branch. Returns the new commit SHA.
-    fn commit_files(
-        &self,
-        repo: &Path,
-        branch: &str,
-        files: &[(&str, &[u8])],
-        message: &str,
-    ) -> impl Future<Output = Result<String, GitError>> + Send;
-}
-
-// ---------------------------------------------------------------------------
-// 5. PostReceiveHandler — Side effects after push (app-specific)
+// 3. PostReceiveHandler — Side effects after push (app-specific)
 // ---------------------------------------------------------------------------
 
 /// Side effects after a git push (pipeline triggers, webhooks, MR sync).
@@ -209,7 +133,7 @@ pub trait PostReceiveHandler: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// 6. BranchProtectionProvider — Protection rule lookup (DB-backed)
+// 4. BranchProtectionProvider — Protection rule lookup (DB-backed)
 // ---------------------------------------------------------------------------
 
 /// Look up branch protection rules. Requires DB access — no default impl.
@@ -222,7 +146,7 @@ pub trait BranchProtectionProvider: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// 7. GitAuthenticator — Auth for git transports (DB-backed)
+// 5. GitAuthenticator — Auth for git transports (DB-backed)
 // ---------------------------------------------------------------------------
 
 /// Authenticate users for git transport (HTTP basic auth, SSH keys).
@@ -241,7 +165,7 @@ pub trait GitAuthenticator: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// 8. GitAccessControl — Permission checks (DB-backed)
+// 6. GitAccessControl — Permission checks (DB-backed)
 // ---------------------------------------------------------------------------
 
 /// Check read/write access to a project's git repository.
@@ -261,7 +185,7 @@ pub trait GitAccessControl: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// 9. ProjectResolver — Resolve owner/repo to project (DB-backed)
+// 7. ProjectResolver — Resolve owner/repo to project (DB-backed)
 // ---------------------------------------------------------------------------
 
 /// Resolve owner/repo path segments to a project. Requires DB — no default impl.

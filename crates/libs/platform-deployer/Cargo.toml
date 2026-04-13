@@ -6,7 +6,7 @@ license = "BUSL-1.1"
 
 [dependencies]
 # Workspace crates
-platform-pipeline = { path = "../platform-pipeline" }
+platform-types = { path = "../../foundation/platform-types", features = ["kube"] }
 
 # Kubernetes
 kube = { version = "3", default-features = false, features = ["client"] }

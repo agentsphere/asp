@@ -520,7 +520,7 @@ _Dependency freshness:_
 
 ### Agent 9: Agent & Pipeline Sandbox Security
 
-**Scope:** All files under `src/agent/`, `src/pipeline/`, `cli/agent-runner/src/`, `cli/claude-mock/claude`
+**Scope:** All files under `src/agent/`, `src/pipeline/`, `cli/agent-runner/src/`, `tests/fixtures/claude-mock/claude`
 
 **Read ALL files, then analyze the trust boundary between user code and platform code:**
 

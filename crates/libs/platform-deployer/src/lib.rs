@@ -10,3 +10,24 @@ pub mod renderer;
 pub mod types;
 
 pub use error::DeployerError;
+
+use platform_types::ManifestApplier;
+
+/// Service struct that implements `ManifestApplier` from `platform-types`.
+pub struct DeployerService;
+
+impl ManifestApplier for DeployerService {
+    async fn render_and_apply(
+        &self,
+        kube: &kube::Client,
+        manifest: &str,
+        vars: &serde_json::Value,
+        namespace: &str,
+        tracking: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let rendered = renderer::render_from_value(manifest, vars)?;
+        let tracking_id = tracking.and_then(|t| uuid::Uuid::parse_str(t).ok());
+        applier::apply_with_tracking(kube, &rendered, namespace, tracking_id).await?;
+        Ok(())
+    }
+}

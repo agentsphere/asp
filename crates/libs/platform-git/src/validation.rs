@@ -91,6 +91,18 @@ pub fn match_glob_pattern(pattern: &str, value: &str) -> bool {
     true
 }
 
+/// Validate a Git LFS OID (SHA-256 hash).
+///
+/// Must be exactly 64 hexadecimal characters.
+pub fn check_lfs_oid(oid: &str) -> Result<(), GitError> {
+    if oid.len() != 64 || !oid.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(GitError::BadRequest(
+            "invalid LFS OID: must be 64 hex characters (SHA-256)".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +213,41 @@ mod tests {
         // Pattern "ab*ab" should match "abab" but not "ab"
         assert!(match_glob_pattern("ab*ab", "abab"));
         assert!(!match_glob_pattern("ab*ab", "ab"));
+    }
+
+    // -- check_lfs_oid --
+
+    #[test]
+    fn lfs_oid_valid() {
+        let oid = "a".repeat(64);
+        assert!(check_lfs_oid(&oid).is_ok());
+        let oid = "0123456789abcdef".repeat(4);
+        assert!(check_lfs_oid(&oid).is_ok());
+        let oid = "0123456789ABCDEF".repeat(4);
+        assert!(check_lfs_oid(&oid).is_ok());
+    }
+
+    #[test]
+    fn lfs_oid_too_short() {
+        let oid = "a".repeat(63);
+        assert!(check_lfs_oid(&oid).is_err());
+    }
+
+    #[test]
+    fn lfs_oid_too_long() {
+        let oid = "a".repeat(65);
+        assert!(check_lfs_oid(&oid).is_err());
+    }
+
+    #[test]
+    fn lfs_oid_non_hex() {
+        let mut oid = "a".repeat(63);
+        oid.push('g');
+        assert!(check_lfs_oid(&oid).is_err());
+    }
+
+    #[test]
+    fn lfs_oid_empty() {
+        assert!(check_lfs_oid("").is_err());
     }
 }

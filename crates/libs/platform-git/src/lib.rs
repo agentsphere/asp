@@ -9,48 +9,64 @@
 //!
 //! ## Traits
 //!
-//! - [`GitRepo`] — read operations on bare repos (rev-parse, ls-tree, log, etc.)
-//! - [`GitRepoManager`] — create/init repos, tags
+//! Core traits (defined in `platform-types`, re-exported here):
+//! - [`GitCoreRead`] — core read operations (rev-parse, read-file, list-dir, etc.)
+//! - [`GitWriter`] — write files via worktrees with per-repo locking
 //! - [`GitMerger`] — merge strategies via worktrees
-//! - [`GitWorktreeWriter`] — write files via worktrees with per-repo locking
-//! - [`PostReceiveHandler`] — side effects after push (app-specific, no default impl)
-//! - [`BranchProtectionProvider`] — protection rule lookup (DB-backed, no default impl)
-//! - [`GitAuthenticator`] — auth for git transports (DB-backed, no default impl)
-//! - [`GitAccessControl`] — permission checks (DB-backed, no default impl)
-//! - [`ProjectResolver`] — resolve owner/repo to project (DB-backed, no default impl)
+//!
+//! Extended traits (defined here):
+//! - [`GitRepo`] — browser/UI read operations (extends `GitCoreRead`)
+//! - [`GitRepoManager`] — create/init repos, tags
+//!
+//! App-specific traits (no default impl, require DB access):
+//! - [`PostReceiveHandler`], [`BranchProtectionProvider`], [`GitAuthenticator`],
+//!   [`GitAccessControl`], [`ProjectResolver`]
 //!
 //! ## Concrete implementations
 //!
-//! - [`CliGitRepo`] — shells out to `git` CLI
+//! - [`CliGitRepo`] — shells out to `git` CLI (implements `GitCoreRead` + `GitRepo`)
 //! - [`CliGitRepoManager`] — shells out to `git` plumbing commands
 //! - [`CliGitMerger`] — merge via worktrees + `git` CLI
 //! - [`CliGitWorktreeWriter`] — write files via worktrees + per-repo locking
 
+pub mod browser;
 pub mod browser_types;
 pub mod error;
 pub mod gpg_keys;
 pub mod hooks;
+pub mod lfs;
 pub mod lock;
 pub mod ops;
+pub mod pkt_line;
 pub mod plumbing;
 pub mod protection;
+pub mod server_config;
+pub mod server_services;
 pub mod signature;
+pub mod smart_http;
 pub mod ssh_command;
 pub mod ssh_keys;
+pub mod ssh_server;
 pub mod templates;
 pub mod traits;
 pub mod types;
 pub mod validation;
 pub mod worktree;
 
+// Re-export core traits from platform-types at crate root.
+pub use platform_types::{GitCoreRead, GitError, GitMerger, GitWriter};
+
 // Re-export key types at crate root for convenience.
 pub use browser_types::{BlobContent, BranchInfo, CommitInfo, TreeEntry};
-pub use error::{GitError, GpgKeyError, SshError, SshKeyError};
+pub use error::{GpgKeyError, SshError, SshKeyError};
 pub use hooks::{PostReceiveParams, RefUpdate};
 pub use lock::repo_lock;
 pub use ops::CliGitRepo;
+pub use pkt_line::{find_flush_pkt, pkt_line_header};
 pub use plumbing::CliGitRepoManager;
 pub use protection::BranchProtection;
+pub use server_config::GitServerConfig;
+pub use server_services::{BrowserUser, GitServerServices, GitServerState, GpgKeyInfo};
 pub use signature::{SignatureInfo, SignatureStatus};
 pub use ssh_command::ParsedCommand;
 pub use ssh_keys::ParsedSshKey;

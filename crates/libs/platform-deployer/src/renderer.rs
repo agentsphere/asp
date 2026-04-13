@@ -57,6 +57,24 @@ pub fn render(template_content: &str, vars: &RenderVars) -> Result<String, Deplo
     .map_err(|e| DeployerError::RenderFailed(e.to_string()))
 }
 
+/// Render a manifest template from a generic JSON value context.
+///
+/// Used by the `ManifestApplier` trait implementation where the caller
+/// provides variables as `serde_json::Value` rather than `RenderVars`.
+pub fn render_from_value(
+    template_content: &str,
+    vars: &serde_json::Value,
+) -> Result<String, DeployerError> {
+    let mut env = minijinja::Environment::new();
+    env.add_template("manifest", template_content)
+        .map_err(|e| DeployerError::RenderFailed(e.to_string()))?;
+    let tmpl = env
+        .get_template("manifest")
+        .map_err(|e| DeployerError::RenderFailed(e.to_string()))?;
+    tmpl.render(vars)
+        .map_err(|e| DeployerError::RenderFailed(e.to_string()))
+}
+
 /// Split a rendered multi-document YAML string into individual documents.
 /// Documents are separated by `---` on its own line.
 pub fn split_yaml_documents(yaml: &str) -> Vec<String> {
@@ -424,5 +442,51 @@ spec:
         let result = render(template, &vars).unwrap();
         assert!(result.contains("port: 443"));
         assert!(result.contains("type: LoadBalancer"));
+    }
+
+    // --- render_from_value ---
+
+    #[test]
+    fn render_from_value_basic() {
+        let template = "image: {{ image_ref }}";
+        let vars = serde_json::json!({"image_ref": "registry/app:v1"});
+        let result = render_from_value(template, &vars).unwrap();
+        assert_eq!(result, "image: registry/app:v1");
+    }
+
+    #[test]
+    fn render_from_value_nested() {
+        let template = "replicas: {{ values.replicas }}\ncpu: {{ values.resources.cpu }}";
+        let vars = serde_json::json!({
+            "values": {
+                "replicas": 3,
+                "resources": {"cpu": "500m"}
+            }
+        });
+        let result = render_from_value(template, &vars).unwrap();
+        assert!(result.contains("replicas: 3"));
+        assert!(result.contains("cpu: 500m"));
+    }
+
+    #[test]
+    fn render_from_value_invalid_template() {
+        let template = "{{ unclosed";
+        let vars = serde_json::json!({});
+        assert!(render_from_value(template, &vars).is_err());
+    }
+
+    #[test]
+    fn render_from_value_empty_template() {
+        let vars = serde_json::json!({"key": "value"});
+        let result = render_from_value("", &vars).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn render_from_value_plain_text() {
+        let template = "apiVersion: v1\nkind: ConfigMap";
+        let vars = serde_json::json!({});
+        let result = render_from_value(template, &vars).unwrap();
+        assert_eq!(result, template);
     }
 }

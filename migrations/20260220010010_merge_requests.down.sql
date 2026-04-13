@@ -1,2 +1,0 @@
-DROP TABLE IF EXISTS mr_reviews CASCADE;
-DROP TABLE IF EXISTS merge_requests CASCADE;

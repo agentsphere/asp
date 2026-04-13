@@ -1,3 +1,0 @@
-ALTER TABLE mr_reviews DROP COLUMN IF EXISTS is_stale;
-ALTER TABLE merge_requests DROP COLUMN IF EXISTS head_sha;
-ALTER TABLE pipelines DROP COLUMN IF EXISTS version;

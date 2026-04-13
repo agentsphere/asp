@@ -1,12 +1,11 @@
 // Copyright (c) 2026 Steven Hooker. Exclusively licensed to and distributed by AgentSphere GmbH.
 // SPDX-License-Identifier: BUSL-1.1
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 
+use platform_git::{CliGitMerger, CliGitRepo, CliGitWorktreeWriter};
+use platform_types::{GitCoreRead, GitMerger, GitWriter};
 use sqlx::{PgPool, Row};
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -43,25 +42,23 @@ pub enum OpsRepoError {
     Other(#[from] anyhow::Error),
 }
 
-// ---------------------------------------------------------------------------
-// Per-repo locking
-// ---------------------------------------------------------------------------
-
-/// Per-repo mutex to serialize git operations on bare repos.
-/// Multiple concurrent worktree operations on the same bare repo cause ref lock conflicts.
-static REPO_LOCKS: LazyLock<Mutex<HashMap<PathBuf, std::sync::Arc<Mutex<()>>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Acquire a per-repo lock for serializing git operations.
-async fn repo_lock(repo_path: &Path) -> tokio::sync::OwnedMutexGuard<()> {
-    let mut locks = REPO_LOCKS.lock().await;
-    let lock = locks
-        .entry(repo_path.to_path_buf())
-        .or_insert_with(|| std::sync::Arc::new(Mutex::new(())))
-        .clone();
-    drop(locks); // Release the outer lock before awaiting the inner one
-    lock.lock_owned().await
+impl From<platform_types::GitError> for OpsRepoError {
+    fn from(err: platform_types::GitError) -> Self {
+        match err {
+            platform_types::GitError::FileNotFound { git_ref, path } => {
+                Self::NotFound(format!("{git_ref}:{path}"))
+            }
+            platform_types::GitError::RefNotFound(r) => Self::NotFound(r),
+            platform_types::GitError::MergeConflict(msg) => Self::CommitFailed(msg),
+            other => Self::Other(other.into()),
+        }
+    }
 }
+
+// Zero-cost module-level instances (no fields, no state).
+const GIT: CliGitRepo = CliGitRepo;
+const WRITER: CliGitWorktreeWriter = CliGitWorktreeWriter;
+const MERGER: CliGitMerger = CliGitMerger;
 
 // ---------------------------------------------------------------------------
 // Ops repo lifecycle (local bare repos)
@@ -117,42 +114,14 @@ pub async fn init_ops_repo(
 
 /// Get the current HEAD SHA of a bare repo.
 pub async fn get_head_sha(repo_path: &Path) -> Result<String, OpsRepoError> {
-    let output = tokio::process::Command::new("git")
-        .args(["-C"])
-        .arg(repo_path)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::SyncFailed(e.to_string()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(OpsRepoError::SyncFailed(format!(
-            "git rev-parse failed: {stderr}"
-        )));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    Ok(GIT.rev_parse(repo_path, "HEAD").await?)
 }
 
 /// Get the SHA of a specific branch in a bare repo.
 pub async fn get_branch_sha(repo_path: &Path, branch: &str) -> Result<String, OpsRepoError> {
-    let output = tokio::process::Command::new("git")
-        .args(["-C"])
-        .arg(repo_path)
-        .args(["rev-parse", &format!("refs/heads/{branch}")])
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::SyncFailed(e.to_string()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(OpsRepoError::SyncFailed(format!(
-            "git rev-parse refs/heads/{branch} failed: {stderr}"
-        )));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    Ok(GIT
+        .rev_parse(repo_path, &format!("refs/heads/{branch}"))
+        .await?)
 }
 
 /// Read a file from a bare repo at a given ref without a working tree.
@@ -162,22 +131,9 @@ pub async fn read_file_at_ref(
     git_ref: &str,
     file_path: &str,
 ) -> Result<String, OpsRepoError> {
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .arg("show")
-        .arg(format!("{git_ref}:{file_path}"))
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::SyncFailed(e.to_string()))?;
-
-    if !output.status.success() {
-        return Err(OpsRepoError::ValuesNotFound(format!(
-            "{file_path} at {git_ref}"
-        )));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    GIT.read_file(repo_path, git_ref, file_path)
+        .await?
+        .ok_or_else(|| OpsRepoError::ValuesNotFound(format!("{file_path} at {git_ref}")))
 }
 
 /// Read all YAML files from a directory in a bare repo at a given ref.
@@ -188,29 +144,19 @@ pub async fn read_dir_yaml_at_ref(
     dir_path: &str,
 ) -> Result<String, OpsRepoError> {
     let dir = dir_path.trim_end_matches('/');
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["ls-tree", "--name-only", git_ref, &format!("{dir}/")])
-        .output()
+    let entries = GIT
+        .list_dir(repo_path, git_ref, dir)
         .await
-        .map_err(|e| OpsRepoError::SyncFailed(e.to_string()))?;
+        .map_err(|_| OpsRepoError::ValuesNotFound(format!("{dir_path} at {git_ref}")))?;
 
-    if !output.status.success() {
-        return Err(OpsRepoError::ValuesNotFound(format!(
-            "{dir_path} at {git_ref}"
-        )));
-    }
-
-    let file_list = String::from_utf8_lossy(&output.stdout);
     let mut combined = String::new();
 
-    for file in file_list.lines() {
-        let ext = std::path::Path::new(file)
+    for file_name in &entries {
+        let ext = std::path::Path::new(file_name)
             .extension()
             .and_then(|e| e.to_str());
         // Skip values/variables files — they're not K8s manifests
-        let basename = std::path::Path::new(file)
+        let basename = std::path::Path::new(file_name)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("");
@@ -218,7 +164,8 @@ pub async fn read_dir_yaml_at_ref(
             if !combined.is_empty() {
                 combined.push_str("\n---\n");
             }
-            let content = read_file_at_ref(repo_path, git_ref, file).await?;
+            let path = format!("{dir}/{file_name}");
+            let content = read_file_at_ref(repo_path, git_ref, &path).await?;
             combined.push_str(&content);
         }
     }
@@ -260,38 +207,24 @@ pub async fn commit_values(
     environment: &str,
     values: &serde_json::Value,
 ) -> Result<String, OpsRepoError> {
-    let _lock = repo_lock(repo_path).await;
-    // Ensure the branch exists (bare repo may be empty after init)
-    ensure_branch_exists(repo_path, branch).await?;
+    let yaml_content = serde_yaml::to_string(values)
+        .map_err(|e| OpsRepoError::CommitFailed(format!("yaml serialize: {e}")))?;
 
-    let worktree_dir = repo_path.join(format!("_values_worktree_{}", Uuid::new_v4()));
+    let file_path = format!("values/{environment}.yaml");
+    let image_ref = values
+        .get("image_ref")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let msg = format!("deploy({environment}): update image to {image_ref}");
 
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .arg("worktree")
-        .arg("add")
-        .arg(&worktree_dir)
-        .arg(branch)
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::CommitFailed(e.to_string()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(OpsRepoError::CommitFailed(format!(
-            "git worktree add failed: {stderr}"
-        )));
-    }
-
-    let result = write_and_commit_values(&worktree_dir, environment, values).await;
-
-    // Always clean up worktree
-    cleanup_worktree(repo_path, &worktree_dir).await;
-
-    result?;
-
-    get_branch_sha(repo_path, branch).await
+    Ok(WRITER
+        .commit_files(
+            repo_path,
+            branch,
+            &[(&file_path, yaml_content.as_bytes())],
+            &msg,
+        )
+        .await?)
 }
 
 /// Write a single file to the ops repo at a given branch.
@@ -303,160 +236,18 @@ pub async fn write_file_to_repo(
     branch: &str,
     file_path: &str,
     content: &str,
+    msg: Option<&str>,
 ) -> Result<String, OpsRepoError> {
-    let _lock = repo_lock(repo_path).await;
-    ensure_branch_exists(repo_path, branch).await?;
-
-    let worktree_dir = repo_path.join(format!("_file_worktree_{}", Uuid::new_v4()));
-
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .arg("worktree")
-        .arg("add")
-        .arg(&worktree_dir)
-        .arg(branch)
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::CommitFailed(e.to_string()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(OpsRepoError::CommitFailed(format!(
-            "git worktree add failed: {stderr}"
-        )));
-    }
-
-    let result = async {
-        let dest = worktree_dir.join(file_path);
-        if let Some(parent) = dest.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| OpsRepoError::CommitFailed(format!("mkdir: {e}")))?;
-        }
-        tokio::fs::write(&dest, content)
-            .await
-            .map_err(|e| OpsRepoError::CommitFailed(format!("write {file_path}: {e}")))?;
-
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&worktree_dir)
-            .args(["add", file_path])
-            .output()
-            .await;
-
-        // Check if there are changes to commit
-        let diff = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&worktree_dir)
-            .args(["diff", "--cached", "--quiet"])
-            .status()
-            .await;
-
-        if diff.map(|s| s.success()).unwrap_or(false) {
-            // No changes
-            return Ok(());
-        }
-
-        let commit_msg = format!("update {file_path}");
-        let commit_output = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&worktree_dir)
-            .env("GIT_AUTHOR_NAME", "Platform")
-            .env("GIT_AUTHOR_EMAIL", "platform@localhost")
-            .env("GIT_COMMITTER_NAME", "Platform")
-            .env("GIT_COMMITTER_EMAIL", "platform@localhost")
-            .args(["commit", "-m", &commit_msg])
-            .output()
-            .await
-            .map_err(|e| OpsRepoError::CommitFailed(e.to_string()))?;
-
-        if !commit_output.status.success() {
-            let stderr = String::from_utf8_lossy(&commit_output.stderr);
-            if !stderr.contains("nothing to commit") {
-                return Err(OpsRepoError::CommitFailed(format!(
-                    "git commit failed: {stderr}"
-                )));
-            }
-        }
-        Ok(())
-    }
-    .await;
-
-    cleanup_worktree(repo_path, &worktree_dir).await;
-    result?;
-    get_branch_sha(repo_path, branch).await
-}
-
-/// Internal: write the values file, stage, and commit inside a worktree.
-async fn write_and_commit_values(
-    worktree_dir: &Path,
-    environment: &str,
-    values: &serde_json::Value,
-) -> Result<(), OpsRepoError> {
-    // Ensure values/ directory exists
-    let values_dir = worktree_dir.join("values");
-    tokio::fs::create_dir_all(&values_dir)
-        .await
-        .map_err(|e| OpsRepoError::CommitFailed(format!("mkdir values: {e}")))?;
-
-    // Write the YAML values file
-    let yaml_content = serde_yaml::to_string(values)
-        .map_err(|e| OpsRepoError::CommitFailed(format!("yaml serialize: {e}")))?;
-
-    let file_path = values_dir.join(format!("{environment}.yaml"));
-    tokio::fs::write(&file_path, &yaml_content)
-        .await
-        .map_err(|e| OpsRepoError::CommitFailed(format!("write values: {e}")))?;
-
-    // Stage the file
-    let add_output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(worktree_dir)
-        .args(["add", &format!("values/{environment}.yaml")])
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::CommitFailed(e.to_string()))?;
-
-    if !add_output.status.success() {
-        let stderr = String::from_utf8_lossy(&add_output.stderr);
-        return Err(OpsRepoError::CommitFailed(format!(
-            "git add failed: {stderr}"
-        )));
-    }
-
-    // Extract image_ref for the commit message
-    let image_ref = values
-        .get("image_ref")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-
-    let commit_msg = format!("deploy({environment}): update image to {image_ref}");
-
-    let commit_output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(worktree_dir)
-        .env("GIT_AUTHOR_NAME", "Platform")
-        .env("GIT_AUTHOR_EMAIL", "platform@localhost")
-        .env("GIT_COMMITTER_NAME", "Platform")
-        .env("GIT_COMMITTER_EMAIL", "platform@localhost")
-        .args(["commit", "-m", &commit_msg])
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::CommitFailed(e.to_string()))?;
-
-    if !commit_output.status.success() {
-        let stderr = String::from_utf8_lossy(&commit_output.stderr);
-        // "nothing to commit" is not an error — values unchanged
-        if stderr.contains("nothing to commit") {
-            return Ok(());
-        }
-        return Err(OpsRepoError::CommitFailed(format!(
-            "git commit failed: {stderr}"
-        )));
-    }
-
-    Ok(())
+    let default_msg = format!("update {file_path}");
+    let message = msg.unwrap_or(&default_msg);
+    Ok(WRITER
+        .commit_files(
+            repo_path,
+            branch,
+            &[(file_path, content.as_bytes())],
+            message,
+        )
+        .await?)
 }
 
 /// Revert the last commit on the ops repo branch (for rollback).
@@ -464,125 +255,7 @@ async fn write_and_commit_values(
 /// Returns the new commit SHA after revert.
 #[tracing::instrument(fields(repo = %repo_path.display(), %branch), err)]
 pub async fn revert_last_commit(repo_path: &Path, branch: &str) -> Result<String, OpsRepoError> {
-    let worktree_dir = repo_path.join(format!("_revert_worktree_{}", Uuid::new_v4()));
-
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .arg("worktree")
-        .arg("add")
-        .arg(&worktree_dir)
-        .arg(branch)
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::RevertFailed(e.to_string()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(OpsRepoError::RevertFailed(format!(
-            "git worktree add failed: {stderr}"
-        )));
-    }
-
-    let result = revert_head_in_worktree(&worktree_dir).await;
-
-    cleanup_worktree(repo_path, &worktree_dir).await;
-
-    result?;
-
-    get_head_sha(repo_path).await
-}
-
-/// Internal: run `git revert HEAD --no-edit` inside a worktree.
-async fn revert_head_in_worktree(worktree_dir: &Path) -> Result<(), OpsRepoError> {
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(worktree_dir)
-        .env("GIT_AUTHOR_NAME", "Platform")
-        .env("GIT_AUTHOR_EMAIL", "platform@localhost")
-        .env("GIT_COMMITTER_NAME", "Platform")
-        .env("GIT_COMMITTER_EMAIL", "platform@localhost")
-        .args(["revert", "HEAD", "--no-edit"])
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::RevertFailed(e.to_string()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(OpsRepoError::RevertFailed(format!(
-            "git revert failed: {stderr}"
-        )));
-    }
-
-    Ok(())
-}
-
-/// Clean up a temporary worktree (best-effort).
-async fn cleanup_worktree(repo_path: &Path, worktree_dir: &Path) {
-    let _ = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .arg("worktree")
-        .arg("remove")
-        .arg("--force")
-        .arg(worktree_dir)
-        .output()
-        .await;
-
-    let _ = tokio::fs::remove_dir_all(worktree_dir).await;
-}
-
-/// Ensure a bare repo has at least one commit on the given branch.
-/// If the branch ref doesn't exist, creates an empty initial commit.
-async fn ensure_branch_exists(repo_path: &Path, branch: &str) -> Result<(), OpsRepoError> {
-    let check = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["rev-parse", "--verify", &format!("refs/heads/{branch}")])
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::CommitFailed(e.to_string()))?;
-
-    if check.status.success() {
-        return Ok(());
-    }
-
-    // Create a temp worktree with --orphan to bootstrap the branch
-    let tmp_wt = repo_path.join(format!("_init_worktree_{}", Uuid::new_v4()));
-    let wt_output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["worktree", "add", "--orphan", "-b", branch])
-        .arg(&tmp_wt)
-        .output()
-        .await;
-    if let Ok(ref out) = wt_output
-        && !out.status.success()
-    {
-        tracing::warn!(
-            stderr = %String::from_utf8_lossy(&out.stderr),
-            "ensure_branch_exists: worktree add --orphan failed"
-        );
-    }
-
-    // Create an initial empty commit
-    let commit_output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(&tmp_wt)
-        .args(["commit", "--allow-empty", "-m", "initial commit"])
-        .output()
-        .await;
-    if let Ok(ref out) = commit_output
-        && !out.status.success()
-    {
-        tracing::warn!(
-            stderr = %String::from_utf8_lossy(&out.stderr),
-            "ensure_branch_exists: initial commit failed"
-        );
-    }
-
-    cleanup_worktree(repo_path, &tmp_wt).await;
-    Ok(())
+    Ok(WRITER.revert_head(repo_path, branch).await?)
 }
 
 // ---------------------------------------------------------------------------
@@ -610,154 +283,42 @@ pub async fn sync_from_project_repo(
     branch: &str,
     commit_sha: &str,
 ) -> Result<String, OpsRepoError> {
-    let _lock = repo_lock(ops_repo_path).await;
     validate_commit_sha(commit_sha)?;
 
     // List files in deploy/ at the given SHA
-    let file_list = list_deploy_files(project_repo_path, commit_sha).await?;
+    let file_list = GIT
+        .list_tree_recursive(project_repo_path, commit_sha, "deploy")
+        .await
+        .map_err(|e| OpsRepoError::SyncFailed(e.to_string()))?;
+
     if file_list.is_empty() {
         tracing::debug!(%commit_sha, "no deploy/ directory found at commit");
         return get_head_sha(ops_repo_path).await;
     }
 
-    // Ensure the branch exists (bare repo may be empty after init)
-    ensure_branch_exists(ops_repo_path, branch).await?;
-
-    let worktree_dir = ops_repo_path.join(format!("_sync_worktree_{}", Uuid::new_v4()));
-
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(ops_repo_path)
-        .arg("worktree")
-        .arg("add")
-        .arg(&worktree_dir)
-        .arg(branch)
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::SyncFailed(e.to_string()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(OpsRepoError::SyncFailed(format!(
-            "git worktree add failed: {stderr}"
-        )));
-    }
-
-    let result =
-        write_deploy_files_and_commit(project_repo_path, &worktree_dir, commit_sha, &file_list)
-            .await;
-
-    cleanup_worktree(ops_repo_path, &worktree_dir).await;
-
-    result?;
-
-    get_head_sha(ops_repo_path).await
-}
-
-/// List files under `deploy/` at a given commit SHA using `git ls-tree`.
-async fn list_deploy_files(
-    repo_path: &Path,
-    commit_sha: &str,
-) -> Result<Vec<String>, OpsRepoError> {
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["ls-tree", "-r", "--name-only", commit_sha, "--", "deploy/"])
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::SyncFailed(e.to_string()))?;
-
-    if !output.status.success() {
-        // Empty output or error just means no deploy/ dir — not fatal
-        return Ok(Vec::new());
-    }
-
-    let listing = String::from_utf8_lossy(&output.stdout);
-    Ok(listing
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(String::from)
-        .collect())
-}
-
-/// Write deploy files from project repo into the ops repo worktree and commit.
-async fn write_deploy_files_and_commit(
-    project_repo_path: &Path,
-    worktree_dir: &Path,
-    commit_sha: &str,
-    file_list: &[String],
-) -> Result<(), OpsRepoError> {
-    // Remove existing files in worktree that aren't values/ (preserve values dir)
-    let deploy_dir = worktree_dir.join("deploy");
-    if deploy_dir.exists() {
-        tokio::fs::remove_dir_all(&deploy_dir)
-            .await
-            .map_err(|e| OpsRepoError::SyncFailed(format!("failed to clean deploy/: {e}")))?;
-    }
-
-    // Write each file from project repo
-    for file_path in file_list {
-        let content = read_file_at_ref(project_repo_path, commit_sha, file_path).await?;
-
-        let dest = worktree_dir.join(file_path);
-        // R6: Guard against path traversal in file names
-        if !dest.starts_with(worktree_dir) {
+    // Read each file from project repo
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for file_path in &file_list {
+        // Path traversal guard
+        if file_path.contains("..") {
             return Err(OpsRepoError::SyncFailed(format!(
                 "path traversal detected in deploy file: {file_path}"
             )));
         }
-        if let Some(parent) = dest.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| OpsRepoError::SyncFailed(format!("mkdir: {e}")))?;
-        }
-        tokio::fs::write(&dest, &content)
-            .await
-            .map_err(|e| OpsRepoError::SyncFailed(format!("write {file_path}: {e}")))?;
+        let content = read_file_at_ref(project_repo_path, commit_sha, file_path).await?;
+        files.push((file_path.clone(), content.into_bytes()));
     }
 
-    // Stage all changes (including deletions)
-    let add_output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(worktree_dir)
-        .args(["add", "-A"])
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::CommitFailed(e.to_string()))?;
-
-    if !add_output.status.success() {
-        let stderr = String::from_utf8_lossy(&add_output.stderr);
-        return Err(OpsRepoError::CommitFailed(format!(
-            "git add failed: {stderr}"
-        )));
-    }
-
+    let file_refs: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_slice()))
+        .collect();
     let short_sha = commit_sha.get(..12).unwrap_or(commit_sha);
-    let commit_msg = format!("sync deploy/ from {short_sha}");
+    let msg = format!("sync deploy/ from {short_sha}");
 
-    let commit_output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(worktree_dir)
-        .env("GIT_AUTHOR_NAME", "Platform")
-        .env("GIT_AUTHOR_EMAIL", "platform@localhost")
-        .env("GIT_COMMITTER_NAME", "Platform")
-        .env("GIT_COMMITTER_EMAIL", "platform@localhost")
-        .args(["commit", "-m", &commit_msg])
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::CommitFailed(e.to_string()))?;
-
-    if !commit_output.status.success() {
-        let stderr = String::from_utf8_lossy(&commit_output.stderr);
-        if stderr.contains("nothing to commit") {
-            return Ok(());
-        }
-        return Err(OpsRepoError::CommitFailed(format!(
-            "git commit failed: {stderr}"
-        )));
-    }
-
-    Ok(())
+    Ok(WRITER
+        .commit_all(ops_repo_path, branch, &file_refs, &["deploy"], &msg)
+        .await?)
 }
 
 // ---------------------------------------------------------------------------
@@ -830,69 +391,10 @@ pub async fn merge_branch(
     source_branch: &str,
     target_branch: &str,
 ) -> Result<String, OpsRepoError> {
-    let _lock = repo_lock(repo_path).await;
-    ensure_branch_exists(repo_path, source_branch).await?;
-    ensure_branch_exists(repo_path, target_branch).await?;
-
-    let worktree_dir = repo_path.join(format!("_merge_worktree_{}", Uuid::new_v4()));
-
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .arg("worktree")
-        .arg("add")
-        .arg(&worktree_dir)
-        .arg(target_branch)
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::CommitFailed(e.to_string()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(OpsRepoError::CommitFailed(format!(
-            "git worktree add failed: {stderr}"
-        )));
-    }
-
-    let result = merge_in_worktree(&worktree_dir, source_branch).await;
-
-    cleanup_worktree(repo_path, &worktree_dir).await;
-
-    result?;
-
-    // Return the new HEAD sha of the target branch
-    get_branch_sha(repo_path, target_branch).await
-}
-
-/// Internal: merge `source_branch` into current branch in worktree.
-async fn merge_in_worktree(worktree_dir: &Path, source_branch: &str) -> Result<(), OpsRepoError> {
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(worktree_dir)
-        .env("GIT_AUTHOR_NAME", "Platform")
-        .env("GIT_AUTHOR_EMAIL", "platform@localhost")
-        .env("GIT_COMMITTER_NAME", "Platform")
-        .env("GIT_COMMITTER_EMAIL", "platform@localhost")
-        .args([
-            "merge",
-            source_branch,
-            "--no-ff",
-            "--allow-unrelated-histories",
-            "-m",
-        ])
-        .arg(format!("promote: merge {source_branch} to production"))
-        .output()
-        .await
-        .map_err(|e| OpsRepoError::CommitFailed(e.to_string()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(OpsRepoError::CommitFailed(format!(
-            "merge failed: {stderr}"
-        )));
-    }
-
-    Ok(())
+    let msg = format!("promote: merge {source_branch} to production");
+    Ok(MERGER
+        .merge_no_ff(repo_path, source_branch, target_branch, &msg)
+        .await?)
 }
 
 /// Compare two branches to determine if they've diverged.
@@ -906,6 +408,99 @@ pub async fn compare_branches(
     let target_sha = get_branch_sha(repo_path, target_branch).await?;
     let diverged = source_sha != target_sha;
     Ok((diverged, source_sha, target_sha))
+}
+
+// ---------------------------------------------------------------------------
+// OpsRepoManager trait implementation
+// ---------------------------------------------------------------------------
+
+use platform_types::OpsRepoManager;
+
+/// Service struct that implements `OpsRepoManager` from `platform-types`.
+///
+/// Holds a `PgPool` for the `sync_from_project` method which needs to
+/// look up ops repo paths by project ID.
+#[derive(Clone)]
+pub struct OpsRepoService {
+    pool: PgPool,
+}
+
+impl OpsRepoService {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl OpsRepoManager for OpsRepoService {
+    async fn read_file(&self, repo_path: &Path, git_ref: &str, file: &str) -> Option<String> {
+        read_file_at_ref(repo_path, git_ref, file).await.ok()
+    }
+
+    async fn sync_from_project(
+        &self,
+        project_id: Uuid,
+        source: &Path,
+        branch: &str,
+    ) -> anyhow::Result<()> {
+        // Look up the ops repo for this project
+        let ops_repo_id: Uuid =
+            sqlx::query_scalar("SELECT o.id FROM ops_repos o WHERE o.project_id = $1 LIMIT 1")
+                .bind(project_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("no ops repo for project {project_id}"))?;
+
+        let (ops_repo_path, _sha, _branch) = sync_repo(&self.pool, ops_repo_id).await?;
+        let source_sha = get_head_sha(source).await?;
+        sync_from_project_repo(source, &ops_repo_path, branch, &source_sha).await?;
+        Ok(())
+    }
+
+    async fn write_file(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+        file: &str,
+        content: &[u8],
+        msg: &str,
+    ) -> anyhow::Result<String> {
+        let text = std::str::from_utf8(content)
+            .map_err(|e| anyhow::anyhow!("content is not valid UTF-8: {e}"))?;
+        let sha = write_file_to_repo(repo_path, branch, file, text, Some(msg)).await?;
+        Ok(sha)
+    }
+
+    async fn read_dir_yaml(&self, repo_path: &Path, git_ref: &str, dir: &str) -> Option<String> {
+        read_dir_yaml_at_ref(repo_path, git_ref, dir).await.ok()
+    }
+
+    async fn commit_values(
+        &self,
+        ops_path: &Path,
+        branch: &str,
+        values: &[(&str, &str)],
+        msg: &str,
+    ) -> anyhow::Result<String> {
+        // Read existing values, merge key-value pairs, write back
+        let existing = read_file_at_ref(ops_path, branch, "values.yaml")
+            .await
+            .ok()
+            .and_then(|s| serde_yaml::from_str::<serde_json::Value>(&s).ok())
+            .unwrap_or(serde_json::json!({}));
+
+        let mut map = existing.as_object().cloned().unwrap_or_default();
+        for (k, v) in values {
+            map.insert(
+                (*k).to_string(),
+                serde_json::Value::String((*v).to_string()),
+            );
+        }
+
+        let yaml = serde_yaml::to_string(&serde_json::Value::Object(map))
+            .map_err(|e| anyhow::anyhow!("yaml serialize: {e}"))?;
+        let sha = write_file_to_repo(ops_path, branch, "values.yaml", &yaml, Some(msg)).await?;
+        Ok(sha)
+    }
 }
 
 #[cfg(test)]
@@ -1017,43 +612,16 @@ mod tests {
         assert!(validate_commit_sha("").is_err());
     }
 
-    // --- Tests that require private cleanup_worktree() ---
+    // --- Test helpers ---
 
     /// Helper: bootstrap a bare repo with an initial commit so worktree ops work.
     async fn bootstrap_repo(tmp: &Path) -> PathBuf {
         let repo_path = init_ops_repo(tmp, "test-ops", "main").await.unwrap();
-
-        let init_wt = repo_path.join("_init_wt");
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["worktree", "add", "--orphan", "-b", "main"])
-            .arg(&init_wt)
-            .output()
+        // Create the initial commit via platform-git's worktree writer
+        WRITER
+            .commit_files(&repo_path, "main", &[("README.md", b"# Ops\n")], "init")
             .await
             .unwrap();
-
-        tokio::fs::write(init_wt.join("README.md"), "# Ops\n")
-            .await
-            .unwrap();
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&init_wt)
-            .args(["add", "."])
-            .output()
-            .await;
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&init_wt)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@test")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@test")
-            .args(["commit", "-m", "init"])
-            .output()
-            .await;
-        cleanup_worktree(&repo_path, &init_wt).await;
-
         repo_path
     }
 
@@ -1069,93 +637,43 @@ mod tests {
             .output()
             .await
             .unwrap();
-
-        // Create worktree for initial commit
-        let wt = repo_path.join("_init");
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["worktree", "add", "--orphan", "-b", "main"])
-            .arg(&wt)
-            .output()
+        // Set default branch
+        tokio::fs::write(repo_path.join("HEAD"), "ref: refs/heads/main\n")
             .await
             .unwrap();
 
-        // Write deploy files
-        for (path, content) in files {
-            let dest = wt.join(path);
-            if let Some(parent) = dest.parent() {
-                tokio::fs::create_dir_all(parent).await.unwrap();
-            }
-            tokio::fs::write(&dest, content).await.unwrap();
-        }
+        // Use platform-git to commit files
+        let file_data: Vec<(&str, Vec<u8>)> = files
+            .iter()
+            .map(|(p, c)| (*p, c.as_bytes().to_vec()))
+            .collect();
+        let file_refs: Vec<(&str, &[u8])> =
+            file_data.iter().map(|(p, c)| (*p, c.as_slice())).collect();
 
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&wt)
-            .args(["add", "."])
-            .output()
-            .await;
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&wt)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@test")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@test")
-            .args(["commit", "-m", "add deploy"])
-            .output()
-            .await;
+        WRITER
+            .commit_files(&repo_path, "main", &file_refs, "add deploy")
+            .await
+            .unwrap();
 
         let sha = get_head_sha(&repo_path).await.unwrap();
-        cleanup_worktree(&repo_path, &wt).await;
-
         (repo_path, sha)
     }
 
-    // Tier exception: tests private cleanup_worktree() which cannot be called from tests/
     #[tokio::test]
     async fn read_values_invalid_yaml() {
         let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
         let repo_path = bootstrap_repo(&tmp).await;
 
-        // Write invalid YAML content via worktree
-        let wt = repo_path.join("_bad_yaml_wt");
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["worktree", "add"])
-            .arg(&wt)
-            .arg("main")
-            .output()
-            .await;
-
-        let values_dir = wt.join("values");
-        tokio::fs::create_dir_all(&values_dir).await.unwrap();
-        tokio::fs::write(
-            values_dir.join("staging.yaml"),
-            "invalid: [unclosed bracket",
-        )
-        .await
-        .unwrap();
-
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&wt)
-            .args(["add", "."])
-            .output()
-            .await;
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&wt)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@test")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@test")
-            .args(["commit", "-m", "bad yaml"])
-            .output()
-            .await;
-        cleanup_worktree(&repo_path, &wt).await;
+        // Write invalid YAML content via platform-git
+        WRITER
+            .commit_files(
+                &repo_path,
+                "main",
+                &[("values/staging.yaml", b"invalid: [unclosed bracket")],
+                "bad yaml",
+            )
+            .await
+            .unwrap();
 
         let result = read_values(&repo_path, "main", "staging").await;
         assert!(result.is_err());
@@ -1163,21 +681,6 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
 
-    // Tier exception: tests private cleanup_worktree() which cannot be called from tests/
-    #[tokio::test]
-    async fn cleanup_worktree_nonexistent_is_noop() {
-        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
-        let repo_path = bootstrap_repo(&tmp).await;
-
-        // Cleaning up a nonexistent worktree should not error (best-effort)
-        let fake_wt = repo_path.join("nonexistent_worktree");
-        cleanup_worktree(&repo_path, &fake_wt).await;
-        // No panic = success
-
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
-    }
-
-    // Tier exception: tests private cleanup_worktree() via create_project_repo_with_deploy helper
     #[tokio::test]
     async fn sync_from_project_repo_deletes_orphans() {
         let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
@@ -1203,47 +706,21 @@ mod tests {
             .await
             .unwrap();
 
-        // Second push: only production (staging removed)
-        // Create new commit in project repo with only production.yaml
-        let wt = project_repo.join("_update");
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&project_repo)
-            .args(["worktree", "add"])
-            .arg(&wt)
-            .arg("main")
-            .output()
-            .await;
-
-        tokio::fs::remove_file(wt.join("deploy/staging.yaml"))
+        // Second push: only production (staging removed) — use commit_all to replace
+        WRITER
+            .commit_all(
+                &project_repo,
+                "main",
+                &[(
+                    "deploy/production.yaml",
+                    b"kind: Deployment\nmetadata:\n  name: v2" as &[u8],
+                )],
+                &["deploy"],
+                "remove staging",
+            )
             .await
             .unwrap();
-        // Update production.yaml
-        tokio::fs::write(
-            wt.join("deploy/production.yaml"),
-            "kind: Deployment\nmetadata:\n  name: v2",
-        )
-        .await
-        .unwrap();
-
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&wt)
-            .args(["add", "-A"])
-            .output()
-            .await;
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&wt)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@test")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@test")
-            .args(["commit", "-m", "remove staging"])
-            .output()
-            .await;
         let sha2 = get_head_sha(&project_repo).await.unwrap();
-        cleanup_worktree(&project_repo, &wt).await;
 
         // Sync again
         sync_from_project_repo(&project_repo, &ops_repo, "main", &sha2)
@@ -1374,37 +851,7 @@ mod tests {
         assert!(validate_commit_sha("abc1234\n").is_err());
     }
 
-    // -- ensure_branch_exists --
-
-    #[tokio::test]
-    async fn ensure_branch_exists_creates_orphan_if_missing() {
-        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
-        let repo_path = init_ops_repo(&tmp, "branch-test", "main").await.unwrap();
-
-        ensure_branch_exists(&repo_path, "main").await.unwrap();
-
-        let sha = get_branch_sha(&repo_path, "main").await;
-        assert!(
-            sha.is_ok(),
-            "branch should exist after ensure_branch_exists"
-        );
-
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
-    }
-
-    #[tokio::test]
-    async fn ensure_branch_exists_noop_if_already_exists() {
-        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
-        let repo_path = bootstrap_repo(&tmp).await;
-
-        let sha_before = get_branch_sha(&repo_path, "main").await.unwrap();
-        ensure_branch_exists(&repo_path, "main").await.unwrap();
-        let sha_after = get_branch_sha(&repo_path, "main").await.unwrap();
-
-        assert_eq!(sha_before, sha_after, "should not create extra commits");
-
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
-    }
+    // ensure_branch_exists and cleanup_worktree are now tested in platform-git
 
     // -- write_file_to_repo --
 
@@ -1413,9 +860,15 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
         let repo_path = bootstrap_repo(&tmp).await;
 
-        let sha = write_file_to_repo(&repo_path, "main", "deploy/app.yaml", "kind: Deployment")
-            .await
-            .unwrap();
+        let sha = write_file_to_repo(
+            &repo_path,
+            "main",
+            "deploy/app.yaml",
+            "kind: Deployment",
+            None,
+        )
+        .await
+        .unwrap();
         assert!(!sha.is_empty());
 
         let content = read_file_at_ref(&repo_path, "main", "deploy/app.yaml")
@@ -1431,10 +884,10 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
         let repo_path = bootstrap_repo(&tmp).await;
 
-        let sha1 = write_file_to_repo(&repo_path, "main", "test.txt", "version1")
+        let sha1 = write_file_to_repo(&repo_path, "main", "test.txt", "version1", None)
             .await
             .unwrap();
-        let sha2 = write_file_to_repo(&repo_path, "main", "test.txt", "version2")
+        let sha2 = write_file_to_repo(&repo_path, "main", "test.txt", "version2", None)
             .await
             .unwrap();
 
@@ -1456,10 +909,10 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
         let repo_path = bootstrap_repo(&tmp).await;
 
-        let sha1 = write_file_to_repo(&repo_path, "main", "test.txt", "same content")
+        let sha1 = write_file_to_repo(&repo_path, "main", "test.txt", "same content", None)
             .await
             .unwrap();
-        let sha2 = write_file_to_repo(&repo_path, "main", "test.txt", "same content")
+        let sha2 = write_file_to_repo(&repo_path, "main", "test.txt", "same content", None)
             .await
             .unwrap();
 
@@ -1471,15 +924,7 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
 
-    // -- cleanup_worktree edge cases --
-
-    #[tokio::test]
-    async fn cleanup_worktree_missing_dir_is_noop() {
-        let fake_repo = std::env::temp_dir().join(format!("does-not-exist-{}", Uuid::new_v4()));
-        let fake_wt = fake_repo.join("fake_worktree");
-        cleanup_worktree(&fake_repo, &fake_wt).await;
-        // No panic = success
-    }
+    // cleanup_worktree edge cases are now tested in platform-git
 
     // -- sync_from_project_repo with empty deploy/ --
 
@@ -1487,6 +932,7 @@ mod tests {
     async fn sync_empty_deploy_dir_is_noop() {
         let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
 
+        // Create project repo with no deploy/ directory
         let project_repo = tmp.join("proj-empty.git");
         let _ = tokio::process::Command::new("git")
             .args(["init", "--bare"])
@@ -1494,37 +940,19 @@ mod tests {
             .output()
             .await
             .unwrap();
-
-        let wt = project_repo.join("_init");
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&project_repo)
-            .args(["worktree", "add", "--orphan", "-b", "main"])
-            .arg(&wt)
-            .output()
+        tokio::fs::write(project_repo.join("HEAD"), "ref: refs/heads/main\n")
             .await
             .unwrap();
-        tokio::fs::write(wt.join("README.md"), "# No deploy dir\n")
+        WRITER
+            .commit_files(
+                &project_repo,
+                "main",
+                &[("README.md", b"# No deploy dir\n")],
+                "no deploy dir",
+            )
             .await
             .unwrap();
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&wt)
-            .args(["add", "."])
-            .output()
-            .await;
-        let _ = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&wt)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@test")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@test")
-            .args(["commit", "-m", "no deploy dir"])
-            .output()
-            .await;
         let sha = get_head_sha(&project_repo).await.unwrap();
-        cleanup_worktree(&project_repo, &wt).await;
 
         let ops_repo = bootstrap_repo(&tmp.join("ops-empty")).await;
         let ops_sha_before = get_head_sha(&ops_repo).await.unwrap();
@@ -1560,8 +988,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
         let repo_path = bootstrap_repo(&tmp).await;
 
-        ensure_branch_exists(&repo_path, "staging").await.unwrap();
-        write_file_to_repo(&repo_path, "staging", "file.txt", "staging-content")
+        write_file_to_repo(&repo_path, "staging", "file.txt", "staging-content", None)
             .await
             .unwrap();
 
@@ -1658,11 +1085,11 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
         let repo_path = bootstrap_repo(&tmp).await;
 
-        write_file_to_repo(&repo_path, "main", "data.txt", "original")
+        write_file_to_repo(&repo_path, "main", "data.txt", "original", None)
             .await
             .unwrap();
 
-        write_file_to_repo(&repo_path, "main", "data.txt", "modified")
+        write_file_to_repo(&repo_path, "main", "data.txt", "modified", None)
             .await
             .unwrap();
 
@@ -1693,10 +1120,10 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
 
-    // -- repo_lock concurrency --
+    // -- concurrent write serialization (via platform-git repo_lock) --
 
     #[tokio::test]
-    async fn repo_lock_serializes_concurrent_operations() {
+    async fn concurrent_writes_serialize_correctly() {
         let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
         let repo_path = bootstrap_repo(&tmp).await;
 
@@ -1704,8 +1131,8 @@ mod tests {
         let repo2 = repo_path.clone();
 
         let (r1, r2) = tokio::join!(
-            write_file_to_repo(&repo1, "main", "file1.txt", "content1"),
-            write_file_to_repo(&repo2, "main", "file2.txt", "content2"),
+            write_file_to_repo(&repo1, "main", "file1.txt", "content1", None),
+            write_file_to_repo(&repo2, "main", "file2.txt", "content2", None),
         );
 
         assert!(r1.is_ok(), "first concurrent write should succeed");
@@ -1766,17 +1193,19 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
         let repo_path = bootstrap_repo(&tmp).await;
 
-        ensure_branch_exists(&repo_path, "staging").await.unwrap();
+        // Create staging branch with content
         write_file_to_repo(
             &repo_path,
             "staging",
             "deploy/app.yaml",
             "kind: Deployment\nv2",
+            None,
         )
         .await
         .unwrap();
 
-        ensure_branch_exists(&repo_path, "production")
+        // Create production branch
+        write_file_to_repo(&repo_path, "production", "README.md", "# Production", None)
             .await
             .unwrap();
 
@@ -1825,6 +1254,7 @@ mod tests {
             "main",
             "deep/nested/dir/config.yaml",
             "key: value",
+            None,
         )
         .await
         .unwrap();
@@ -1889,5 +1319,139 @@ mod tests {
         let path = resolve_manifest_path(Path::new("/data/ops"), "myrepo", "/a/b/c", "deploy.yaml")
             .unwrap();
         assert_eq!(path, PathBuf::from("/data/ops/myrepo/a/b/c/deploy.yaml"));
+    }
+
+    // -- OpsRepoService trait impl --
+
+    #[tokio::test]
+    async fn ops_repo_service_read_file_delegates() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        write_file_to_repo(&repo_path, "main", "config.yaml", "key: value", None)
+            .await
+            .unwrap();
+
+        // Use the trait method via OpsRepoService (pool unused for read_file)
+        let svc = OpsRepoService {
+            pool: sqlx::PgPool::connect_lazy("postgres://unused@localhost/unused").unwrap(),
+        };
+        let result = OpsRepoManager::read_file(&svc, &repo_path, "main", "config.yaml").await;
+        assert_eq!(result, Some("key: value".to_string()));
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn ops_repo_service_read_file_returns_none_on_missing() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        let svc = OpsRepoService {
+            pool: sqlx::PgPool::connect_lazy("postgres://unused@localhost/unused").unwrap(),
+        };
+        let result = OpsRepoManager::read_file(&svc, &repo_path, "main", "nonexistent.yaml").await;
+        assert_eq!(result, None);
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn ops_repo_service_write_file_with_msg() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        let svc = OpsRepoService {
+            pool: sqlx::PgPool::connect_lazy("postgres://unused@localhost/unused").unwrap(),
+        };
+        let sha = OpsRepoManager::write_file(
+            &svc,
+            &repo_path,
+            "main",
+            "deploy/app.yaml",
+            b"kind: Service",
+            "custom commit message",
+        )
+        .await
+        .unwrap();
+        assert!(!sha.is_empty());
+
+        // Verify the file was written
+        let content = read_file_at_ref(&repo_path, "main", "deploy/app.yaml")
+            .await
+            .unwrap();
+        assert_eq!(content, "kind: Service");
+
+        // Verify custom commit message was used
+        let log = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["log", "-1", "--format=%s", "main"])
+            .output()
+            .await
+            .unwrap();
+        let msg = String::from_utf8_lossy(&log.stdout).trim().to_string();
+        assert_eq!(msg, "custom commit message");
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn ops_repo_service_read_dir_yaml_returns_none_on_missing() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        let svc = OpsRepoService {
+            pool: sqlx::PgPool::connect_lazy("postgres://unused@localhost/unused").unwrap(),
+        };
+        let result = OpsRepoManager::read_dir_yaml(&svc, &repo_path, "main", "nonexistent/").await;
+        assert!(result.is_none());
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn ops_repo_service_commit_values_merges_kv() {
+        let tmp = std::env::temp_dir().join(format!("platform-test-{}", Uuid::new_v4()));
+        let repo_path = bootstrap_repo(&tmp).await;
+
+        let svc = OpsRepoService {
+            pool: sqlx::PgPool::connect_lazy("postgres://unused@localhost/unused").unwrap(),
+        };
+
+        // First commit: set initial values
+        let sha1 = OpsRepoManager::commit_values(
+            &svc,
+            &repo_path,
+            "main",
+            &[("image", "app:v1"), ("replicas", "3")],
+            "set initial values",
+        )
+        .await
+        .unwrap();
+        assert!(!sha1.is_empty());
+
+        // Second commit: update one value, add another
+        let sha2 = OpsRepoManager::commit_values(
+            &svc,
+            &repo_path,
+            "main",
+            &[("image", "app:v2"), ("region", "us-east")],
+            "bump image",
+        )
+        .await
+        .unwrap();
+        assert_ne!(sha1, sha2);
+
+        // Read back and verify merge
+        let content = read_file_at_ref(&repo_path, "main", "values.yaml")
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_yaml::from_str(&content).unwrap();
+        assert_eq!(parsed["image"], "app:v2");
+        assert_eq!(parsed["replicas"], "3");
+        assert_eq!(parsed["region"], "us-east");
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
 }

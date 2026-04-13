@@ -9,14 +9,18 @@ use std::time::Duration;
 use crate::browser_types::{BlobContent, BranchInfo, CommitInfo, TreeEntry};
 use crate::error::GitError;
 use crate::signature::{self, SignatureInfo, SignatureStatus};
-use crate::traits::GitRepo;
+use crate::traits::{GitCoreRead, GitRepo};
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Default [`GitRepo`] implementation that shells out to the `git` CLI.
 pub struct CliGitRepo;
 
-impl GitRepo for CliGitRepo {
+// ---------------------------------------------------------------------------
+// GitCoreRead — core read operations (shared with ops-repo, deployer, etc.)
+// ---------------------------------------------------------------------------
+
+impl GitCoreRead for CliGitRepo {
     async fn rev_parse(&self, repo: &Path, refspec: &str) -> Result<String, GitError> {
         let output = run_git(repo, &["rev-parse", "--verify", refspec]).await?;
         Ok(output.trim().to_string())
@@ -58,6 +62,73 @@ impl GitRepo for CliGitRepo {
         Ok(output.lines().map(String::from).collect())
     }
 
+    async fn list_tree_recursive(
+        &self,
+        repo: &Path,
+        git_ref: &str,
+        dir: &str,
+    ) -> Result<Vec<String>, GitError> {
+        let result = if dir.is_empty() {
+            run_git(repo, &["ls-tree", "-r", "--name-only", git_ref]).await
+        } else {
+            let dir_arg = format!("{}/", dir.trim_end_matches('/'));
+            run_git(
+                repo,
+                &["ls-tree", "-r", "--name-only", git_ref, "--", &dir_arg],
+            )
+            .await
+        };
+        match result {
+            Ok(listing) => Ok(listing
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()),
+            Err(GitError::CommandFailed { .. }) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn branch_exists(&self, repo: &Path, branch: &str) -> Result<bool, GitError> {
+        let output = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .arg("rev-parse")
+            .arg("--verify")
+            .arg(format!("refs/heads/{branch}"))
+            .output()
+            .await
+            .map_err(GitError::Io)?;
+
+        Ok(output.status.success())
+    }
+
+    async fn is_ancestor(
+        &self,
+        repo: &Path,
+        potential_ancestor: &str,
+        commit: &str,
+    ) -> Result<bool, GitError> {
+        let output = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .arg("merge-base")
+            .arg("--is-ancestor")
+            .arg(potential_ancestor)
+            .arg(commit)
+            .output()
+            .await
+            .map_err(GitError::Io)?;
+
+        Ok(output.status.success())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GitRepo — browser/UI-specific read operations
+// ---------------------------------------------------------------------------
+
+impl GitRepo for CliGitRepo {
     async fn list_tree(
         &self,
         repo: &Path,
@@ -145,40 +216,6 @@ impl GitRepo for CliGitRepo {
         .await?;
 
         parse_commit_detail(&output, repo, sha).await
-    }
-
-    async fn is_ancestor(
-        &self,
-        repo: &Path,
-        potential_ancestor: &str,
-        commit: &str,
-    ) -> Result<bool, GitError> {
-        let output = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(repo)
-            .arg("merge-base")
-            .arg("--is-ancestor")
-            .arg(potential_ancestor)
-            .arg(commit)
-            .output()
-            .await
-            .map_err(GitError::Io)?;
-
-        Ok(output.status.success())
-    }
-
-    async fn branch_exists(&self, repo: &Path, branch: &str) -> Result<bool, GitError> {
-        let output = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(repo)
-            .arg("rev-parse")
-            .arg("--verify")
-            .arg(format!("refs/heads/{branch}"))
-            .output()
-            .await
-            .map_err(GitError::Io)?;
-
-        Ok(output.status.success())
     }
 }
 
@@ -675,6 +712,40 @@ mod tests {
         let git = CliGitRepo;
         assert!(git.branch_exists(&repo, "main").await.unwrap());
         assert!(!git.branch_exists(&repo, "nonexistent").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn list_tree_recursive_nested() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        // Test repo has README.md and src/main.rs
+        let entries = git.list_tree_recursive(&repo, "HEAD", "src").await.unwrap();
+        assert!(entries.contains(&"src/main.rs".to_string()));
+    }
+
+    #[tokio::test]
+    async fn list_tree_recursive_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        // "nonexistent" dir doesn't exist — should return empty vec
+        let entries = git
+            .list_tree_recursive(&repo, "HEAD", "nonexistent")
+            .await
+            .unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_tree_recursive_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        // List everything from root — should include both README.md and src/main.rs
+        let entries = git.list_tree_recursive(&repo, "HEAD", "").await.unwrap();
+        assert!(entries.contains(&"README.md".to_string()));
+        assert!(entries.contains(&"src/main.rs".to_string()));
     }
 
     #[tokio::test]

@@ -188,9 +188,10 @@ test-e2e-bin bin filter="":
     bash {{test_script}} --type e2e --filter '{{bin}}' {{ if filter != "" { "--expr 'test(" + filter + ")'" } else { "" } }}
 
 # LLM integration tests (real Claude CLI, requires Anthropic credentials)
+# Uses the llm profile which selects tests/llm_*.rs + inline #[ignore] LLM tests
 [group('test')]
 test-llm:
-    cargo nextest run --test llm_create_app --test llm_create_app_e2e --run-ignored ignored-only
+    cargo nextest run --profile llm --run-ignored ignored-only
 
 # LLM E2E test (full create-app flow with real Claude CLI + K8s)
 [group('test')]
@@ -208,17 +209,20 @@ test-cleanup:
 test-all: test-unit test-integration test-e2e
 
 # -- Crate Tests ----------------------------------------------------
+#
+# Three test tiers, selected by nextest profiles + file naming convention:
+#   *_integration.rs  → DB/Valkey/MinIO tier  (--profile integration)
+#   *_k8s.rs          → K8s tier              (--profile k8s)
+#   src/ (--lib)      → unit tier             (default profile)
+#
+# Profiles are defined in .config/nextest.toml using binary() filters.
+# No #[ignore] attributes needed — the file name IS the tier selector.
 
 # All workspace crates (package names from Cargo.toml)
-_crate_all := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-git -p platform-registry -p platform-agent -p platform-ingest -p platform-k8s-watcher -p platform-proxy -p platform-proxy-init"
+_crate_all := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-git -p platform-registry -p platform-agent -p platform-ingest -p platform-k8s-watcher -p platform-proxy -p platform-proxy-init -p platform-pipeline"
 # Crates with --lib targets for coverage (proxy included — coverage uses --lib to avoid binary crash)
 # Excludes proxy-init and ingest (no lib.rs, binary-only crates)
-_crate_lib := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-git -p platform-registry -p platform-agent -p platform-k8s-watcher -p platform-proxy"
-# Crates with integration tests (need DB + Valkey from .env.dev)
-_crate_int := "-p platform-auth -p platform-observe -p platform-secrets -p platform-types -p platform-registry"
-# K8s integration tests use `#[ignore = "requires K8s"]` — scanned across ALL crates
-# (--run-ignored ignored-only is the filter, not the package list)
-_crate_k8s := _crate_all
+_crate_lib := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-git -p platform-registry -p platform-agent -p platform-k8s-watcher -p platform-proxy -p platform-pipeline"
 
 # Unit tests for workspace crates
 # just crate-test-unit                        → all crates
@@ -231,57 +235,70 @@ crate-test-unit crate="" filter="":
         --lib \
         {{ if filter != "" { "-E 'test(" + filter + ")'" } else { "" } }}
 
-# Integration tests for workspace crates (uses DB + Valkey from .env.dev)
-# just crate-test-integration                     → all crates with int tests
+# Integration tests for workspace crates (DB + Valkey + MinIO from .env.dev)
+# Runs all *_integration.rs test binaries, excludes *_k8s.rs via profile filter
+# just crate-test-integration                     → all crates
 # just crate-test-integration platform-auth       → one crate
 # just crate-test-integration platform-auth rate  → one crate + filter
 [group('crate')]
 crate-test-integration crate="" filter="":
     cargo nextest run \
-        {{ if crate != "" { "-p " + crate } else { _crate_int } }} \
-        --test '*' \
+        {{ if crate != "" { "-p " + crate } else { _crate_all } }} \
+        --profile integration \
         {{ if filter != "" { "-E 'test(" + filter + ")'" } else { "" } }}
 
-# K8s integration tests for workspace crates (needs Kind cluster)
-# just crate-test-kubernetes                        → all K8s crates
+# K8s integration tests for workspace crates (needs Kind cluster + DB + Valkey)
+# Runs all *_k8s.rs test binaries across ALL crates
+# just crate-test-kubernetes                        → all crates
 # just crate-test-kubernetes platform-k8s           → one crate
 # just crate-test-kubernetes platform-k8s ensure    → one crate + filter
 [group('crate')]
 crate-test-kubernetes crate="" filter="":
     cargo nextest run \
-        {{ if crate != "" { "-p " + crate } else { _crate_k8s } }} \
-        --test '*' \
-        --run-ignored ignored-only \
+        {{ if crate != "" { "-p " + crate } else { _crate_all } }} \
+        --profile k8s \
         {{ if filter != "" { "-E 'test(" + filter + ")'" } else { "" } }}
 
-# All crate tests (unit + integration + kubernetes)
-# Crates without integration tests only run unit tests
+# LLM tests (real Claude CLI, requires Anthropic credentials)
+# Runs both file-named tests/llm_*.rs and inline #[ignore] LLM tests
+# just crate-test-llm                              → all LLM tests
+# just crate-test-llm platform-agent-runner        → one crate
+[group('crate')]
+crate-test-llm crate="" filter="":
+    cargo nextest run \
+        {{ if crate != "" { "-p " + crate } else { _crate_all } }} \
+        --profile llm --run-ignored ignored-only \
+        {{ if filter != "" { "-E 'test(" + filter + ")'" } else { "" } }}
+
+# All crate tests (unit + integration + kubernetes, excludes LLM)
 [group('crate')]
 crate-test-all crate="":
     just crate-test-unit {{crate}}
-    {{ if crate == "platform-proxy" { "" } else if crate == "platform-proxy-init" { "" } else if crate == "platform-ingest" { "" } else if crate == "platform-k8s-watcher" { "" } else if crate == "platform-k8s" { "" } else if crate == "platform-git" { "" } else { "just crate-test-integration " + crate } }}
-    just crate-test-kubernetes
+    just crate-test-integration {{crate}}
+    just crate-test-kubernetes {{crate}}
 
 # Coverage for workspace crates (unit + integration + K8s, uses DB/Valkey/K8s)
 # Excludes binary-only crates without lib.rs (proxy-init, ingest)
+# --ignore-default-filter bypasses the default profile's exclusion of _integration/_k8s binaries
 # just crate-cov                         → all library crates
 # just crate-cov platform-auth           → one crate
 [group('crate')]
 crate-cov crate="":
     cargo llvm-cov nextest \
         {{ if crate != "" { "-p " + crate } else { _crate_lib } }} \
-        --lib --test '*' --run-ignored all \
+        --lib --test '*' --ignore-default-filter \
         --lcov --output-path crate-coverage.lcov
     @echo "Coverage written to crate-coverage.lcov"
 
 # Coverage HTML report for workspace crates
+# --ignore-default-filter bypasses the default profile's exclusion of _integration/_k8s binaries
 # just crate-cov-html                    → all library crates
 # just crate-cov-html platform-auth      → one crate
 [group('crate')]
 crate-cov-html crate="":
     cargo llvm-cov nextest \
         {{ if crate != "" { "-p " + crate } else { _crate_lib } }} \
-        --lib --test '*' --run-ignored all \
+        --lib --test '*' --ignore-default-filter \
         --html --output-dir crate-coverage-html
     @echo "Open crate-coverage-html/index.html"
 

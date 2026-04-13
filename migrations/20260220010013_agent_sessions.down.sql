@@ -1,2 +1,0 @@
-DROP TABLE IF EXISTS agent_messages CASCADE;
-DROP TABLE IF EXISTS agent_sessions CASCADE;

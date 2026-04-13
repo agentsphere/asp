@@ -72,7 +72,7 @@ just cluster-down   # destroy kind cluster
 - **Module boundaries** — each `src/<module>/mod.rs` re-exports its public API. Modules communicate through `AppState`, never import each other's internals. Cross-module types live in `src/error.rs` or `src/config.rs`.
 - **No unsafe** — `unsafe_code = "forbid"` in `Cargo.toml` lints.
 - **No openssl** — `deny.toml` bans `openssl`/`openssl-sys`. Use rustls everywhere.
-- **sqlx compile-time checking** — all queries use `sqlx::query!` or `sqlx::query_as!`. Run `just db-prepare` after any query change. CI uses `SQLX_OFFLINE=true`.
+- **sqlx compile-time checking** — **ALL queries in ALL crates** (main binary AND workspace crates under `crates/`) use `sqlx::query!` or `sqlx::query_as!`. Never use dynamic `sqlx::query()` in library or binary code — compile-time checking catches real schema mismatches. Each workspace crate has its own `.sqlx/` cache directory. Run `just db-prepare` after any query change (sources `.env.dev` automatically). CI uses `SQLX_OFFLINE=true`. The only exception: `tests/` directories use dynamic `sqlx::query()` because test code doesn't need compile-time validation.
 
 ## Auth & RBAC Patterns (Phase 02)
 

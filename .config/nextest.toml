@@ -1,9 +1,51 @@
+# ---------------------------------------------------------------------------
+# Nextest profiles — file-based test tier selection
+# ---------------------------------------------------------------------------
+#
+# Tiers:
+#   default       → unit tests only (--lib), excludes integration + K8s binaries
+#   integration   → DB/Valkey/MinIO integration tests (*_integration.rs)
+#   k8s           → K8s integration tests (*_k8s.rs), requires Kind cluster
+#
+# File naming convention:
+#   tests/*_integration.rs  → DB/Valkey tier (cargo nextest run --profile integration)
+#   tests/*_k8s.rs          → K8s tier       (cargo nextest run --profile k8s)
+#
+# The binary() filter matches test binary names (= test file stems).
+
+[profile.default]
+# Bare `cargo nextest run` excludes heavy tests — safe for local TDD loop
+default-filter = "not binary(~_integration) and not binary(~_k8s)"
+
+[profile.integration]
+default-filter = "binary(~_integration)"
+
+[profile.k8s]
+default-filter = "binary(~_k8s)"
+# K8s tests are heavy — limit concurrency to avoid overwhelming Kind cluster
+test-threads = 4
+
+[profile.llm]
+# LLM tests: real Claude CLI with Anthropic credentials.
+# Two sources:
+#   - tests/llm_*.rs  (main binary integration tests, file-based selection)
+#   - src/llm_tests.rs (platform-agent-runner inline tests, use #[ignore])
+# We select both: file-named binaries + ignored tests with llm_ prefix.
+# NOTE: --run-ignored ignored-only must be passed on CLI (not a profile key).
+default-filter = "binary(~llm) or test(~llm_)"
+# LLM tests hit a real API — run sequentially to stay within rate limits
+test-threads = 1
+
 [profile.ci]
 retries = 1
 fail-fast = false
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# ---------------------------------------------------------------------------
+# Test groups — concurrency control
+# ---------------------------------------------------------------------------
 
 # Registry pull tests use start_test_server() which binds the fixed
 # PLATFORM_LISTEN_PORT (socat DaemonSet forwards to it). Must stay serial.
@@ -29,5 +71,9 @@ filter = "test(executor_)"
 test-group = "executor-parallel"
 
 [[profile.ci.overrides]]
+filter = "test(executor_)"
+test-group = "executor-parallel"
+
+[[profile.k8s.overrides]]
 filter = "test(executor_)"
 test-group = "executor-parallel"

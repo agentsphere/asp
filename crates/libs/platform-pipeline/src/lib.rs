@@ -25,54 +25,8 @@ pub fn slug(name: &str) -> String {
 
 /// Convert a git branch name to a K8s-safe DNS label.
 ///
-/// Rules:
-/// - Lowercase all characters
-/// - Replace `/`, `.`, `_`, `#`, ` ` with `-`
-/// - Collapse multiple consecutive `-` into one
-/// - Strip leading/trailing `-`
-/// - Truncate to 63 characters (K8s DNS label limit)
-/// - If empty after processing, return `"preview"`
-pub fn slugify_branch(branch: &str) -> String {
-    let slug: String = branch
-        .to_ascii_lowercase()
-        .chars()
-        .map(|c| match c {
-            '/' | '.' | '_' | '#' | ' ' => '-',
-            c if c.is_ascii_alphanumeric() || c == '-' => c,
-            _ => '-',
-        })
-        .collect();
-
-    // Collapse multiple dashes
-    let mut result = String::with_capacity(slug.len());
-    let mut prev_dash = false;
-    for c in slug.chars() {
-        if c == '-' {
-            if !prev_dash {
-                result.push(c);
-            }
-            prev_dash = true;
-        } else {
-            result.push(c);
-            prev_dash = false;
-        }
-    }
-
-    // Strip leading/trailing dashes, truncate
-    let trimmed = result.trim_matches('-');
-    let truncated = if trimmed.len() > 63 {
-        // Truncate at 63, but don't end on a dash
-        trimmed[..63].trim_end_matches('-')
-    } else {
-        trimmed
-    };
-
-    if truncated.is_empty() {
-        "preview".to_string()
-    } else {
-        truncated.to_string()
-    }
-}
+/// Re-exported from `platform-types` where it lives alongside other validation utilities.
+pub use platform_types::slugify_branch;
 
 /// Pipeline status as a simple enum for shared status transitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

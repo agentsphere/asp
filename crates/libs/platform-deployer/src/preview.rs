@@ -14,7 +14,7 @@ use uuid::Uuid;
 /// Called when an MR is merged to clean up the preview for the source branch.
 /// Uses `deploy_targets` table (`preview_deployments` was dropped).
 pub async fn stop_preview_for_branch(pool: &sqlx::PgPool, project_id: Uuid, branch: &str) {
-    let slug = platform_pipeline::slugify_branch(branch);
+    let slug = platform_types::slugify_branch(branch);
 
     // Deactivate the preview target
     let _ = sqlx::query(
