@@ -8,6 +8,7 @@
 //! (not on each other) to publish or consume events.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -96,6 +97,32 @@ pub enum PlatformEvent {
     FlagsRegistered {
         project_id: Uuid,
         flags: Vec<(String, serde_json::Value, Option<String>)>,
+    },
+    /// A code branch was pushed (triggers pipeline, webhooks, MR sync).
+    CodePushed {
+        project_id: Uuid,
+        user_id: Uuid,
+        user_name: String,
+        repo_path: PathBuf,
+        branch: String,
+        commit_sha: Option<String>,
+    },
+    /// A tag was pushed (triggers tag pipeline + webhooks).
+    TagPushed {
+        project_id: Uuid,
+        user_id: Uuid,
+        user_name: String,
+        repo_path: PathBuf,
+        tag_name: String,
+        commit_sha: Option<String>,
+    },
+    /// An MR's source branch was updated (triggers MR pipeline, dismisses stale reviews).
+    MrBranchSynced {
+        project_id: Uuid,
+        user_id: Uuid,
+        repo_path: PathBuf,
+        branch: String,
+        commit_sha: Option<String>,
     },
 }
 
@@ -292,10 +319,171 @@ mod tests {
                 project_id: Uuid::nil(),
                 flags: vec![],
             },
+            PlatformEvent::CodePushed {
+                project_id: Uuid::nil(),
+                user_id: Uuid::nil(),
+                user_name: "alice".into(),
+                repo_path: PathBuf::from("/repos/test.git"),
+                branch: "main".into(),
+                commit_sha: Some("abc123".into()),
+            },
+            PlatformEvent::TagPushed {
+                project_id: Uuid::nil(),
+                user_id: Uuid::nil(),
+                user_name: "alice".into(),
+                repo_path: PathBuf::from("/repos/test.git"),
+                tag_name: "v1.0.0".into(),
+                commit_sha: None,
+            },
+            PlatformEvent::MrBranchSynced {
+                project_id: Uuid::nil(),
+                user_id: Uuid::nil(),
+                repo_path: PathBuf::from("/repos/test.git"),
+                branch: "feature/login".into(),
+                commit_sha: Some("abc123".into()),
+            },
         ];
         for event in &events {
             let json = serde_json::to_string(event).unwrap();
             let _parsed: PlatformEvent = serde_json::from_str(&json).unwrap();
+        }
+    }
+
+    #[test]
+    fn platform_event_serde_roundtrip_code_pushed() {
+        let event = PlatformEvent::CodePushed {
+            project_id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            user_name: "alice".into(),
+            repo_path: PathBuf::from("/repos/test.git"),
+            branch: "feature/login".into(),
+            commit_sha: Some("abc123def456".into()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"CodePushed""#));
+        let parsed: PlatformEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            PlatformEvent::CodePushed {
+                branch,
+                commit_sha,
+                user_name,
+                ..
+            } => {
+                assert_eq!(branch, "feature/login");
+                assert_eq!(commit_sha.as_deref(), Some("abc123def456"));
+                assert_eq!(user_name, "alice");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn platform_event_serde_roundtrip_code_pushed_no_sha() {
+        let event = PlatformEvent::CodePushed {
+            project_id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            user_name: "bob".into(),
+            repo_path: PathBuf::from("/repos/test.git"),
+            branch: "main".into(),
+            commit_sha: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: PlatformEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            PlatformEvent::CodePushed { commit_sha, .. } => {
+                assert!(commit_sha.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn platform_event_serde_roundtrip_tag_pushed() {
+        let event = PlatformEvent::TagPushed {
+            project_id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            user_name: "alice".into(),
+            repo_path: PathBuf::from("/repos/test.git"),
+            tag_name: "v2.0.0-rc.1".into(),
+            commit_sha: Some("def456".into()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"TagPushed""#));
+        let parsed: PlatformEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            PlatformEvent::TagPushed {
+                tag_name,
+                commit_sha,
+                user_name,
+                ..
+            } => {
+                assert_eq!(tag_name, "v2.0.0-rc.1");
+                assert_eq!(commit_sha.as_deref(), Some("def456"));
+                assert_eq!(user_name, "alice");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn platform_event_serde_roundtrip_tag_pushed_no_sha() {
+        let event = PlatformEvent::TagPushed {
+            project_id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            user_name: "bob".into(),
+            repo_path: PathBuf::from("/repos/test.git"),
+            tag_name: "v1.0.0".into(),
+            commit_sha: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: PlatformEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            PlatformEvent::TagPushed { commit_sha, .. } => {
+                assert!(commit_sha.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn platform_event_serde_roundtrip_mr_branch_synced() {
+        let event = PlatformEvent::MrBranchSynced {
+            project_id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            repo_path: PathBuf::from("/repos/test.git"),
+            branch: "feature/login".into(),
+            commit_sha: Some("abc123def456".into()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"MrBranchSynced""#));
+        let parsed: PlatformEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            PlatformEvent::MrBranchSynced {
+                branch, commit_sha, ..
+            } => {
+                assert_eq!(branch, "feature/login");
+                assert_eq!(commit_sha.as_deref(), Some("abc123def456"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn platform_event_serde_roundtrip_mr_branch_synced_no_sha() {
+        let event = PlatformEvent::MrBranchSynced {
+            project_id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            repo_path: PathBuf::from("/repos/test.git"),
+            branch: "main".into(),
+            commit_sha: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: PlatformEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            PlatformEvent::MrBranchSynced { commit_sha, .. } => {
+                assert!(commit_sha.is_none());
+            }
+            _ => panic!("wrong variant"),
         }
     }
 }

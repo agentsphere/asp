@@ -932,6 +932,73 @@ mod tests {
     }
 
     #[test]
+    fn extract_trace_context_with_valid_traceparent() {
+        let req = "GET /api HTTP/1.1\r\nHost: app.io\r\ntraceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n\r\n";
+        let parsed = parse_gateway_request(req);
+        let ctx = extract_trace_context(&parsed);
+        assert_eq!(ctx.trace, "4bf92f3577b34da6a3ce929d0e0e4736");
+        assert_eq!(ctx.parent_span, Some("00f067aa0ba902b7".into()));
+        assert_eq!(ctx.span.len(), 16); // new span_id is 16 hex chars
+    }
+
+    #[test]
+    fn extract_trace_context_without_traceparent() {
+        let req = "GET /api HTTP/1.1\r\nHost: app.io\r\n\r\n";
+        let parsed = parse_gateway_request(req);
+        let ctx = extract_trace_context(&parsed);
+        assert_eq!(ctx.trace.len(), 32); // new trace_id
+        assert!(ctx.parent_span.is_none());
+        assert_eq!(ctx.span.len(), 16);
+    }
+
+    #[test]
+    fn parse_gateway_request_post_with_body() {
+        let req = "POST /api/data HTTP/1.1\r\nHost: app.io\r\nContent-Type: application/json\r\nContent-Length: 13\r\n\r\n{\"key\":\"val\"}";
+        let parsed = parse_gateway_request(req);
+        assert_eq!(parsed.method, "POST");
+        assert_eq!(parsed.path, "/api/data");
+        // Content-Type should be in headers
+        let ct = parsed
+            .headers
+            .iter()
+            .find(|(n, _)| n == "content-type")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(ct, Some("application/json"));
+    }
+
+    #[test]
+    fn parse_gateway_request_empty_request() {
+        let parsed = parse_gateway_request("");
+        assert!(parsed.method.is_empty());
+        assert!(parsed.path.is_empty());
+        assert!(parsed.host.is_none());
+    }
+
+    #[test]
+    fn add_forwarded_headers_preserves_body() {
+        let req = b"POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nhello";
+        let peer: SocketAddr = "10.0.0.1:5555".parse().unwrap();
+        let result = add_forwarded_headers_with_trace(req, &peer, "00-tid-sid-01");
+        let s = String::from_utf8(result).unwrap();
+        assert!(s.contains("hello"));
+        assert!(s.contains("X-Forwarded-For: 10.0.0.1"));
+        assert!(s.contains("traceparent: 00-tid-sid-01"));
+    }
+
+    #[test]
+    fn parse_http_status_301() {
+        assert_eq!(
+            parse_http_status(b"HTTP/1.1 301 Moved Permanently\r\n"),
+            301
+        );
+    }
+
+    #[test]
+    fn parse_http_status_garbage() {
+        assert_eq!(parse_http_status(b"not http at all"), 502);
+    }
+
+    #[test]
     fn parse_gateway_request_extracts_user_agent() {
         let req = "GET / HTTP/1.1\r\nHost: app.io\r\nUser-Agent: Mozilla/5.0\r\n\r\n";
         let parsed = parse_gateway_request(req);

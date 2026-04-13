@@ -52,6 +52,7 @@ pub struct PushEvent {
 pub struct TagEvent {
     pub project_id: Uuid,
     pub user_id: Uuid,
+    pub user_name: String,
     pub repo_path: PathBuf,
     pub tag_name: String,
     pub commit_sha: Option<String>,
@@ -119,6 +120,7 @@ mod tests {
         let event = TagEvent {
             project_id: Uuid::nil(),
             user_id: Uuid::nil(),
+            user_name: "alice".into(),
             repo_path: PathBuf::from("/repos/test.git"),
             tag_name: "v1.0.0".into(),
             commit_sha: None,
@@ -126,6 +128,7 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let parsed: TagEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.tag_name, "v1.0.0");
+        assert_eq!(parsed.user_name, "alice");
     }
 
     #[test]

@@ -210,11 +210,12 @@ test-all: test-unit test-integration test-e2e
 # -- Crate Tests ----------------------------------------------------
 
 # All workspace crates (package names from Cargo.toml)
-_crate_all := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-registry -p platform-ingest -p platform-proxy -p platform-proxy-init"
-# Library crates only (excludes binary crates that crash llvm-cov: proxy, proxy-init, ingest)
-_crate_lib := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-registry"
+_crate_all := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-git -p platform-registry -p platform-agent -p platform-ingest -p platform-k8s-watcher -p platform-proxy -p platform-proxy-init"
+# Crates with --lib targets for coverage (proxy included — coverage uses --lib to avoid binary crash)
+# Excludes proxy-init and ingest (no lib.rs, binary-only crates)
+_crate_lib := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-git -p platform-registry -p platform-agent -p platform-k8s-watcher -p platform-proxy"
 # Crates with integration tests (need DB + Valkey from .env.dev)
-_crate_int := "-p platform-auth -p platform-observe -p platform-secrets -p platform-types"
+_crate_int := "-p platform-auth -p platform-observe -p platform-secrets -p platform-types -p platform-registry"
 # Crates with K8s integration tests (need Kind cluster)
 _crate_k8s := "-p platform-k8s"
 
@@ -257,11 +258,11 @@ crate-test-kubernetes crate="" filter="":
 [group('crate')]
 crate-test-all crate="":
     just crate-test-unit {{crate}}
-    {{ if crate == "platform-proxy" { "" } else if crate == "platform-proxy-init" { "" } else if crate == "platform-ingest" { "" } else if crate == "platform-k8s" { "" } else if crate == "platform-registry" { "" } else { "just crate-test-integration " + crate } }}
+    {{ if crate == "platform-proxy" { "" } else if crate == "platform-proxy-init" { "" } else if crate == "platform-ingest" { "" } else if crate == "platform-k8s-watcher" { "" } else if crate == "platform-k8s" { "" } else if crate == "platform-git" { "" } else { "just crate-test-integration " + crate } }}
     just crate-test-kubernetes
 
 # Coverage for workspace crates (unit + integration + K8s, uses DB/Valkey/K8s)
-# Excludes binary crates (proxy, proxy-init, ingest) — they crash llvm-cov
+# Excludes binary-only crates without lib.rs (proxy-init, ingest)
 # just crate-cov                         → all library crates
 # just crate-cov platform-auth           → one crate
 [group('crate')]
@@ -346,6 +347,7 @@ db-prepare:
     cd crates/libs/platform-auth && cargo sqlx prepare
     cd crates/libs/platform-observe && cargo sqlx prepare
     cd crates/libs/platform-secrets && cargo sqlx prepare
+    cd crates/libs/platform-agent && cargo sqlx prepare
 
 [group('db')]
 db-check:
@@ -354,6 +356,7 @@ db-check:
     cd crates/libs/platform-auth && cargo sqlx prepare --check
     cd crates/libs/platform-observe && cargo sqlx prepare --check
     cd crates/libs/platform-secrets && cargo sqlx prepare --check
+    cd crates/libs/platform-agent && cargo sqlx prepare --check
 
 # -- Build ----------------------------------------------------------
 [group('build')]

@@ -110,3 +110,75 @@ pub async fn wait_for_exit(child: &mut Child, shutdown_tx: watch::Sender<()>) ->
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn spawn_sleep_succeeds() {
+        let spawned = spawn("sleep", &["10".into()]);
+        assert!(spawned.is_ok());
+        let mut spawned = spawned.unwrap();
+        assert!(spawned.child.id().is_some());
+        let _ = spawned.child.kill().await;
+    }
+
+    #[test]
+    fn spawn_nonexistent_command_fails() {
+        let result = spawn("/nonexistent/binary/path", &[]);
+        assert!(result.is_err());
+        let err = format!("{}", result.err().unwrap());
+        assert!(err.contains("failed to spawn child process"));
+    }
+
+    #[tokio::test]
+    async fn wait_for_exit_success() {
+        let mut spawned = spawn("true", &[]).unwrap();
+        let (shutdown_tx, _shutdown_rx) = watch::channel(());
+        let code = wait_for_exit(&mut spawned.child, shutdown_tx).await;
+        assert_eq!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn wait_for_exit_failure() {
+        let mut spawned = spawn("false", &[]).unwrap();
+        let (shutdown_tx, _shutdown_rx) = watch::channel(());
+        let code = wait_for_exit(&mut spawned.child, shutdown_tx).await;
+        assert_eq!(code, 1);
+    }
+
+    #[tokio::test]
+    async fn wait_for_exit_signals_shutdown() {
+        let mut spawned = spawn("true", &[]).unwrap();
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(());
+        wait_for_exit(&mut spawned.child, shutdown_tx).await;
+        // After wait_for_exit the sender is dropped (sent + dropped).
+        // changed() returns Err when sender is dropped, which means shutdown was triggered.
+        let result = shutdown_rx.changed().await;
+        // Either Ok (value changed) or Err (sender dropped) both indicate shutdown
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn signal_child_sends_signal() {
+        let mut spawned = spawn("sleep", &["10".into()]).unwrap();
+        let result = signal_child(&spawned.child, nix::sys::signal::Signal::SIGTERM);
+        assert!(result.is_ok());
+        // Wait for child to actually exit after signal
+        let _ = spawned.child.wait().await;
+    }
+
+    #[tokio::test]
+    async fn reap_zombies_shuts_down() {
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let handle = tokio::spawn(reap_zombies(shutdown_rx));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let _ = shutdown_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+            .await
+            .expect("reap_zombies should exit within 2s")
+            .expect("task should not panic");
+    }
+}

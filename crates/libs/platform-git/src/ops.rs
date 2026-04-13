@@ -470,4 +470,226 @@ mod tests {
         // Returns false for nonexistent repo (command fails)
         assert!(matches!(result, Ok(false) | Err(_)));
     }
+
+    // -----------------------------------------------------------------------
+    // Integration tests with temp git repos
+    // -----------------------------------------------------------------------
+
+    use crate::plumbing::CliGitRepoManager;
+    use crate::templates::TemplateFile;
+    use crate::traits::GitRepoManager;
+
+    async fn create_test_repo(tmp: &Path) -> std::path::PathBuf {
+        let mgr = CliGitRepoManager;
+        let files = vec![
+            TemplateFile {
+                path: "README.md",
+                content: "# Test repo".into(),
+            },
+            TemplateFile {
+                path: "src/main.rs",
+                content: "fn main() {}".into(),
+            },
+        ];
+        mgr.init_bare_with_files(tmp, "test", "repo", "main", &files)
+            .await
+            .expect("failed to create test repo")
+    }
+
+    #[tokio::test]
+    async fn rev_parse_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let sha = git.rev_parse(&repo, "HEAD").await.unwrap();
+        assert_eq!(sha.len(), 40, "SHA should be 40 hex chars");
+        assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[tokio::test]
+    async fn rev_parse_branch_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let sha = git.rev_parse(&repo, "refs/heads/main").await.unwrap();
+        assert_eq!(sha.len(), 40);
+    }
+
+    #[tokio::test]
+    async fn rev_parse_bad_ref_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let result = git.rev_parse(&repo, "refs/heads/nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_file_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let content = git.read_file(&repo, "HEAD", "README.md").await.unwrap();
+        assert_eq!(content, Some("# Test repo".to_string()));
+    }
+
+    #[tokio::test]
+    async fn read_file_missing_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let content = git
+            .read_file(&repo, "HEAD", "nonexistent.txt")
+            .await
+            .unwrap();
+        assert_eq!(content, None);
+    }
+
+    #[tokio::test]
+    async fn read_file_bad_ref_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        // "deadbeef" triggers "invalid object name" which is not in the
+        // handled error set (only "does not exist"/"not a valid object"/"bad revision")
+        let result = git.read_file(&repo, "deadbeef", "README.md").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn list_dir_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let entries = git.list_dir(&repo, "HEAD", "").await.unwrap();
+        assert!(entries.contains(&"README.md".to_string()));
+        assert!(entries.contains(&"src".to_string()));
+    }
+
+    #[tokio::test]
+    async fn list_dir_subdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let entries = git.list_dir(&repo, "HEAD", "src").await.unwrap();
+        assert!(entries.contains(&"main.rs".to_string()));
+    }
+
+    #[tokio::test]
+    async fn list_tree_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let entries = git.list_tree(&repo, "HEAD", None).await.unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"README.md"));
+        assert!(names.contains(&"src"));
+        let readme = entries.iter().find(|e| e.name == "README.md").unwrap();
+        assert_eq!(readme.entry_type, "blob");
+        assert!(readme.size.is_some());
+        let src = entries.iter().find(|e| e.name == "src").unwrap();
+        assert_eq!(src.entry_type, "tree");
+    }
+
+    #[tokio::test]
+    async fn show_blob_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let blob = git
+            .show_blob(&repo, "HEAD", "README.md", 1024)
+            .await
+            .unwrap();
+        assert!(!blob.is_binary);
+        assert_eq!(String::from_utf8_lossy(&blob.content), "# Test repo");
+        assert_eq!(blob.size, 11);
+    }
+
+    #[tokio::test]
+    async fn show_blob_truncates_large_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let blob = git.show_blob(&repo, "HEAD", "README.md", 5).await.unwrap();
+        assert_eq!(blob.content.len(), 5);
+        assert_eq!(blob.size, 11); // full size is still reported
+    }
+
+    #[tokio::test]
+    async fn list_branches_returns_main() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let branches = git.list_branches(&repo).await.unwrap();
+        assert!(!branches.is_empty());
+        assert!(branches.iter().any(|b| b.name == "main"));
+        assert_eq!(branches[0].sha.len(), 40);
+    }
+
+    #[tokio::test]
+    async fn log_commits_returns_initial() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let commits = git.log_commits(&repo, "main", 10, 0).await.unwrap();
+        assert!(!commits.is_empty());
+        assert_eq!(commits[0].sha.len(), 40);
+    }
+
+    #[tokio::test]
+    async fn log_commits_respects_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let commits = git.log_commits(&repo, "main", 1, 0).await.unwrap();
+        assert_eq!(commits.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn commit_detail_returns_info() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let sha = git.rev_parse(&repo, "HEAD").await.unwrap();
+        let detail = git.commit_detail(&repo, &sha).await.unwrap();
+        assert_eq!(detail.sha, sha);
+        assert!(!detail.author_name.is_empty());
+        assert!(!detail.author_email.is_empty());
+    }
+
+    #[tokio::test]
+    async fn is_ancestor_true() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        // HEAD is ancestor of itself
+        let sha = git.rev_parse(&repo, "HEAD").await.unwrap();
+        let result = git.is_ancestor(&repo, &sha, &sha).await.unwrap();
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn branch_exists_main() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        assert!(git.branch_exists(&repo, "main").await.unwrap());
+        assert!(!git.branch_exists(&repo, "nonexistent").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn parse_commit_detail_with_real_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let git = CliGitRepo;
+        let sha = git.rev_parse(&repo, "HEAD").await.unwrap();
+        let detail = git.commit_detail(&repo, &sha).await.unwrap();
+        assert_eq!(detail.sha, sha);
+        assert!(!detail.message.is_empty());
+        // No GPG signature on test commits
+        assert!(
+            detail.signature.is_none(),
+            "unsigned commit should have no signature"
+        );
+    }
 }

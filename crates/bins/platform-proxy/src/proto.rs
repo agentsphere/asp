@@ -584,6 +584,119 @@ mod tests {
     }
 
     #[test]
+    fn any_value_to_json_double() {
+        let val = AnyValue {
+            value: Some(any_value::Value::DoubleValue(42.5)),
+        };
+        let json = any_value_to_json(&val);
+        assert!((json.as_f64().unwrap() - 42.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn any_value_to_json_bool() {
+        let val = AnyValue {
+            value: Some(any_value::Value::BoolValue(true)),
+        };
+        assert_eq!(any_value_to_json(&val), serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn any_value_to_json_array() {
+        let val = AnyValue {
+            value: Some(any_value::Value::ArrayValue(ArrayValue {
+                values: vec![
+                    AnyValue {
+                        value: Some(any_value::Value::StringValue("a".into())),
+                    },
+                    AnyValue {
+                        value: Some(any_value::Value::IntValue(42)),
+                    },
+                ],
+            })),
+        };
+        let json = any_value_to_json(&val);
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0], "a");
+        assert_eq!(arr[1], 42);
+    }
+
+    #[test]
+    fn any_value_to_json_kvlist() {
+        let val = AnyValue {
+            value: Some(any_value::Value::KvlistValue(KeyValueList {
+                values: vec![
+                    KeyValue {
+                        key: "k1".into(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue("v1".into())),
+                        }),
+                    },
+                    KeyValue {
+                        key: "k2".into(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::IntValue(99)),
+                        }),
+                    },
+                ],
+            })),
+        };
+        let json = any_value_to_json(&val);
+        let obj = json.as_object().unwrap();
+        assert_eq!(obj["k1"], "v1");
+        assert_eq!(obj["k2"], 99);
+    }
+
+    #[test]
+    fn any_value_to_json_none() {
+        let val = AnyValue { value: None };
+        assert_eq!(any_value_to_json(&val), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn get_string_attr_non_string_value() {
+        let attrs = vec![KeyValue {
+            key: "count".into(),
+            value: Some(AnyValue {
+                value: Some(any_value::Value::IntValue(42)),
+            }),
+        }];
+        assert_eq!(get_string_attr(&attrs, "count"), None);
+    }
+
+    #[test]
+    fn attrs_to_json_with_kvlist_and_array() {
+        let attrs = vec![
+            KeyValue {
+                key: "nested".into(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::KvlistValue(KeyValueList {
+                        values: vec![KeyValue {
+                            key: "inner".into(),
+                            value: Some(AnyValue {
+                                value: Some(any_value::Value::BoolValue(false)),
+                            }),
+                        }],
+                    })),
+                }),
+            },
+            KeyValue {
+                key: "list".into(),
+                value: Some(AnyValue {
+                    value: Some(any_value::Value::ArrayValue(ArrayValue {
+                        values: vec![AnyValue {
+                            value: Some(any_value::Value::DoubleValue(1.5)),
+                        }],
+                    })),
+                }),
+            },
+        ];
+        let json = attrs_to_json(&attrs);
+        assert!(json["nested"]["inner"].as_bool() == Some(false));
+        assert!((json["list"][0].as_f64().unwrap() - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn encode_decode_trace_request() {
         let req = ExportTraceServiceRequest {
             resource_spans: vec![ResourceSpans {

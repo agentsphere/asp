@@ -8,6 +8,7 @@ resources:
   - service.yaml
   - ingest-deployment.yaml
   - ingest-service.yaml
+  - k8s-watcher-deployment.yaml
   - configmap.yaml
   - secret.yaml
   - rbac.yaml

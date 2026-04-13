@@ -37,7 +37,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 COPY --from=ui-builder /ui/dist ./ui/dist
 ENV SQLX_OFFLINE=true
-RUN cargo build --release --bin platform --bin platform-ingest
+RUN cargo build --release --bin platform --bin platform-ingest --bin platform-k8s-watcher
 
 # Stage 4: Runtime — needs git for repo init, smart HTTP, MR merge, ops-repo, etc.
 FROM debian:bookworm-slim
@@ -47,6 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && useradd -r -s /sbin/nologin -u 1000 -g 1000 platform
 COPY --from=builder /app/target/release/platform /platform
 COPY --from=builder /app/target/release/platform-ingest /platform-ingest
+COPY --from=builder /app/target/release/platform-k8s-watcher /platform-k8s-watcher
 COPY --from=agent-runner-builder \
   /agent-runner/target/x86_64-unknown-linux-gnu/release/agent-runner \
   /data/agent-runner/amd64

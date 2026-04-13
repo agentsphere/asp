@@ -45,7 +45,7 @@ async fn seed_user(pool: &PgPool) -> Uuid {
 // audit.rs
 // ---------------------------------------------------------------------------
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn send_audit_writes_to_db(pool: PgPool) {
     let user_id = seed_user(&pool).await;
 
@@ -81,7 +81,7 @@ async fn send_audit_writes_to_db(pool: PgPool) {
     panic!("audit log entry did not appear within 2s");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn send_audit_with_ip_addr(pool: PgPool) {
     let user_id = seed_user(&pool).await;
 
@@ -120,7 +120,7 @@ async fn send_audit_with_ip_addr(pool: PgPool) {
 // pool.rs
 // ---------------------------------------------------------------------------
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn pg_connect_success(_pool: PgPool) {
     let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let result = platform_types::pool::pg_connect(&url, 2, 5).await;
@@ -131,14 +131,14 @@ async fn pg_connect_success(_pool: PgPool) {
 // valkey.rs
 // ---------------------------------------------------------------------------
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn valkey_connect_success(_pool: PgPool) {
     let url = std::env::var("VALKEY_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let result = platform_types::valkey::connect(&url, 1).await;
     assert!(result.is_ok(), "valkey connect failed: {result:?}");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn get_cached_returns_none_for_missing_key(_pool: PgPool) {
     let valkey = valkey_pool().await;
     let key = format!("types-test-missing-{}", Uuid::new_v4());
@@ -147,7 +147,7 @@ async fn get_cached_returns_none_for_missing_key(_pool: PgPool) {
     assert!(result.is_none(), "missing key should return None");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn get_cached_malformed_json_returns_none(_pool: PgPool) {
     use fred::interfaces::KeysInterface;
 
@@ -170,7 +170,7 @@ async fn get_cached_malformed_json_returns_none(_pool: PgPool) {
     let _: () = valkey.del(&key).await.unwrap();
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn set_cached_and_get_cached_roundtrip(_pool: PgPool) {
     use fred::interfaces::KeysInterface;
 
@@ -189,7 +189,7 @@ async fn set_cached_and_get_cached_roundtrip(_pool: PgPool) {
     let _: () = valkey.del(&key).await.unwrap();
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn invalidate_removes_key(_pool: PgPool) {
     use fred::interfaces::KeysInterface;
 
@@ -215,7 +215,7 @@ async fn invalidate_removes_key(_pool: PgPool) {
     assert!(!exists, "key should be gone after invalidation");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn invalidate_pattern_removes_matching_keys(_pool: PgPool) {
     use fred::interfaces::KeysInterface;
 

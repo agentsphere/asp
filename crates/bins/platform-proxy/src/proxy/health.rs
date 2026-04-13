@@ -109,4 +109,120 @@ mod tests {
         // Port 1 should never be reachable
         assert!(!check_port_reachable(1).await);
     }
+
+    #[tokio::test]
+    async fn check_port_reachable_with_listener() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(check_port_reachable(port).await);
+    }
+
+    #[tokio::test]
+    async fn health_server_healthz() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        tokio::spawn(run_health_server(port, None, shutdown_rx));
+        // Give health server time to bind
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        stream
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; 1024];
+        let n = stream.read(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(response.contains("200 OK"));
+        assert!(response.contains("ok"));
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn health_server_readyz_no_app_port() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        tokio::spawn(run_health_server(port, None, shutdown_rx));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        stream
+            .write_all(b"GET /readyz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; 1024];
+        let n = stream.read(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(response.contains("200 OK"));
+        assert!(response.contains("ready"));
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn health_server_readyz_unreachable_app() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        // app_port 1 is never reachable
+        tokio::spawn(run_health_server(port, Some(1), shutdown_rx));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        stream
+            .write_all(b"GET /readyz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; 1024];
+        let n = stream.read(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(response.contains("503 Service Unavailable"));
+        assert!(response.contains("not ready"));
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn health_server_404() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        tokio::spawn(run_health_server(port, None, shutdown_rx));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        stream
+            .write_all(b"GET /unknown HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; 1024];
+        let n = stream.read(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf[..n]);
+        assert!(response.contains("404 Not Found"));
+        let _ = shutdown_tx.send(());
+    }
 }

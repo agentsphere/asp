@@ -451,4 +451,179 @@ mod tests {
         // Should not panic or error — just silently succeed
         cleanup_worktree(tmp.path(), &nonexistent).await;
     }
+
+    // -----------------------------------------------------------------------
+    // squash_merge
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn merger_squash_merge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let writer = CliGitWorktreeWriter;
+
+        // Create feature branch
+        let _ = run_git(&repo, &["branch", "feature", "main"]).await;
+        let _ = writer
+            .commit_files(
+                &repo,
+                "feature",
+                &[("feature.txt", b"feature content")],
+                "add feature",
+            )
+            .await
+            .unwrap();
+
+        let merger = CliGitMerger;
+        let result = merger
+            .squash_merge(&repo, "feature", "main", "Squash merge feature")
+            .await;
+
+        assert!(result.is_ok(), "squash_merge should succeed: {result:?}");
+        let sha = result.unwrap();
+        assert_eq!(sha.len(), 40);
+
+        // Verify the squash commit is a single parent (not a merge commit)
+        let parents = run_git(&repo, &["rev-list", "--parents", "-1", &sha])
+            .await
+            .unwrap();
+        let parts: Vec<&str> = parents.trim().split_whitespace().collect();
+        assert_eq!(parts.len(), 2, "squash commit should have exactly 1 parent");
+    }
+
+    // -----------------------------------------------------------------------
+    // rebase_merge (fast-forward)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn merger_rebase_merge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let writer = CliGitWorktreeWriter;
+
+        // Create feature branch
+        let _ = run_git(&repo, &["branch", "feature", "main"]).await;
+        let _ = writer
+            .commit_files(
+                &repo,
+                "feature",
+                &[("feature.txt", b"feature content")],
+                "add feature",
+            )
+            .await
+            .unwrap();
+
+        let merger = CliGitMerger;
+        let result = merger.rebase_merge(&repo, "feature", "main").await;
+
+        assert!(result.is_ok(), "rebase_merge should succeed: {result:?}");
+        let sha = result.unwrap();
+        assert_eq!(sha.len(), 40);
+    }
+
+    #[tokio::test]
+    async fn merger_rebase_merge_non_ff_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let writer = CliGitWorktreeWriter;
+
+        // Create diverged branches: both main and feature have new commits
+        let _ = run_git(&repo, &["branch", "feature", "main"]).await;
+        let _ = writer
+            .commit_files(
+                &repo,
+                "feature",
+                &[("feature.txt", b"feature")],
+                "feature commit",
+            )
+            .await
+            .unwrap();
+        let _ = writer
+            .commit_files(&repo, "main", &[("main-only.txt", b"main")], "main commit")
+            .await
+            .unwrap();
+
+        let merger = CliGitMerger;
+        let result = merger.rebase_merge(&repo, "feature", "main").await;
+        assert!(result.is_err(), "rebase_merge should fail on non-ff merge");
+    }
+
+    // -----------------------------------------------------------------------
+    // commit_files: no-change path
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn commit_files_no_change_returns_current_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+        let writer = CliGitWorktreeWriter;
+
+        // Commit a file
+        let sha1 = writer
+            .commit_files(&repo, "main", &[("test.txt", b"content")], "add test.txt")
+            .await
+            .unwrap();
+
+        // Commit the same file with same content — should return same SHA (no change)
+        let sha2 = writer
+            .commit_files(&repo, "main", &[("test.txt", b"content")], "no-op commit")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sha1, sha2,
+            "re-committing same content should return same HEAD"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ensure_branch_exists: new branch creation
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn ensure_branch_exists_creates_orphan_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+
+        // Branch "new-branch" doesn't exist yet
+        let check = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["rev-parse", "--verify", "refs/heads/new-branch"])
+            .output()
+            .await
+            .unwrap();
+        assert!(!check.status.success(), "branch should not exist yet");
+
+        // ensure_branch_exists should create it
+        ensure_branch_exists(&repo, "new-branch").await.unwrap();
+
+        let check2 = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["rev-parse", "--verify", "refs/heads/new-branch"])
+            .output()
+            .await
+            .unwrap();
+        assert!(check2.status.success(), "branch should exist now");
+    }
+
+    #[tokio::test]
+    async fn ensure_branch_exists_noop_for_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = create_test_repo(tmp.path()).await;
+
+        // "main" already exists — should be a no-op
+        ensure_branch_exists(&repo, "main").await.unwrap();
+
+        // Verify main still exists and hasn't changed
+        let check = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["rev-parse", "--verify", "refs/heads/main"])
+            .output()
+            .await
+            .unwrap();
+        assert!(check.status.success());
+    }
 }

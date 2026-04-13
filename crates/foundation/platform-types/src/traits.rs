@@ -107,6 +107,19 @@ pub trait WebhookDispatcher: Send + Sync {
     ) -> impl Future<Output = ()> + Send;
 }
 
+/// Trait for background task heartbeat tracking.
+///
+/// Decouples domain crates (agent reaper, pipeline executor) from the
+/// concrete `TaskRegistry` implementation in `src/health/`.
+pub trait TaskHeartbeat: Send + Sync {
+    /// Register a task with its expected heartbeat interval.
+    fn register(&self, name: &str, expected_interval_secs: u64);
+    /// Record a successful heartbeat for a named task.
+    fn heartbeat(&self, name: &str);
+    /// Record an error for a named task.
+    fn report_error(&self, name: &str, message: &str);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,6 +184,13 @@ mod tests {
         async fn is_member(&self, _workspace_id: Uuid, _user_id: Uuid) -> anyhow::Result<bool> {
             Ok(true)
         }
+    }
+
+    struct MockTaskHeartbeat;
+    impl TaskHeartbeat for MockTaskHeartbeat {
+        fn register(&self, _name: &str, _expected_interval_secs: u64) {}
+        fn heartbeat(&self, _name: &str) {}
+        fn report_error(&self, _name: &str, _message: &str) {}
     }
 
     #[test]
@@ -254,5 +274,13 @@ mod tests {
         let checker = MockWorkspaceMembershipChecker;
         let is_member = checker.is_member(Uuid::nil(), Uuid::nil()).await.unwrap();
         assert!(is_member);
+    }
+
+    #[test]
+    fn mock_task_heartbeat_works() {
+        let tracker = MockTaskHeartbeat;
+        tracker.register("test-task", 60);
+        tracker.heartbeat("test-task");
+        tracker.report_error("test-task", "connection refused");
     }
 }

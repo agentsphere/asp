@@ -157,8 +157,8 @@ async fn seed_repo(pool: &PgPool, name: &str, project_id: Option<Uuid>) -> Uuid 
 
 async fn seed_manifest(pool: &PgPool, repo_id: Uuid, digest: &str) {
     sqlx::query(
-        "INSERT INTO registry_manifests (repository_id, digest, media_type, content)
-         VALUES ($1, $2, 'application/vnd.oci.image.manifest.v1+json', $3)",
+        "INSERT INTO registry_manifests (repository_id, digest, media_type, content, size_bytes)
+         VALUES ($1, $2, 'application/vnd.oci.image.manifest.v1+json', $3, 2)",
     )
     .bind(repo_id)
     .bind(digest)

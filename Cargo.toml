@@ -10,8 +10,10 @@ members = [
     "crates/libs/platform-k8s",
     "crates/libs/platform-git",
     "crates/libs/platform-registry",
+    "crates/libs/platform-agent",
     # bins — standalone deployable binaries
     "crates/bins/platform-ingest",
+    "crates/bins/platform-k8s-watcher",
     "crates/bins/platform-proxy",
     "crates/bins/platform-proxy-init",
 ]
@@ -29,6 +31,10 @@ name = "platform"
 path = "src/main.rs"
 
 [dependencies]
+# Workspace crates
+platform-types = { path = "crates/foundation/platform-types" }
+platform-agent = { path = "crates/libs/platform-agent" }
+
 # HTTP + SSE
 axum = { version = "0.8", features = ["macros", "multipart", "ws"] }
 axum-extra = { version = "0.12", features = ["typed-header"] }

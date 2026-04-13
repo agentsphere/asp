@@ -80,7 +80,7 @@ async fn seed_project(pool: &PgPool, owner_id: Uuid) -> (Uuid, Uuid) {
 // engine.rs — CRUD
 // ===========================================================================
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn create_and_resolve_secret(pool: PgPool) {
     let key = dev_key();
     let owner = seed_user(&pool).await;
@@ -112,7 +112,7 @@ async fn create_and_resolve_secret(pool: PgPool) {
     assert_eq!(resolved, "postgres://localhost/db");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn create_and_resolve_global_secret(pool: PgPool) {
     let key = dev_key();
     let owner = seed_user(&pool).await;
@@ -134,7 +134,7 @@ async fn create_and_resolve_global_secret(pool: PgPool) {
     assert_eq!(resolved2, "global-value");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn delete_secret_project_scoped(pool: PgPool) {
     let key = dev_key();
     let owner = seed_user(&pool).await;
@@ -168,7 +168,7 @@ async fn delete_secret_project_scoped(pool: PgPool) {
     assert!(!deleted2);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn delete_global_secret(pool: PgPool) {
     let key = dev_key();
     let owner = seed_user(&pool).await;
@@ -183,7 +183,7 @@ async fn delete_global_secret(pool: PgPool) {
     assert!(deleted);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn list_secrets_project_scoped(pool: PgPool) {
     let key = dev_key();
     let owner = seed_user(&pool).await;
@@ -229,7 +229,7 @@ async fn list_secrets_project_scoped(pool: PgPool) {
     assert_eq!(list[1].name, "SECRET_B");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn list_secrets_global(pool: PgPool) {
     let key = dev_key();
     let owner = seed_user(&pool).await;
@@ -242,7 +242,7 @@ async fn list_secrets_global(pool: PgPool) {
     assert!(list.iter().any(|s| s.name == "GLIST_A"));
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn list_workspace_secrets(pool: PgPool) {
     let key = dev_key();
     let owner = seed_user(&pool).await;
@@ -269,7 +269,7 @@ async fn list_workspace_secrets(pool: PgPool) {
     assert_eq!(list[0].name, "WS_SECRET");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn resolve_secret_hierarchical_all_levels(pool: PgPool) {
     let key = dev_key();
     let owner = seed_user(&pool).await;
@@ -380,7 +380,7 @@ async fn resolve_secret_hierarchical_all_levels(pool: PgPool) {
     assert_eq!(v, "project-staging");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn resolve_secret_scope_mismatch(pool: PgPool) {
     let key = dev_key();
     let owner = seed_user(&pool).await;
@@ -409,7 +409,7 @@ async fn resolve_secret_scope_mismatch(pool: PgPool) {
     assert!(err.to_string().contains("scope"));
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn resolve_secret_not_found(pool: PgPool) {
     let key = dev_key();
     let err = engine::resolve_secret(&pool, &key, Uuid::new_v4(), "NONEXISTENT", "all")
@@ -418,7 +418,7 @@ async fn resolve_secret_not_found(pool: PgPool) {
     assert!(err.to_string().contains("not found"));
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn resolve_secrets_for_env_template(pool: PgPool) {
     let key = dev_key();
     let owner = seed_user(&pool).await;
@@ -468,7 +468,7 @@ async fn resolve_secrets_for_env_template(pool: PgPool) {
     assert_eq!(result, "url=db.example.com:5432");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn resolve_secrets_for_env_missing_secret_kept(pool: PgPool) {
     let key = dev_key();
     let owner = seed_user(&pool).await;
@@ -487,7 +487,7 @@ async fn resolve_secrets_for_env_missing_secret_kept(pool: PgPool) {
     assert_eq!(result, "val=${{ secrets.MISSING }}");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn query_scoped_secrets_roundtrip(pool: PgPool) {
     let key = dev_key();
     let owner = seed_user(&pool).await;
@@ -534,7 +534,7 @@ async fn query_scoped_secrets_roundtrip(pool: PgPool) {
     assert_eq!(secrets[0].1, "val-a");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn create_secret_upsert_increments_version(pool: PgPool) {
     let key = dev_key();
     let owner = seed_user(&pool).await;
@@ -585,7 +585,7 @@ async fn create_secret_upsert_increments_version(pool: PgPool) {
 // llm_providers.rs
 // ===========================================================================
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn llm_provider_create_get_roundtrip(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -623,7 +623,7 @@ async fn llm_provider_create_get_roundtrip(pool: PgPool) {
     assert_eq!(config.validation_status, "untested");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn llm_provider_update_config(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -677,7 +677,7 @@ async fn llm_provider_update_config(pool: PgPool) {
     assert_eq!(config.env_vars["ANTHROPIC_BASE_URL"], "https://new.com");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn llm_provider_update_config_not_found(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -690,7 +690,7 @@ async fn llm_provider_update_config_not_found(pool: PgPool) {
     assert!(!updated);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn llm_provider_list_configs(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -715,7 +715,7 @@ async fn llm_provider_list_configs(pool: PgPool) {
     assert_eq!(list.len(), 2);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn llm_provider_delete_config(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -747,7 +747,7 @@ async fn llm_provider_delete_config(pool: PgPool) {
     assert!(!deleted2);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn llm_provider_delete_active_reverts_to_auto(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -778,7 +778,7 @@ async fn llm_provider_delete_active_reverts_to_auto(pool: PgPool) {
     assert_eq!(active, "auto");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn llm_provider_get_set_active_provider(pool: PgPool) {
     let user_id = seed_user(&pool).await;
 
@@ -800,7 +800,7 @@ async fn llm_provider_get_set_active_provider(pool: PgPool) {
 // cli_creds.rs
 // ===========================================================================
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn cli_creds_store_and_decrypt_roundtrip(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -828,7 +828,7 @@ async fn cli_creds_store_and_decrypt_roundtrip(pool: PgPool) {
     assert_eq!(decrypted.value, r#"{"access_token":"at-123"}"#);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn cli_creds_get_credential_info(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -851,7 +851,7 @@ async fn cli_creds_get_credential_info(pool: PgPool) {
     assert_eq!(info.auth_type, "setup_token");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn cli_creds_delete_credentials(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -872,7 +872,7 @@ async fn cli_creds_delete_credentials(pool: PgPool) {
     assert!(info.is_none());
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn cli_creds_resolve_cli_auth(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -899,7 +899,7 @@ async fn cli_creds_resolve_cli_auth(pool: PgPool) {
 // user_keys.rs
 // ===========================================================================
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn user_keys_set_get_roundtrip(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -915,7 +915,7 @@ async fn user_keys_set_get_roundtrip(pool: PgPool) {
     assert_eq!(retrieved, "sk-ant-test-abcd1234");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn user_keys_get_not_found(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -926,7 +926,7 @@ async fn user_keys_get_not_found(pool: PgPool) {
     assert!(result.is_none());
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn user_keys_list(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -947,7 +947,7 @@ async fn user_keys_list(pool: PgPool) {
     assert_eq!(anthro.key_suffix, "...1234");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn user_keys_delete(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -967,7 +967,7 @@ async fn user_keys_delete(pool: PgPool) {
     assert!(!deleted2);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn user_keys_upsert_replaces(pool: PgPool) {
     let key = dev_key();
     let user_id = seed_user(&pool).await;
@@ -994,7 +994,7 @@ async fn user_keys_upsert_replaces(pool: PgPool) {
 // PgSecretsResolver trait impl
 // ===========================================================================
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn pg_secrets_resolver_trait(pool: PgPool) {
     use platform_types::SecretsResolver;
 

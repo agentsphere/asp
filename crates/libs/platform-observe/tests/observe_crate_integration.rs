@@ -142,7 +142,7 @@ fn make_metric(name: &str, value: f64, project_id: Option<Uuid>) -> MetricRecord
 // Span writes
 // ---------------------------------------------------------------------------
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn write_spans_inserts_and_creates_trace(pool: PgPool) {
     let trace_id = format!("t-{}", Uuid::new_v4());
     let span_id = format!("s-{}", Uuid::new_v4());
@@ -169,7 +169,7 @@ async fn write_spans_inserts_and_creates_trace(pool: PgPool) {
     assert_eq!(trace_count.0, 1, "should have created 1 trace");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn write_spans_with_project(pool: PgPool) {
     let owner = seed_user(&pool).await;
     let (_, project_id) = seed_project(&pool, owner).await;
@@ -191,7 +191,7 @@ async fn write_spans_with_project(pool: PgPool) {
     assert_eq!(pid, Some(project_id));
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn write_spans_empty_is_noop(pool: PgPool) {
     let result = platform_observe::store::write_spans(&pool, &[]).await;
     assert!(result.is_ok());
@@ -201,7 +201,7 @@ async fn write_spans_empty_is_noop(pool: PgPool) {
 // Log writes
 // ---------------------------------------------------------------------------
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn write_logs_inserts_batch(pool: PgPool) {
     let logs = vec![make_log(None), make_log(None), make_log(None)];
 
@@ -223,7 +223,7 @@ async fn write_logs_inserts_batch(pool: PgPool) {
     assert_eq!(after.0 - before.0, 3, "should have inserted 3 log entries");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn write_logs_empty_is_noop(pool: PgPool) {
     let result = platform_observe::store::write_logs(&pool, &[]).await;
     assert!(result.is_ok());
@@ -233,7 +233,7 @@ async fn write_logs_empty_is_noop(pool: PgPool) {
 // Metric writes
 // ---------------------------------------------------------------------------
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn write_metrics_creates_series_and_sample(pool: PgPool) {
     let name = format!("test.metric.{}", Uuid::new_v4());
     let metric = make_metric(&name, 42.5, None);
@@ -262,7 +262,7 @@ async fn write_metrics_creates_series_and_sample(pool: PgPool) {
     assert_eq!(sample_count.0, 1);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn write_metrics_upserts_existing_series(pool: PgPool) {
     let name = format!("test.metric.{}", Uuid::new_v4());
 
@@ -325,7 +325,7 @@ async fn write_metrics_upserts_existing_series(pool: PgPool) {
     assert_eq!(sample_count.0, 2);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn write_metrics_empty_is_noop(pool: PgPool) {
     let result = platform_observe::store::write_metrics(&pool, &[]).await;
     assert!(result.is_ok());
@@ -350,7 +350,7 @@ async fn seed_alert_rule(pool: &PgPool) -> Uuid {
     id
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn fire_alert_creates_firing_event(pool: PgPool) {
     let rule_id = seed_alert_rule(&pool).await;
 
@@ -372,7 +372,7 @@ async fn fire_alert_creates_firing_event(pool: PgPool) {
     assert!((value.unwrap() - 95.5).abs() < f64::EPSILON);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn resolve_alert_sets_resolved_at(pool: PgPool) {
     let rule_id = seed_alert_rule(&pool).await;
 
@@ -400,7 +400,7 @@ async fn resolve_alert_sets_resolved_at(pool: PgPool) {
     assert!(resolved_at.is_some(), "resolved_at should be set");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn resolve_alert_without_firing_is_noop(pool: PgPool) {
     let rule_id = seed_alert_rule(&pool).await;
 
@@ -452,7 +452,7 @@ async fn seed_metric_samples(pool: &PgPool, name: &str, values: &[f64]) -> Uuid 
     series_id
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn evaluate_metric_avg(pool: PgPool) {
     let name = format!("eval.avg.{}", Uuid::new_v4());
     seed_metric_samples(&pool, &name, &[10.0, 20.0, 30.0]).await;
@@ -465,7 +465,7 @@ async fn evaluate_metric_avg(pool: PgPool) {
     assert!((value - 20.0).abs() < f64::EPSILON, "avg of 10,20,30 = 20");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn evaluate_metric_sum(pool: PgPool) {
     let name = format!("eval.sum.{}", Uuid::new_v4());
     seed_metric_samples(&pool, &name, &[10.0, 20.0, 30.0]).await;
@@ -478,7 +478,7 @@ async fn evaluate_metric_sum(pool: PgPool) {
     assert!((value - 60.0).abs() < f64::EPSILON, "sum of 10,20,30 = 60");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn evaluate_metric_count(pool: PgPool) {
     let name = format!("eval.count.{}", Uuid::new_v4());
     seed_metric_samples(&pool, &name, &[10.0, 20.0, 30.0]).await;
@@ -491,7 +491,7 @@ async fn evaluate_metric_count(pool: PgPool) {
     assert!((value - 3.0).abs() < f64::EPSILON, "count of 3 samples = 3");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn evaluate_metric_max(pool: PgPool) {
     let name = format!("eval.max.{}", Uuid::new_v4());
     seed_metric_samples(&pool, &name, &[10.0, 30.0, 20.0]).await;
@@ -504,7 +504,7 @@ async fn evaluate_metric_max(pool: PgPool) {
     assert!((value - 30.0).abs() < f64::EPSILON, "max = 30");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn evaluate_metric_min(pool: PgPool) {
     let name = format!("eval.min.{}", Uuid::new_v4());
     seed_metric_samples(&pool, &name, &[10.0, 30.0, 20.0]).await;
@@ -517,7 +517,7 @@ async fn evaluate_metric_min(pool: PgPool) {
     assert!((value - 10.0).abs() < f64::EPSILON, "min = 10");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn evaluate_metric_no_data_returns_none(pool: PgPool) {
     let name = format!("eval.nodata.{}", Uuid::new_v4());
 
@@ -532,7 +532,7 @@ async fn evaluate_metric_no_data_returns_none(pool: PgPool) {
 // handle_alert_state integration (with Valkey pub/sub)
 // ---------------------------------------------------------------------------
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn handle_alert_state_fires_and_publishes(pool: PgPool) {
     let valkey = valkey_pool().await;
     let rule_id = seed_alert_rule(&pool).await;
@@ -574,7 +574,7 @@ async fn handle_alert_state_fires_and_publishes(pool: PgPool) {
     assert_eq!(count.0, 1, "should have 1 firing event");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn handle_alert_state_resolves(pool: PgPool) {
     let valkey = valkey_pool().await;
     let rule_id = seed_alert_rule(&pool).await;
@@ -635,7 +635,7 @@ fn str_kv(key: &str, val: &str) -> proto::KeyValue {
     }
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_span_record_basic(pool: PgPool) {
     let span = proto::Span {
         trace_id: vec![1u8; 16],
@@ -668,7 +668,7 @@ async fn build_span_record_basic(pool: PgPool) {
     assert!(rec.session_id.is_none());
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_span_record_no_end_time(pool: PgPool) {
     let span = proto::Span {
         trace_id: vec![1u8; 16],
@@ -689,7 +689,7 @@ async fn build_span_record_no_end_time(pool: PgPool) {
     assert_eq!(rec.status, "unset");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_span_record_with_parent(pool: PgPool) {
     let span = proto::Span {
         trace_id: vec![1u8; 16],
@@ -714,7 +714,7 @@ async fn build_span_record_with_parent(pool: PgPool) {
     assert_eq!(rec.duration_ms, Some(500));
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_span_record_with_project_id(pool: PgPool) {
     let owner = seed_user(&pool).await;
     let (_, project_id) = seed_project(&pool, owner).await;
@@ -740,7 +740,7 @@ async fn build_span_record_with_project_id(pool: PgPool) {
     assert_eq!(rec.project_id, Some(project_id));
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_span_record_with_events(pool: PgPool) {
     let span = proto::Span {
         trace_id: vec![1u8; 16],
@@ -768,7 +768,7 @@ async fn build_span_record_with_events(pool: PgPool) {
 
 // -- build_log_record --
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_log_record_basic(pool: PgPool) {
     let log = proto::LogRecord {
         time_unix_nano: 1_700_000_000_000_000_000,
@@ -792,7 +792,7 @@ async fn build_log_record_basic(pool: PgPool) {
     assert!(rec.span_id.is_none());
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_log_record_severity_text_overrides(pool: PgPool) {
     let log = proto::LogRecord {
         time_unix_nano: 1_700_000_000_000_000_000,
@@ -810,7 +810,7 @@ async fn build_log_record_severity_text_overrides(pool: PgPool) {
     assert_eq!(rec.level, "warning"); // lowercase of severity_text
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_log_record_body_int_value(pool: PgPool) {
     let log = proto::LogRecord {
         time_unix_nano: 1_700_000_000_000_000_000,
@@ -828,7 +828,7 @@ async fn build_log_record_body_int_value(pool: PgPool) {
     assert_eq!(rec.message, "42");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_log_record_body_none(pool: PgPool) {
     let log = proto::LogRecord {
         time_unix_nano: 1_700_000_000_000_000_000,
@@ -844,7 +844,7 @@ async fn build_log_record_body_none(pool: PgPool) {
     assert_eq!(rec.message, "");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_log_record_zero_timestamp_uses_now(pool: PgPool) {
     let before = Utc::now();
     let log = proto::LogRecord {
@@ -861,7 +861,7 @@ async fn build_log_record_zero_timestamp_uses_now(pool: PgPool) {
     assert!(rec.timestamp >= before);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_log_record_with_trace_and_span(pool: PgPool) {
     let log = proto::LogRecord {
         time_unix_nano: 1_700_000_000_000_000_000,
@@ -880,7 +880,7 @@ async fn build_log_record_with_trace_and_span(pool: PgPool) {
 
 // -- build_metric_records --
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_metric_records_gauge(pool: PgPool) {
     let metric = proto::Metric {
         name: "cpu_usage".into(),
@@ -903,7 +903,7 @@ async fn build_metric_records_gauge(pool: PgPool) {
     assert!((recs[0].value - 55.5).abs() < f64::EPSILON);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_metric_records_monotonic_sum(pool: PgPool) {
     let metric = proto::Metric {
         name: "requests_total".into(),
@@ -925,7 +925,7 @@ async fn build_metric_records_monotonic_sum(pool: PgPool) {
     assert!(recs[0].unit.is_none()); // empty unit → None
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_metric_records_non_monotonic_sum(pool: PgPool) {
     let metric = proto::Metric {
         name: "temperature".into(),
@@ -946,7 +946,7 @@ async fn build_metric_records_non_monotonic_sum(pool: PgPool) {
     assert_eq!(recs[0].metric_type, "gauge");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_metric_records_histogram_with_sum(pool: PgPool) {
     let metric = proto::Metric {
         name: "latency".into(),
@@ -970,7 +970,7 @@ async fn build_metric_records_histogram_with_sum(pool: PgPool) {
     assert!((recs[0].value - 1234.5).abs() < f64::EPSILON);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_metric_records_histogram_no_sum(pool: PgPool) {
     let metric = proto::Metric {
         name: "latency".into(),
@@ -992,7 +992,7 @@ async fn build_metric_records_histogram_no_sum(pool: PgPool) {
     assert!(recs.is_empty()); // no sum → skipped
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn build_metric_records_no_data(pool: PgPool) {
     let metric = proto::Metric {
         name: "empty".into(),
@@ -1007,7 +1007,7 @@ async fn build_metric_records_no_data(pool: PgPool) {
 
 // -- drain functions (channel → DB roundtrip) --
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn drain_spans_writes_to_db(pool: PgPool) {
     let (channels, spans_rx, _logs_rx, _metrics_rx) = ingest::create_channels_with_capacity(100);
     let trace_id = format!("t-drain-{}", Uuid::new_v4());
@@ -1039,7 +1039,7 @@ async fn drain_spans_writes_to_db(pool: PgPool) {
     assert_eq!(count.0, 1);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn drain_logs_writes_to_db(pool: PgPool) {
     let (channels, _spans_rx, logs_rx, _metrics_rx) = ingest::create_channels_with_capacity(100);
 
@@ -1071,7 +1071,7 @@ async fn drain_logs_writes_to_db(pool: PgPool) {
     assert_eq!(after.0 - before.0, 1);
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn drain_metrics_writes_to_db(pool: PgPool) {
     let (channels, _spans_rx, _logs_rx, metrics_rx) = ingest::create_channels_with_capacity(100);
 
@@ -1104,7 +1104,7 @@ async fn drain_metrics_writes_to_db(pool: PgPool) {
 // Flush loop tests (public flush_spans / flush_logs / flush_metrics)
 // ---------------------------------------------------------------------------
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn flush_spans_drains_and_writes(pool: PgPool) {
     let cancel = tokio_util::sync::CancellationToken::new();
     let (channels, spans_rx, _logs_rx, _metrics_rx) = ingest::create_channels_with_capacity(100);
@@ -1137,7 +1137,7 @@ async fn flush_spans_drains_and_writes(pool: PgPool) {
     assert_eq!(count.0, 1, "flush_spans should have written the span to DB");
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn flush_logs_drains_and_publishes(pool: PgPool) {
     let valkey = valkey_pool().await;
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -1177,7 +1177,7 @@ async fn flush_logs_drains_and_publishes(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrations = "../../migrations")]
+#[sqlx::test(migrations = "../../../migrations")]
 async fn flush_metrics_drains_and_writes(pool: PgPool) {
     let cancel = tokio_util::sync::CancellationToken::new();
     let (channels, _spans_rx, _logs_rx, metrics_rx) = ingest::create_channels_with_capacity(100);

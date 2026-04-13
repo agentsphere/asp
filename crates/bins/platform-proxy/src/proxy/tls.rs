@@ -308,6 +308,43 @@ mod tests {
     // main binary, not the proxy). So we test the PEM parsing functions.
 
     #[test]
+    fn proxy_certs_empty() {
+        let certs = ProxyCerts::empty();
+        assert!(certs.cert_pem.is_empty());
+        assert!(certs.key_pem.is_empty());
+        assert!(certs.ca_pem.is_empty());
+        assert!(!certs.is_valid());
+    }
+
+    #[test]
+    fn proxy_certs_is_valid() {
+        let certs = ProxyCerts {
+            cert_pem: "-----BEGIN CERTIFICATE-----\ndata\n-----END CERTIFICATE-----".into(),
+            key_pem: "key".into(),
+            ca_pem: "ca".into(),
+            not_after: Utc::now() + chrono::Duration::hours(1),
+        };
+        assert!(certs.is_valid());
+    }
+
+    #[test]
+    fn extract_spiffe_id_with_path_separators() {
+        let fake_der = b"\x00spiffe://platform/ns/svc-name\x00";
+        let id = extract_spiffe_id(fake_der);
+        assert_eq!(id, Some("spiffe://platform/ns/svc-name".to_string()));
+    }
+
+    #[test]
+    fn extract_spiffe_id_with_dots_and_dashes() {
+        let fake_der = b"\x01spiffe://platform/prod-ns/my.service-v2\x00end";
+        let id = extract_spiffe_id(fake_der);
+        assert_eq!(
+            id,
+            Some("spiffe://platform/prod-ns/my.service-v2".to_string())
+        );
+    }
+
+    #[test]
     fn load_certs_from_empty_pem() {
         let result = load_certs_from_pem("");
         assert!(result.is_err());

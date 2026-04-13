@@ -21,7 +21,7 @@ pub use error::ApiError;
 pub use events::PlatformEvent;
 pub use permission::Permission;
 pub use traits::{
-    AuditLogger, NotificationDispatcher, NotifyParams, SecretsResolver, WebhookDispatcher,
-    WorkspaceMembershipChecker,
+    AuditLogger, NotificationDispatcher, NotifyParams, SecretsResolver, TaskHeartbeat,
+    WebhookDispatcher, WorkspaceMembershipChecker,
 };
 pub use user_type::UserType;

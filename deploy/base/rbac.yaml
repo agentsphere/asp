@@ -41,6 +41,39 @@ subjects:
     name: platform
     namespace: platform
 ---
+# Dedicated service account for the K8s watcher (read-only cluster-wide)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-k8s-watcher
+  namespace: platform
+---
+# ClusterRole: read-only pods + deployments in all namespaces
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-k8s-watcher
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-k8s-watcher
+subjects:
+  - kind: ServiceAccount
+    name: platform-k8s-watcher
+    namespace: platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-k8s-watcher
+---
 # Role: manage pods in platform-pipelines namespace
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
