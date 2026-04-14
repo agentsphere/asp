@@ -19,11 +19,16 @@ just fmt            # cargo fmt
 just lint           # cargo clippy --all-features -- -D warnings
 just deny           # cargo deny check
 just check          # fmt + lint + deny
-just test-unit      # cargo nextest run --lib (unit only, no DB)
-just test-integration  # integration tests (ephemeral cluster services)
-just test-e2e       # E2E tests (ephemeral cluster services, run-ignored)
-just test-all       # unit + integration + e2e (all except LLM)
-just test-doc       # cargo test --doc
+just test-unit [crate] [filter]  # unit tests (--lib), all packages or one crate
+just test-int [crate] [filter]   # library integration (DB/Valkey/MinIO)
+just test-k8s [crate] [filter]   # K8s integration (needs Kind cluster)
+just test-contract [filter]      # FE-BE contract tests
+just test-api [filter]           # HTTP handler tests (needs cluster)
+just test-e2e [filter]           # E2E multi-step journeys
+just test-llm                    # LLM tests (real Claude CLI)
+just test-all                    # all tiers except LLM
+just test-bin <bin> [filter]     # specific test binary
+just test-doc                    # cargo test --doc
 just ui             # build Preact SPA (esbuild)
 just db-add <name>  # create new migration
 just db-migrate     # apply migrations
@@ -34,16 +39,15 @@ just build          # UI + release build (SQLX_OFFLINE=true)
 just docker [tag]   # docker build
 just deploy-local [tag]  # build + load into kind + kubectl apply
 just cov-unit       # unit test coverage → coverage-unit.lcov
-just cov-integration # integration coverage → coverage-integration.lcov
+just cov-api        # API test coverage → coverage-api.lcov
 just cov-e2e        # E2E coverage → coverage-e2e.lcov
-just cov-all        # all tiers combined → coverage-all.lcov
-just cov-total      # ★ combined report: unit + integration (needs cluster + DB)
-just cov-diff       # diff coverage on changed lines vs main (unit+int+E2E, needs cluster)
+just cov-total      # ★ combined report: unit + int + api + contract (needs cluster)
+just cov-diff       # diff coverage on changed lines vs main
 just cov-diff-check # diff coverage strict: fail if changed lines < 100% covered
 just cov-html       # unit coverage as HTML report
 just cov-summary    # quick terminal summary (unit only)
-just ci             # full local CI: fmt lint deny test-unit cli-lint cli-test mcp-test test-integration build
-just ci-full        # ci + test-e2e (includes cli + mcp checks)
+just ci             # full local CI: fmt lint deny test-unit test-int test-contract test-api build
+just ci-full        # ci + test-k8s + test-e2e (includes cli + mcp checks)
 just cluster-up     # create kind cluster + Postgres + Valkey + MinIO
 just cluster-down   # destroy kind cluster
 ```
@@ -614,35 +618,38 @@ Full testing guide: `docs/testing.md`. Frontend-backend testing: `docs/fe-be-tes
 
 ### MANDATORY: Run all tests before finishing
 
-**Before considering any code change complete, you MUST run all three test tiers and verify they pass:**
+**Before considering any code change complete, you MUST run all test tiers and verify they pass:**
 
 ```bash
-just ci-full          # fmt + lint + deny + test-unit + test-integration + test-e2e + build
+just ci-full          # fmt + lint + deny + test-unit + test-int + test-k8s + test-contract + test-api + test-e2e + build
 ```
 
 If `just ci-full` is too slow for iterative development, run at minimum:
 ```bash
 just test-unit        # fast (~1s), run after every code change
-just test-integration # after API/DB/auth changes (~2.5 min, requires dev cluster)
+just test-api         # after API/DB/auth changes (~2.5 min, requires dev cluster)
 just test-e2e         # after multi-step workflow changes (~2.5 min)
 ```
 
-**Never skip E2E tests.** They catch real issues that unit and integration tests miss. If any tier fails, fix the issue before declaring the work done.
+**Never skip E2E tests.** They catch real issues that unit and API tests miss. If any tier fails, fix the issue before declaring the work done.
 
 ### MANDATORY: Read test report after in-cluster tests
 
-`just test-integration`, `just test-e2e`, and `just cov-total` run tests inside the dev cluster via `hack/test-in-cluster.sh`. Each run has a unique `RUN_ID` (8-char hex) and writes artefacts to the project root, grouped by run: **`test-{RUN_ID}-report.txt`** (pass/fail summary), **`test-{RUN_ID}-output.txt`** (full console), **`test-{RUN_ID}-logs.jsonl`** (structured per-test logs), and for coverage runs **`test-{RUN_ID}-coverage.txt`**. **Always read the matching `test-{RUN_ID}-report.txt` file after any in-cluster test run** to check the pass/fail summary — do not rely solely on the exit code or terminal tail output. The RUN_ID is printed early in the test output (look for `platform-test-{RUN_ID}` namespace lines).
+`just test-api`, `just test-contract`, `just test-e2e`, and `just cov-total` run tests inside the dev cluster via `hack/test-in-cluster.sh`. Each run has a unique `RUN_ID` (8-char hex) and writes artefacts to the project root, grouped by run: **`test-{RUN_ID}-report.txt`** (pass/fail summary), **`test-{RUN_ID}-output.txt`** (full console), **`test-{RUN_ID}-logs.jsonl`** (structured per-test logs), and for coverage runs **`test-{RUN_ID}-coverage.txt`**. **Always read the matching `test-{RUN_ID}-report.txt` file after any in-cluster test run** to check the pass/fail summary — do not rely solely on the exit code or terminal tail output. The RUN_ID is printed early in the test output (look for `platform-test-{RUN_ID}` namespace lines).
 
-### Test Tier Boundary: Endpoint Scope vs User Journey
+### Test Tier Boundary
 
-The boundary is **how much of the user's reality are we simulating**, not whether the code is sync or async.
+Seven tiers, selected by file naming convention and nextest profiles:
 
-- **Unit** = Pure functions, no I/O
-- **Integration** = Single API endpoint + ALL its side effects (sync and async — K8s pods, background workers, mock CLI, polling/waiting)
-- **E2E** = Multi-step user journeys spanning multiple API calls
+- **Unit** = Pure functions, no I/O (`#[cfg(test)]` in `src/`)
+- **Integration** = Library logic + DB/Valkey/MinIO (`*_integration.rs` in `crates/*/tests/`)
+- **K8s** = Library logic + real K8s (`*_k8s.rs` in `crates/*/tests/`)
+- **Contract** = FE-BE response shape stability (`*_contract.rs` in root `tests/`)
+- **API** = Single HTTP endpoint + all side effects (`*_api.rs` in root `tests/`)
+- **E2E** = Multi-step user journeys (`e2e_*.rs` in root `tests/`)
 - **LLM** = Real Claude CLI with live Anthropic credentials (`just test-llm`)
 
-**Integration tests can be async.** If a handler kicks off a background task (executor, reconciler, pod), the integration test spawns that task and polls/waits for the outcome. The test is still "integration" because it's validating one endpoint's complete behavior.
+**API tests can be async.** If a handler kicks off a background task (executor, reconciler, pod), the API test spawns that task and polls/waits for the outcome. The test is still "api" because it's validating one endpoint's complete behavior.
 
 ### Decision Tree
 
@@ -650,12 +657,16 @@ The boundary is **how much of the user's reality are we simulating**, not whethe
 Does it touch I/O?
   No → Unit test
   Yes ↓
-Single endpoint + its side effects?
-(even if async — pods, executors, reconcilers, workers)
-  Yes → Integration test
+Library logic in a workspace crate?
+  Yes ↓
+    Needs K8s? → *_k8s.rs (just test-k8s)
+    Needs DB/Valkey/MinIO only? → *_integration.rs (just test-int)
   No ↓
-Multi-step user journey across multiple endpoints?
-  Yes → E2E test
+Single HTTP endpoint + its side effects?
+  Yes → *_api.rs (just test-api)
+  No ↓
+Response shape stability? → *_contract.rs (just test-contract)
+Multi-step user journey? → e2e_*.rs (just test-e2e)
 ```
 
 ### Testing pyramid
@@ -663,15 +674,18 @@ Multi-step user journey across multiple endpoints?
 | Tier | What's tested | Real infra | LLM | Command |
 |---|---|---|---|---|
 | Unit | Pure functions, state machines, parsers, validators | None | N/A | `just test-unit` |
-| Integration | Single endpoint + all side effects (K8s pods, workers, mock CLI) | Postgres, Valkey, MinIO, K8s API | Mock (`CLAUDE_CLI_PATH`) | `just test-integration` |
+| Int | Library logic in workspace crates | Postgres, Valkey, MinIO | N/A | `just test-int` |
+| K8s | Library logic + K8s resources | Postgres, Valkey, MinIO, K8s | N/A | `just test-k8s` |
+| Contract | FE-BE response shape stability | Postgres, Valkey, MinIO, K8s | N/A | `just test-contract` |
+| API | Single endpoint + all side effects (pods, workers, mock CLI) | All real | Mock (`CLAUDE_CLI_PATH`) | `just test-api` |
 | E2E | Multi-step business workflows across multiple endpoints | All real + background tasks | Disabled | `just test-e2e` |
 | LLM | Claude CLI protocol with real Anthropic API | Real Claude CLI | Real | `just test-llm` |
 
-**Coverage target**: 100% on unit + integration (diff-only enforcement via `just cov-diff-check`). E2E covers critical user journeys only.
+**Coverage target**: 100% on unit + api (diff-only enforcement via `just cov-diff-check`). E2E covers critical user journeys only.
 
-**LLM rule**: No real LLM calls in unit/integration/E2E. Mock CLI via `CLAUDE_CLI_PATH=tests/fixtures/claude-mock/claude`. Separate `just test-llm` for real Anthropic API.
+**LLM rule**: No real LLM calls in unit/int/api/E2E. Mock CLI via `CLAUDE_CLI_PATH=tests/fixtures/claude-mock/claude`. Separate `just test-llm` for real Anthropic API.
 
-### Test helpers — integration (`tests/helpers/mod.rs`)
+### Test helpers — API tests (`tests/helpers/mod.rs`)
 
 - `test_state(pool: PgPool) -> (AppState, String)` — builds full state with real Valkey, MinIO, K8s. Returns `(state, admin_token)`. The admin API token is created directly in the DB, bypassing the login endpoint's rate limiter.
 - `test_state_with_cli(pool, cli_spawn_enabled) -> (AppState, String)` — wraps `test_state()`, always sets `CLAUDE_CLI_PATH` to the mock CLI script. Pass `true` to enable CLI subprocess spawning.
@@ -689,7 +703,7 @@ Multi-step user journey across multiple endpoints?
 - Git: `create_bare_repo()`, `create_working_copy()`, `git_cmd()`.
 - K8s: `wait_for_pod()`, `cleanup_k8s()`, `poll_pipeline_status()`.
 
-### Integration test pattern
+### API test pattern
 
 ```rust
 #[sqlx::test(migrations = "./migrations")]
@@ -718,7 +732,7 @@ state.pipeline_notify.notify_one();  // wake executor after trigger
 
 **Git repos under `/tmp/platform-e2e/`** — shared mount between host and cluster node.
 
-**Mock CLI for integration tests** — `test_state_with_cli(pool, true)` sets `CLAUDE_CLI_PATH` to `tests/fixtures/claude-mock/claude` and enables `cli_spawn_enabled`. The mock script exits instantly with canned NDJSON.
+**Mock CLI for API tests** — `test_state_with_cli(pool, true)` sets `CLAUDE_CLI_PATH` to `tests/fixtures/claude-mock/claude` and enables `cli_spawn_enabled`. The mock script exits instantly with canned NDJSON.
 
 ### When to write tests first (TDD)
 

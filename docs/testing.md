@@ -1,13 +1,20 @@
 # Testing Guide
 
-This document covers all testing tiers for the platform: unit, integration, E2E, and LLM.
+This document covers all testing tiers for the platform: unit, int, k8s, contract, api, e2e, and llm.
 
-## Tier Boundary: Endpoint Scope vs User Journey
+## Tier Boundary
 
-The boundary between integration and E2E is **how much of the user's reality are we simulating**, not whether the code is sync or async.
+Seven tiers, selected by file naming convention and nextest profiles:
 
-- **Integration** = Single API endpoint + ALL its side effects (sync and async). Can spawn background tasks, poll for pod status, wait for workers to complete. Tests: "does this endpoint work correctly, including everything it kicks off?"
-- **E2E** = Multi-step user journeys spanning multiple API calls. Tests: "can a user complete this business workflow end-to-end?"
+| Suffix | Tier | Profile | Where | Description |
+|---|---|---|---|---|
+| inline `#[cfg(test)]` | unit | `default` | Any crate `src/` | Pure functions, no I/O |
+| `*_integration.rs` | int | `integration` | `crates/*/tests/` | Library logic + DB/Valkey/MinIO |
+| `*_k8s.rs` | k8s | `k8s` | `crates/*/tests/` | Library logic + real K8s |
+| `*_contract.rs` | contract | `contract` | Root `tests/` | FE-BE response shape stability |
+| `*_api.rs` | api | `api` | Root `tests/` | HTTP handler tests (`test_router`) |
+| `e2e_*.rs` | e2e | `e2e` | Root `tests/` | Multi-endpoint user journeys |
+| `llm_*.rs` | llm | `llm` | Root `tests/` | Real Claude CLI |
 
 ### Decision Tree
 
@@ -15,28 +22,31 @@ The boundary between integration and E2E is **how much of the user's reality are
 Does it touch I/O?
   No → Unit test
   Yes ↓
-Is it testing a single endpoint and its side effects?
-(even if those side effects are async — pods, executors, reconcilers, workers)
-  Yes → Integration test
-  No ↓
-Is it a multi-step user journey across multiple endpoints?
+Library logic in a workspace crate?
   Yes ↓
-Does it use a real Claude CLI with live Anthropic credentials?
-  Yes → LLM test (just test-llm)
-  No → E2E test (just test-e2e)
+    Needs K8s? → *_k8s.rs (just test-k8s)
+    Needs DB/Valkey/MinIO only? → *_integration.rs (just test-int)
+  No ↓
+Single HTTP endpoint + its side effects?
+(even if async — pods, executors, reconcilers, workers)
+  Yes → *_api.rs (just test-api)
+  No ↓
+Response shape stability? → *_contract.rs (just test-contract)
+Multi-step user journey? → e2e_*.rs (just test-e2e)
+Real Claude CLI? → llm_*.rs (just test-llm)
 ```
 
 ### Ambiguous Cases Resolved
 
 | Scenario | Tier | Why |
 |---|---|---|
-| `create_session` → pod exists in K8s | Integration | Single endpoint, K8s API is a side effect |
-| `create_session` → pod reaches `Running` → messages flow | Integration | Single endpoint + its async workers |
-| Pipeline trigger → executor → pod completes → status success | Integration | Single endpoint + background executor |
-| Webhook fires → wiremock receives POST | Integration | Single endpoint's async delivery side effect |
-| Reconciler applies manifest after deployment create | Integration | Single endpoint + reconciler worker |
-| Git push → commits readable via browse API | Integration | Single endpoint + filesystem side effect |
-| Mock CLI emits canned NDJSON → session updated | Integration | Mock script, no real LLM |
+| `create_session` → pod exists in K8s | API | Single endpoint, K8s API is a side effect |
+| `create_session` → pod reaches `Running` → messages flow | API | Single endpoint + its async workers |
+| Pipeline trigger → executor → pod completes → status success | API | Single endpoint + background executor |
+| Webhook fires → wiremock receives POST | API | Single endpoint's async delivery side effect |
+| Reconciler applies manifest after deployment create | API | Single endpoint + reconciler worker |
+| Git push → commits readable via browse API | API | Single endpoint + filesystem side effect |
+| Mock CLI emits canned NDJSON → session updated | API | Mock script, no real LLM |
 | Login → create project → push → pipeline → deploy | E2E | Multi-step business journey |
 | Create project → add agent → agent runs → results visible | E2E | Multi-step business journey |
 | MR open → pipeline auto-triggers → merge → preview cleaned up | E2E | Multi-step business journey |
@@ -46,18 +56,20 @@ Does it use a real Claude CLI with live Anthropic credentials?
 | Tier | What's tested | Real infra | LLM | Command |
 |---|---|---|---|---|
 | Unit | Pure functions, state machines, parsers, validators | None | N/A | `just test-unit` |
-| Integration | Single endpoint + all side effects (K8s pods, workers, mock CLI) | Postgres, Valkey, MinIO, K8s API | Mock (`CLAUDE_CLI_PATH`) | `just test-integration` |
+| Int | Library logic in workspace crates | Postgres, Valkey, MinIO | N/A | `just test-int` |
+| K8s | Library logic + K8s resources | Postgres, Valkey, MinIO, K8s | N/A | `just test-k8s` |
+| Contract | FE-BE response shape stability | Postgres, Valkey, MinIO, K8s | N/A | `just test-contract` |
+| API | Single endpoint + all side effects (pods, workers, mock CLI) | All real | Mock (`CLAUDE_CLI_PATH`) | `just test-api` |
 | E2E | Multi-step business workflows across multiple endpoints | All real + background tasks | Disabled (`cli_spawn_enabled: false`) | `just test-e2e` |
 | LLM | Claude CLI protocol with real Anthropic API | Real Claude CLI + credentials | Real | `just test-llm` |
-| FE-BE | API contract + Playwright browser tests | dev cluster | N/A | `just test-integration` / `just types` / `just ui test` |
 
 All tests use [cargo-nextest](https://nexte.st/) as the test runner.
 
-**Coverage target**: 100% on unit + integration (diff-only enforcement via `just cov-diff-check`). E2E covers critical user journeys only.
+**Coverage target**: 100% on unit + api (diff-only enforcement via `just cov-diff-check`). E2E covers critical user journeys only.
 
-**LLM mocking strategy**: No real LLM calls in unit/integration/E2E. Integration tests use `CLAUDE_CLI_PATH=tests/fixtures/claude-mock/claude` (set automatically by `test_state()`). The mock script exits instantly with canned NDJSON. Separate `just test-llm` for real Anthropic API protocol tests.
+**LLM mocking strategy**: No real LLM calls in unit/int/api/E2E. API tests use `CLAUDE_CLI_PATH=tests/fixtures/claude-mock/claude` (set automatically by `test_state()`). The mock script exits instantly with canned NDJSON. Separate `just test-llm` for real Anthropic API protocol tests.
 
-**Frontend-Backend integration testing** is covered in a dedicated guide: [`docs/fe-be-testing.md`](fe-be-testing.md). It describes three tiers that prevent type drift between the Rust API and the Preact UI: ts-rs auto-generated types, API contract integration tests, and Playwright browser E2E tests.
+**Frontend-Backend integration testing** is covered in a dedicated guide: [`docs/fe-be-testing.md`](fe-be-testing.md). It describes three tiers that prevent type drift between the Rust API and the Preact UI: ts-rs auto-generated types, API contract tests (`just test-contract`), and Playwright browser E2E tests.
 
 ## Unit Tests
 
@@ -86,36 +98,26 @@ just test-doc           # cargo test --doc (doc examples)
 - `src/secrets/engine.rs` — AES-256-GCM encrypt/decrypt round-trips
 - `src/observe/proto.rs` — OTLP protobuf encoding/decoding, severity/span-kind mapping
 
-## Integration Tests
+## API Tests
 
-**Location**: `tests/*_integration.rs` (64 files).
+**Location**: `tests/*_api.rs` (63 files).
 
-**What they cover**: Single API endpoint + all its side effects against real infrastructure. Each test targets one endpoint and verifies its complete behavior, including async side effects like background workers, K8s pod creation, mock CLI subprocess execution, webhook delivery, and reconciler runs.
+**What they cover**: Single HTTP endpoint + all its side effects against real infrastructure. Each test targets one endpoint and verifies its complete behavior, including async side effects like background workers, K8s pod creation, mock CLI subprocess execution, webhook delivery, and reconciler runs.
 
-**Integration tests can be async.** If a handler kicks off a background task (executor, reconciler, pod), the integration test spawns that task and polls/waits for the outcome. The test is still "integration" because it validates one endpoint's complete behavior — the async worker is an implementation detail.
+**API tests can be async.** If a handler kicks off a background task (executor, reconciler, pod), the API test spawns that task and polls/waits for the outcome. The test is still "api" because it validates one endpoint's complete behavior — the async worker is an implementation detail.
 
-**Mock CLI in integration tests**: `test_state()` always sets `CLAUDE_CLI_PATH` to `tests/fixtures/claude-mock/claude`. Tests that need the CLI subprocess path set `cli_spawn_enabled: true` via `test_state_with_cli(pool, true)`. The mock script exits instantly with canned NDJSON — no external dependency, no runtime cost.
+**Mock CLI in API tests**: `test_state()` always sets `CLAUDE_CLI_PATH` to `tests/fixtures/claude-mock/claude`. Tests that need the CLI subprocess path set `cli_spawn_enabled: true` via `test_state_with_cli(pool, true)`. The mock script exits instantly with canned NDJSON — no external dependency, no runtime cost.
 
 **Run**:
 ```bash
-just test-integration   # all integration tests (ephemeral cluster services)
-just test-core          # core tests only — excludes K8s-heavy subsystem (~76% of suite)
-just test-subsystem     # subsystem tests only — executor, deployer, mesh, gateway, registry pull
+just test-api           # all API handler tests (ephemeral cluster services)
+just test-api auth      # filter by name
+just test-bin auth_api  # specific test binary
 ```
-
-### Core vs Subsystem tiers
-
-Integration tests are split into two tiers for faster iteration:
-
-- **Core** (56 files, ~1,500 tests): Tests that don't create K8s resources (pods, namespaces, etc.). Covers auth, RBAC, projects, issues, MRs, git, webhooks, secrets, observe, notifications, pipelines (CRUD only), and more. Use `just test-core` during development for fast feedback.
-
-- **Subsystem** (8 files, ~476 tests): Tests that create real K8s resources — executor (pipeline pod execution), deployer (reconciler), mesh (CA bundles), gateway controller, session (agent pods), and registry pull (image pull from cluster). Use `just test-subsystem` when touching these subsystems.
-
-Both tiers deploy ephemeral services via `test-in-cluster.sh`. The split is purely by nextest filter expression — no code changes needed when adding new tests. New tests go into core by default unless they create K8s resources.
 
 ### How it works
 
-Integration tests run via `hack/test-in-cluster.sh`, which automates the entire lifecycle:
+API tests run via `hack/test-in-cluster.sh --type api`, which automates the entire lifecycle:
 
 1. **Creates a fresh K8s namespace** (`test-{timestamp}-{random}`) in the dev cluster
 2. **Deploys lightweight service pods** — Postgres, Valkey, MinIO (~5s to ready)
@@ -139,24 +141,17 @@ No manual port-forwarding, database creation, or migration is needed — the scr
 ### Running specific tests
 
 ```bash
-# All integration tests (default)
-just test-integration
+# All API tests (default)
+just test-api
 
-# Core only (faster iteration — excludes K8s-heavy subsystem)
-just test-core
-
-# Subsystem only (executor, deployer, mesh, gateway, registry pull)
-just test-subsystem
-
-# Filter within a tier
-just test-core login              # core tests matching "login"
-just test-subsystem executor      # subsystem tests matching "executor"
+# Filter by test name
+just test-api login
 
 # Single test file
-just test-bin auth_integration
+just test-bin auth_api
 
 # Custom parallelism
-bash hack/test-in-cluster.sh --filter '*_integration' --threads 8
+bash hack/test-in-cluster.sh --type api --threads 8
 ```
 
 ### Key pattern — `#[sqlx::test]`
@@ -169,33 +164,36 @@ async fn create_and_fetch_user(pool: PgPool) {
 }
 ```
 
-### Integration test files
+### API test files
 
-- `admin_integration.rs` — admin user/role management
-- `alert_eval_integration.rs` — alert evaluation logic
-- `auth_integration.rs` — login, tokens, sessions, password hashing
-- `contract_integration.rs` — FE-BE API contract tests
-- `create_app_integration.rs` — app/bot session creation
-- `dashboard_integration.rs` — dashboard/onboarding status
-- `deployment_integration.rs` — deployment CRUD, status, rollback, preview lifecycle
-- `eventbus_integration.rs` — event bus handlers
-- `git_browse_integration.rs` — git browse APIs (branches, tree, blob, commits)
-- `git_smart_http_integration.rs` — git smart HTTP protocol, LFS
-- `issue_mr_integration.rs` — issues, comments, merge requests, reviews
-- `notification_integration.rs` — notification creation, queries
-- `observe_ingest_integration.rs` — OTLP ingest endpoints
-- `observe_integration.rs` — observability query, alerts, metrics
-- `passkey_integration.rs` — WebAuthn/passkey flows
-- `pipeline_integration.rs` — pipeline CRUD, cancel, artifacts
-- `pipeline_trigger_integration.rs` — pipeline trigger logic (push, MR, API)
-- `project_integration.rs` — project CRUD, soft-delete, visibility
-- `rbac_integration.rs` — role assignment, permission resolution, delegation
-- `registry_integration.rs` — container registry push/pull, GC
-- `secrets_integration.rs` — secrets CRUD, user keys
-- `session_integration.rs` — agent session management, spawn lineage
-- `user_keys_integration.rs` — user API key management
-- `webhook_integration.rs` — webhook CRUD, dispatch, HMAC signing, concurrency
-- `workspace_integration.rs` — workspace CRUD, membership
+- `admin_api.rs` — admin user/role management
+- `alert_eval_api.rs` — alert evaluation logic
+- `auth_api.rs` — login, tokens, sessions, password hashing
+- `dashboard_api.rs` — dashboard/onboarding status
+- `deployment_api.rs` — deployment CRUD, status, rollback, preview lifecycle
+- `eventbus_api.rs` — event bus handlers
+- `executor_api.rs` — pipeline executor (pod execution, logs, artifacts)
+- `git_browse_api.rs` — git browse APIs (branches, tree, blob, commits)
+- `git_smart_http_api.rs` — git smart HTTP protocol, LFS
+- `issue_mr_api.rs` — issues, comments, merge requests, reviews
+- `notification_api.rs` — notification creation, queries
+- `observe_ingest_api.rs` — OTLP ingest endpoints
+- `observe_api.rs` — observability query, alerts, metrics
+- `passkey_api.rs` — WebAuthn/passkey flows
+- `pipeline_api.rs` — pipeline CRUD, cancel, artifacts
+- `pipeline_trigger_api.rs` — pipeline trigger logic (push, MR, API)
+- `project_api.rs` — project CRUD, soft-delete, visibility
+- `rbac_api.rs` — role assignment, permission resolution, delegation
+- `registry_api.rs` — container registry push/pull, GC
+- `secrets_api.rs` — secrets CRUD, user keys
+- `session_api.rs` — agent session management, spawn lineage
+- `user_keys_api.rs` — user API key management
+- `webhook_api.rs` — webhook CRUD, dispatch, HMAC signing, concurrency
+- `workspace_api.rs` — workspace CRUD, membership
+
+### Contract test files
+
+- `ui_contract.rs` — FE-BE API response shape stability (33 tests)
 
 ### Test helpers
 
@@ -521,27 +519,27 @@ Note: the always-running cluster services (via `just cluster-up`) are used for a
 ### Local CI
 
 ```bash
-just ci              # fmt + lint + deny + test-unit + test-integration + build
-just ci-full         # ci + test-e2e (the full verification suite)
+just ci              # fmt + lint + deny + test-unit + test-int + test-contract + test-api + build
+just ci-full         # ci + test-k8s + test-e2e (the full verification suite)
 ```
 
-Both `just ci` and `just ci-full` require a running dev cluster since integration tests deploy ephemeral services inside it. `just test-unit` can run standalone without any infrastructure.
+Both `just ci` and `just ci-full` require a running dev cluster since API/contract/int tests deploy ephemeral services inside it. `just test-unit` can run standalone without any infrastructure.
 
-**Always run `just ci-full` before considering work complete.** E2E tests catch real issues that unit and integration tests miss.
+**Always run `just ci-full` before considering work complete.** E2E tests catch real issues that unit and API tests miss.
 
 ### GitHub Actions CI (`.github/workflows/ci.yaml`)
 
-The CI workflow runs all three test tiers plus linting and build:
+The CI workflow runs all test tiers plus linting and build:
 
 | Job | What it does | Services |
 |---|---|---|
 | `fmt` | `cargo fmt --check` | None |
 | `lint` | `cargo clippy -- -D warnings` | None |
 | `test-unit` | `cargo nextest run --lib` | None |
-| `test-integration` | `hack/test-in-cluster.sh --filter '*_integration'` | dev cluster with ephemeral services |
+| `test-api` | `hack/test-in-cluster.sh --type api` + `--type contract` | dev cluster with ephemeral services |
 | `test-e2e` | `hack/test-in-cluster.sh --type e2e` | dev cluster with ephemeral services |
 | `deny` | `cargo deny check` | None |
-| `coverage` | Unit + integration coverage → Codecov | dev cluster with ephemeral services |
+| `coverage` | Unit + API coverage → Codecov | dev cluster with ephemeral services |
 | `build` | `cargo build --release` (amd64 + arm64) | None (depends on all test jobs) |
 
 The build job gates on all test tiers — a failing E2E test blocks the release build.
@@ -561,9 +559,9 @@ rustup component add llvm-tools-preview
 
 ```bash
 just cov-unit         # unit coverage → coverage-unit.lcov (no infra needed)
-just cov-integration  # integration coverage → coverage-integration.lcov (ephemeral cluster services)
+just cov-api          # API test coverage → coverage-api.lcov (ephemeral cluster services)
 just cov-e2e          # E2E coverage → coverage-e2e.lcov (ephemeral cluster services)
-just cov-total        # ★ combined report: unit + integration + E2E (ephemeral cluster services)
+just cov-total        # ★ combined report: unit + int + api + contract (ephemeral cluster services)
 just cov-html         # unit coverage as HTML report → coverage-html/
 ```
 
@@ -585,10 +583,11 @@ Under the hood, `just cov-total` runs `hack/test-in-cluster.sh --type total` whi
 1. Creates an ephemeral K8s namespace with fresh Postgres, Valkey, MinIO
 2. Cleans previous profiling data (`cargo llvm-cov clean --workspace`)
 3. Runs unit tests with coverage instrumentation (`--lib`)
-4. Runs integration tests with coverage instrumentation (`--test '*_integration'`)
-5. Runs E2E tests with coverage instrumentation (`--test 'e2e_*'`)
-6. Generates the combined report (`cargo llvm-cov report`)
-7. Cleans up the ephemeral namespace
+4. Runs API tests with coverage instrumentation (`--test '*_api'`)
+5. Runs contract tests with coverage instrumentation (`--test '*_contract'`)
+6. Runs integration tests with coverage instrumentation (`--test '*_integration'`)
+7. Generates the combined report (`cargo llvm-cov report`)
+8. Cleans up the ephemeral namespace
 
 ### Excluded from coverage
 
@@ -603,7 +602,7 @@ The `coverage` job in `.github/workflows/ci.yaml` runs after unit tests pass, ge
 
 Codecov configuration is in `codecov.yml`:
 - **Unit coverage**: gated — target is auto-ratcheting, new code (patch) must have 70% coverage
-- **Integration coverage**: informational — tracked but does not block PRs
+- **API coverage**: informational — tracked but does not block PRs
 - **E2E coverage**: informational with carryforward (nightly updates)
 
 ### Interpreting results

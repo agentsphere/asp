@@ -53,7 +53,7 @@ export type { MyThing } from './generated/MyThing';
 
 ## Tier 2: Contract Integration Tests
 
-`tests/contract_integration.rs` — 33 tests that hit real API endpoints and assert JSON shapes match what the UI expects.
+`tests/ui_contract.rs` — 33 tests that hit real API endpoints and assert JSON shapes match what the UI expects.
 
 ### What they check
 
@@ -67,10 +67,10 @@ export type { MyThing } from './generated/MyThing';
 
 ```bash
 # Requires Postgres + Valkey running (just cluster-up)
-cargo nextest run --test contract_integration
+cargo nextest run --test ui_contract
 
 # Or via just (DATABASE_URL set automatically)
-just test-integration
+just test-contract
 ```
 
 ### Adding a contract test
@@ -148,7 +148,7 @@ Use `apiLogin()` for speed (skips the login form). Use `login()` only when testi
 ## CI integration
 
 ```
-just ci              # includes test-unit (has ts-rs export tests) + test-integration (has contract tests)
+just ci              # includes test-unit (has ts-rs export tests) + test-contract + test-api
 just ui test         # run separately (needs running server)
-just ci-full         # ci + E2E tests (excludes Playwright)
+just ci-full         # ci + test-k8s + test-e2e (excludes Playwright)
 ```
