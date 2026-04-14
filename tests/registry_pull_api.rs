@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 //! Integration tests that verify pods can actually pull and run images from the
-//! platform's built-in OCI registry. Unlike `registry_integration.rs` (which tests
+//! platform's built-in OCI registry. Unlike `registry_api.rs` (which tests
 //! the registry API), these tests create real K8s pods and verify containerd pulls.
 //!
 //! Requires `PLATFORM_LISTEN_PORT` (real TCP server for `DaemonSet` proxy to reach)

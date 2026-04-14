@@ -74,7 +74,7 @@ pub async fn test_state_with_cli(pool: PgPool, cli_spawn_enabled: bool) -> (AppS
 ///
 /// Use this instead of `test_state()` for tests that depend on system images
 /// (e.g., `platform-runner`) being present in the registry.
-/// Most tests don't need this — only `registry_integration` and `registry_pull_integration`.
+/// Most tests don't need this — only `registry_api` and `registry_pull_api`.
 pub async fn test_state_with_registry(pool: PgPool) -> (AppState, String) {
     let (state, token) = test_state(pool).await;
     if let Err(e) = platform::registry::seed::seed_all(
@@ -296,7 +296,7 @@ pub async fn test_state(pool: PgPool) -> (AppState, String) {
     };
 
     // Registry seed is opt-in — call test_state_with_registry() for tests that need
-    // seeded OCI images (registry_integration, registry_pull_integration).
+    // seeded OCI images (registry_api, registry_pull_api).
     // Skipping here saves 0.3-0.5s per test (6-10s on first-test cache miss).
 
     // Build WebAuthn

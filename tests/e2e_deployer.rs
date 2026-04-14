@@ -14,8 +14,8 @@ use uuid::Uuid;
 // These tests spawn the deployer reconciler as a background task and verify
 // that it reconciles deployments with real K8s.
 //
-// Deployment API CRUD tests are in deployment_integration.rs.
-// Preview lifecycle tests are in deployment_integration.rs.
+// Deployment API CRUD tests are in deployment_api.rs.
+// Preview lifecycle tests are in deployment_api.rs.
 // ---------------------------------------------------------------------------
 
 /// Helper: create a project and insert a deployment row directly.

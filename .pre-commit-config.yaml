@@ -12,7 +12,7 @@ repos:
       - id: check-toml
       - id: check-merge-conflict
       - id: detect-private-key
-        exclude: '^(src/mesh/ca\.rs|crates/libs/platform-mesh/src/ca\.rs|tests/mesh_integration\.rs|src/proxy/gateway/tls_external\.rs|crates/bins/platform-proxy/src/proxy/gateway/tls_external\.rs)$'
+        exclude: '^(src/mesh/ca\.rs|crates/libs/platform-mesh/src/ca\.rs|tests/mesh_api\.rs|src/proxy/gateway/tls_external\.rs|crates/bins/platform-proxy/src/proxy/gateway/tls_external\.rs)$'
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.22.1

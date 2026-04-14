@@ -3,7 +3,7 @@
 
 //! Additional integration tests for `pipeline::executor` — coverage gaps.
 //!
-//! Complements `executor_integration.rs` by covering executor code paths that
+//! Complements `executor_api.rs` by covering executor code paths that
 //! were not exercised by existing tests: pipeline secrets, timeout handling,
 //! invalid images, commit SHA env vars, webhook firing, version field, DAG
 //! with conditions, and multiple environment variable expansion scenarios.
@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
-// Executor guard + project setup (shared with executor_integration.rs)
+// Executor guard + project setup (shared with executor_api.rs)
 // ---------------------------------------------------------------------------
 
 /// Default `.platform.yaml` for pipeline tests.

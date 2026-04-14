@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
-// Executor guard (same pattern as executor_integration.rs)
+// Executor guard (same pattern as executor_api.rs)
 // ---------------------------------------------------------------------------
 
 #[allow(dead_code)]

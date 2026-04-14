@@ -48,7 +48,7 @@ jobs:
       - run: mkdir -p ui/dist && touch ui/dist/index.html
       - run: cargo nextest run --lib --profile ci --no-tests=pass
 
-  test-integration:
+  test-api:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -66,8 +66,11 @@ jobs:
 
       - run: mkdir -p ui/dist && touch ui/dist/index.html
 
-      - name: Run integration tests
-        run: bash hack/test-in-cluster.sh --filter '*_integration'
+      - name: Run API tests
+        run: bash hack/test-in-cluster.sh --type api
+
+      - name: Run contract tests
+        run: bash hack/test-in-cluster.sh --type contract
 
   test-e2e:
     runs-on: ubuntu-latest
@@ -140,8 +143,8 @@ jobs:
       - name: Unit coverage
         run: cargo llvm-cov nextest --lib --lcov --output-path coverage-unit.lcov --ignore-filename-regex '(proto\.rs|ui\.rs)'
 
-      - name: Integration coverage
-        run: bash hack/test-in-cluster.sh --filter '*_integration' --coverage --lcov coverage-integration.lcov
+      - name: API test coverage
+        run: bash hack/test-in-cluster.sh --type api --coverage --lcov coverage-api.lcov
 
       - name: Upload unit coverage
         uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5
@@ -150,15 +153,15 @@ jobs:
           flags: unit
           token: ${{ secrets.CODECOV_TOKEN }}
 
-      - name: Upload integration coverage
+      - name: Upload API test coverage
         uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5
         with:
-          files: coverage-integration.lcov
-          flags: integration
+          files: coverage-api.lcov
+          flags: api
           token: ${{ secrets.CODECOV_TOKEN }}
 
   build:
-    needs: [fmt, lint, test-unit, test-integration, test-e2e, deny]
+    needs: [fmt, lint, test-unit, test-api, test-e2e, deny]
     permissions:
       contents: read
     strategy:

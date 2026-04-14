@@ -4,7 +4,7 @@
 //! E2E Pipeline Tests — multi-step user journeys only.
 //!
 //! Single-endpoint pipeline lifecycle tests (trigger → execute → verify) have been
-//! migrated to `executor_integration.rs` in the integration tier. This file retains
+//! migrated to `executor_api.rs` in the API tier. This file retains
 //! only true E2E tests that span multiple pipelines or test cross-cutting concerns
 //! like concurrency ordering.
 
