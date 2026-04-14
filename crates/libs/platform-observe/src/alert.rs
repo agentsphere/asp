@@ -7,6 +7,8 @@
 //! binary. This module provides the core evaluation engine callable from
 //! any binary.
 
+use std::collections::{HashMap, VecDeque};
+
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -80,6 +82,684 @@ pub fn validate_condition(condition: &str) -> Result<(), ApiError> {
         ));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// AlertRouter — maps (metric_name, project_id) to matching rule IDs
+// ---------------------------------------------------------------------------
+
+/// Key for the routing table: (`metric_name`, `project_id`).
+/// `None` `project_id` = platform-level metrics only.
+type RouteKey = (String, Option<Uuid>);
+
+/// Read-only index mapping `(metric_name, project_id)` to rule IDs + label filters.
+/// Built from DB, rebuilt on rule-change notification.
+pub struct AlertRouter {
+    routes: HashMap<RouteKey, Vec<(Uuid, Option<serde_json::Value>)>>,
+}
+
+impl AlertRouter {
+    /// Build router from the database.
+    pub async fn from_db(pool: &sqlx::PgPool) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+
+        let rows = sqlx::query(
+            "SELECT id, query, project_id FROM alert_rules WHERE enabled = true ORDER BY id",
+        )
+        .fetch_all(pool)
+        .await?;
+
+        let mut routes: HashMap<RouteKey, Vec<(Uuid, Option<serde_json::Value>)>> = HashMap::new();
+        for row in &rows {
+            let id: Uuid = row.get("id");
+            let query_str: String = row.get("query");
+            let project_id: Option<Uuid> = row.get("project_id");
+
+            if let Ok(aq) = parse_alert_query(&query_str) {
+                let key = (aq.metric_name, project_id);
+                routes.entry(key).or_default().push((id, aq.labels));
+            }
+        }
+
+        Ok(Self { routes })
+    }
+
+    /// Build an empty router (no rules loaded).
+    pub fn empty() -> Self {
+        Self {
+            routes: HashMap::new(),
+        }
+    }
+
+    /// Return rule IDs whose metric name and `project_id` match, and whose label
+    /// filter (if any) is a subset of the record's labels.
+    pub fn matching_rules(
+        &self,
+        name: &str,
+        labels: &serde_json::Value,
+        project_id: Option<Uuid>,
+    ) -> Vec<Uuid> {
+        let key = (name.to_string(), project_id);
+        let Some(candidates) = self.routes.get(&key) else {
+            return Vec::new();
+        };
+
+        candidates
+            .iter()
+            .filter(|(_, filter)| match filter {
+                None => true,
+                Some(f) => labels_subset(f, labels),
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Whether the router has zero rules.
+    pub fn is_empty(&self) -> bool {
+        self.routes.is_empty()
+    }
+}
+
+/// Check if every key-value in `filter` exists in `labels`.
+fn labels_subset(filter: &serde_json::Value, labels: &serde_json::Value) -> bool {
+    let (Some(f_obj), Some(l_obj)) = (filter.as_object(), labels.as_object()) else {
+        return false;
+    };
+    f_obj
+        .iter()
+        .all(|(k, v)| l_obj.get(k).is_some_and(|lv| lv == v))
+}
+
+// ---------------------------------------------------------------------------
+// RuleDef — loaded from DB for the stream evaluator
+// ---------------------------------------------------------------------------
+
+/// In-memory definition of an alert rule, used by the stream evaluator.
+pub(crate) struct RuleDef {
+    #[allow(dead_code)]
+    pub id: Uuid,
+    pub name: String,
+    pub condition: String,
+    pub threshold: Option<f64>,
+    pub for_seconds: i32,
+    pub severity: String,
+    pub project_id: Option<Uuid>,
+    pub aggregation: String,
+    pub window_secs: i32,
+}
+
+impl RuleDef {
+    /// Load all enabled rules from the database.
+    pub async fn load_all(pool: &sqlx::PgPool) -> Result<HashMap<Uuid, Self>, sqlx::Error> {
+        use sqlx::Row;
+
+        let rows = sqlx::query(
+            "SELECT id, name, query, condition, threshold, for_seconds, severity, project_id \
+             FROM alert_rules WHERE enabled = true ORDER BY id",
+        )
+        .fetch_all(pool)
+        .await?;
+
+        let mut defs = HashMap::with_capacity(rows.len());
+        for row in &rows {
+            let id: Uuid = row.get("id");
+            let query_str: String = row.get("query");
+            if let Ok(aq) = parse_alert_query(&query_str) {
+                defs.insert(
+                    id,
+                    Self {
+                        id,
+                        name: row.get("name"),
+                        condition: row.get("condition"),
+                        threshold: row.get("threshold"),
+                        for_seconds: row.get("for_seconds"),
+                        severity: row.get("severity"),
+                        project_id: row.get("project_id"),
+                        aggregation: aq.aggregation,
+                        window_secs: aq.window_secs,
+                    },
+                );
+            }
+        }
+
+        Ok(defs)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RuleWindow — in-memory sliding window with incremental aggregation
+// ---------------------------------------------------------------------------
+
+/// Sliding window of `(timestamp, value)` samples for a single alert rule.
+pub(crate) struct RuleWindow {
+    samples: VecDeque<(DateTime<Utc>, f64)>,
+    window_secs: i32,
+    aggregation: String,
+    running_sum: f64,
+    count: usize,
+    pub alert_state: AlertState,
+}
+
+impl RuleWindow {
+    pub fn new(window_secs: i32, aggregation: &str) -> Self {
+        Self {
+            samples: VecDeque::new(),
+            window_secs,
+            aggregation: aggregation.to_string(),
+            running_sum: 0.0,
+            count: 0,
+            alert_state: AlertState {
+                first_triggered: None,
+                firing: false,
+            },
+        }
+    }
+
+    /// Push a new sample into the window.
+    pub fn push(&mut self, ts: DateTime<Utc>, value: f64) {
+        self.samples.push_back((ts, value));
+        self.running_sum += value;
+        self.count += 1;
+    }
+
+    /// Evict samples older than `now - window_secs`.
+    pub fn evict_expired(&mut self, now: DateTime<Utc>) {
+        let cutoff = now - chrono::Duration::seconds(i64::from(self.window_secs));
+        while let Some(&(ts, value)) = self.samples.front() {
+            if ts < cutoff {
+                self.samples.pop_front();
+                self.running_sum -= value;
+                self.count -= 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Compute the aggregate over the current window. Returns `None` if empty.
+    pub fn aggregate(&self) -> Option<f64> {
+        if self.count == 0 {
+            return None;
+        }
+        match self.aggregation.as_str() {
+            #[allow(clippy::cast_precision_loss)]
+            "avg" => Some(self.running_sum / self.count as f64),
+            "sum" => Some(self.running_sum),
+            #[allow(clippy::cast_precision_loss)]
+            "count" => Some(self.count as f64),
+            "max" => self.samples.iter().map(|(_, v)| *v).reduce(f64::max),
+            "min" => self.samples.iter().map(|(_, v)| *v).reduce(f64::min),
+            _ => None,
+        }
+    }
+
+    /// Number of samples currently in the window (used in tests).
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.count
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stream alert evaluator — consumer group loop
+// ---------------------------------------------------------------------------
+
+/// Valkey stream key for alert samples.
+pub const ALERT_STREAM_KEY: &str = "alert:samples";
+/// Consumer group name.
+const ALERT_GROUP: &str = "alert_eval";
+/// Pub/sub channel published when alert rules change.
+pub const ALERT_RULES_CHANGED_CHANNEL: &str = "alert:rules:changed";
+
+/// Run the streaming alert evaluator (consumer group on `alert:samples`).
+///
+/// On startup creates the consumer group (idempotent), loads rule definitions,
+/// recovers pending entries via XAUTOCLAIM, then enters the main XREADGROUP loop.
+pub async fn stream_alert_evaluator(
+    pool: sqlx::PgPool,
+    valkey: fred::clients::Pool,
+    cancel: tokio_util::sync::CancellationToken,
+    max_window_secs: u32,
+) {
+    use fred::interfaces::StreamsInterface;
+
+    tracing::info!("stream alert evaluator starting");
+
+    // Create consumer group (idempotent — ignore BUSYGROUP error)
+    let consumer_name = format!("eval-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+
+    let group_result: Result<(), _> = valkey
+        .xgroup_create::<(), _, _, _>(
+            ALERT_STREAM_KEY,
+            ALERT_GROUP,
+            "$",
+            true, // MKSTREAM
+        )
+        .await;
+    if let Err(ref e) = group_result {
+        let msg = e.to_string();
+        if !msg.contains("BUSYGROUP") {
+            tracing::warn!(error = %e, "failed to create consumer group (may already exist)");
+        }
+    }
+
+    // Load rule definitions
+    let mut rule_defs = match RuleDef::load_all(&pool).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load alert rules on startup");
+            HashMap::new()
+        }
+    };
+
+    let mut windows: HashMap<Uuid, RuleWindow> = HashMap::new();
+
+    // Recover pending entries from dead consumers (XAUTOCLAIM)
+    recover_pending(
+        &pool,
+        &valkey,
+        &consumer_name,
+        &rule_defs,
+        &mut windows,
+        max_window_secs,
+    )
+    .await;
+
+    // Sweep interval for eviction + absent detection
+    let mut sweep_interval = tokio::time::interval(std::time::Duration::from_secs(10));
+    // Rule reload interval
+    let mut rule_reload_interval = tokio::time::interval(std::time::Duration::from_secs(60));
+
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => {
+                tracing::info!("stream alert evaluator shutting down");
+                break;
+            }
+            entries = xreadgroup_block(&valkey, &consumer_name) => {
+                for (entry_id, fields) in entries {
+                    process_entry(
+                        &pool, &valkey, &mut windows, &rule_defs, &fields, max_window_secs,
+                    ).await;
+                    // ACK — entry won't be redelivered
+                    let _: Result<(), _> = valkey
+                        .xack::<(), _, _, _>(ALERT_STREAM_KEY, ALERT_GROUP, &entry_id)
+                        .await;
+                }
+            }
+            _ = sweep_interval.tick() => {
+                sweep(&pool, &valkey, &mut windows, &rule_defs, max_window_secs).await;
+            }
+            _ = rule_reload_interval.tick() => {
+                if let Ok(new_defs) = RuleDef::load_all(&pool).await {
+                    rule_defs = new_defs;
+                }
+            }
+        }
+    }
+}
+
+/// XREADGROUP with BLOCK 5s, COUNT 100. Returns `Vec<(entry_id, fields)>`.
+async fn xreadgroup_block(
+    valkey: &fred::clients::Pool,
+    consumer: &str,
+) -> Vec<(String, HashMap<String, String>)> {
+    use fred::interfaces::StreamsInterface;
+    use fred::types::streams::XReadResponse;
+
+    let result: Result<XReadResponse<String, String, String, String>, _> = valkey
+        .xreadgroup::<XReadResponse<String, String, String, String>, _, _, _, _>(
+            ALERT_GROUP,
+            consumer,
+            Some(100),  // COUNT
+            Some(5000), // BLOCK ms
+            false,      // NOACK = false
+            ALERT_STREAM_KEY,
+            ">",
+        )
+        .await;
+
+    match result {
+        Ok(response) => parse_xread_response(response),
+        Err(e) => {
+            // BLOCK timeout returns empty, not an error — but log real errors
+            let msg = format!("{e}");
+            if !msg.contains("timed out") && !msg.contains("timeout") {
+                tracing::debug!(error = %e, "xreadgroup returned error");
+            }
+            Vec::new()
+        }
+    }
+}
+
+/// Parse the fred `XReadResponse` into a flat list of `(entry_id, fields)`.
+fn parse_xread_response(
+    response: fred::types::streams::XReadResponse<String, String, String, String>,
+) -> Vec<(String, HashMap<String, String>)> {
+    let mut out = Vec::new();
+    // XReadResponse is HashMap<stream_key, Vec<(entry_id, HashMap<field, value>)>>
+    for (_stream_key, entries) in response {
+        for (entry_id, field_map) in entries {
+            out.push((entry_id, field_map));
+        }
+    }
+    out
+}
+
+/// Process a single stream entry: parse fields, dispatch to `RuleWindow`, evaluate.
+async fn process_entry(
+    pool: &sqlx::PgPool,
+    valkey: &fred::clients::Pool,
+    windows: &mut HashMap<Uuid, RuleWindow>,
+    rule_defs: &HashMap<Uuid, RuleDef>,
+    fields: &HashMap<String, String>,
+    max_window_secs: u32,
+) {
+    // Parse fields: r=<comma-separated rule_ids>, t=<timestamp_ms>, v=<value>
+    let Some(rules_str) = fields.get("r") else {
+        return;
+    };
+    let Some(ts_ms_str) = fields.get("t") else {
+        return;
+    };
+    let Some(value_str) = fields.get("v") else {
+        return;
+    };
+
+    let Ok(ts_ms) = ts_ms_str.parse::<i64>() else {
+        return;
+    };
+    let Ok(value) = value_str.parse::<f64>() else {
+        return;
+    };
+
+    let ts = DateTime::from_timestamp_millis(ts_ms).unwrap_or_else(Utc::now);
+    let now = Utc::now();
+
+    for rule_id_str in rules_str.split(',') {
+        let Ok(rule_id) = Uuid::parse_str(rule_id_str.trim()) else {
+            continue;
+        };
+
+        let Some(def) = rule_defs.get(&rule_id) else {
+            continue;
+        };
+
+        // Cap window_secs to max_window_secs
+        let effective_window = def.window_secs.min(max_window_secs.cast_signed());
+
+        let window = windows
+            .entry(rule_id)
+            .or_insert_with(|| RuleWindow::new(effective_window, &def.aggregation));
+
+        window.push(ts, value);
+        window.evict_expired(now);
+
+        let agg_value = window.aggregate();
+        let condition_met = check_condition(&def.condition, def.threshold, agg_value);
+
+        let rule_info = AlertRuleInfo {
+            id: rule_id,
+            name: &def.name,
+            severity: &def.severity,
+            project_id: def.project_id,
+            for_seconds: def.for_seconds,
+        };
+        handle_alert_state(
+            pool,
+            valkey,
+            condition_met,
+            agg_value,
+            now,
+            &mut window.alert_state,
+            &rule_info,
+        )
+        .await;
+    }
+}
+
+/// Periodic sweep: evict expired samples, check absent conditions, trim stream.
+async fn sweep(
+    pool: &sqlx::PgPool,
+    valkey: &fred::clients::Pool,
+    windows: &mut HashMap<Uuid, RuleWindow>,
+    rule_defs: &HashMap<Uuid, RuleDef>,
+    max_window_secs: u32,
+) {
+    use fred::interfaces::StreamsInterface;
+
+    let now = Utc::now();
+
+    // 1. Evict expired samples and evaluate "absent" conditions
+    for (rule_id, window) in windows.iter_mut() {
+        window.evict_expired(now);
+
+        if let Some(def) = rule_defs.get(rule_id)
+            && def.condition == "absent"
+        {
+            let agg_value = window.aggregate();
+            let condition_met = check_condition(&def.condition, def.threshold, agg_value);
+
+            let rule_info = AlertRuleInfo {
+                id: *rule_id,
+                name: &def.name,
+                severity: &def.severity,
+                project_id: def.project_id,
+                for_seconds: def.for_seconds,
+            };
+            handle_alert_state(
+                pool,
+                valkey,
+                condition_met,
+                agg_value,
+                now,
+                &mut window.alert_state,
+                &rule_info,
+            )
+            .await;
+        }
+    }
+
+    // 2. Check absent rules that have no window at all
+    for (rule_id, def) in rule_defs {
+        if def.condition == "absent" && !windows.contains_key(rule_id) {
+            let window = windows.entry(*rule_id).or_insert_with(|| {
+                RuleWindow::new(
+                    def.window_secs.min(max_window_secs.cast_signed()),
+                    &def.aggregation,
+                )
+            });
+
+            let rule_info = AlertRuleInfo {
+                id: *rule_id,
+                name: &def.name,
+                severity: &def.severity,
+                project_id: def.project_id,
+                for_seconds: def.for_seconds,
+            };
+            handle_alert_state(
+                pool,
+                valkey,
+                true, // absent condition is met (no data)
+                None,
+                now,
+                &mut window.alert_state,
+                &rule_info,
+            )
+            .await;
+        }
+    }
+
+    // 3. XTRIM MINID ~ to bound stream memory
+    let cutoff_ms =
+        (now - chrono::Duration::seconds(i64::from(max_window_secs))).timestamp_millis();
+    let min_id = format!("{cutoff_ms}-0");
+    let _: Result<(), _> = valkey
+        .xtrim::<(), _, _>(ALERT_STREAM_KEY, ("MINID", "~", min_id.as_str()))
+        .await;
+}
+
+/// Recover pending entries from dead consumers via XAUTOCLAIM.
+async fn recover_pending(
+    pool: &sqlx::PgPool,
+    valkey: &fred::clients::Pool,
+    consumer: &str,
+    rule_defs: &HashMap<Uuid, RuleDef>,
+    windows: &mut HashMap<Uuid, RuleWindow>,
+    max_window_secs: u32,
+) {
+    use fred::interfaces::StreamsInterface;
+    use fred::types::Value;
+
+    // Claim entries pending > 30s from any consumer
+    let result: Result<Value, _> = valkey
+        .xautoclaim::<Value, _, _, _, _>(
+            ALERT_STREAM_KEY,
+            ALERT_GROUP,
+            consumer,
+            30_000, // min idle ms
+            "0-0",  // start from beginning of PEL
+            Some(100),
+            false, // justid = false (we want full entries)
+        )
+        .await;
+
+    let entries = match result {
+        Ok(value) => parse_xautoclaim_result(value),
+        Err(e) => {
+            tracing::debug!(error = %e, "xautoclaim failed (stream may not exist yet)");
+            Vec::new()
+        }
+    };
+
+    if !entries.is_empty() {
+        tracing::info!(
+            count = entries.len(),
+            "recovered pending alert stream entries"
+        );
+    }
+
+    for (entry_id, fields) in &entries {
+        process_entry(pool, valkey, windows, rule_defs, fields, max_window_secs).await;
+        let _: Result<(), _> = valkey
+            .xack::<(), _, _, _>(ALERT_STREAM_KEY, ALERT_GROUP, entry_id.as_str())
+            .await;
+    }
+}
+
+/// Parse XAUTOCLAIM result (array of `[cursor, entries, deleted_ids]`).
+fn parse_xautoclaim_result(value: fred::types::Value) -> Vec<(String, HashMap<String, String>)> {
+    // XAUTOCLAIM returns: [next_cursor, [[id, [field, value, ...]], ...], [deleted_ids]]
+    let fred::types::Value::Array(arr) = value else {
+        return Vec::new();
+    };
+    if arr.len() < 2 {
+        return Vec::new();
+    }
+
+    let fred::types::Value::Array(entries_arr) = &arr[1] else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for entry in entries_arr {
+        let fred::types::Value::Array(parts) = entry else {
+            continue;
+        };
+        if parts.len() < 2 {
+            continue;
+        }
+
+        // parts[0] = entry ID
+        let entry_id = match &parts[0] {
+            fred::types::Value::String(s) => s.to_string(),
+            fred::types::Value::Bytes(b) => String::from_utf8_lossy(b).to_string(),
+            _ => continue,
+        };
+
+        // parts[1] = array of [field, value, field, value, ...]
+        let fred::types::Value::Array(field_values) = &parts[1] else {
+            continue;
+        };
+
+        let mut fields = HashMap::new();
+        let mut i = 0;
+        while i + 1 < field_values.len() {
+            let key = value_to_string(&field_values[i]);
+            let val = value_to_string(&field_values[i + 1]);
+            if let (Some(k), Some(v)) = (key, val) {
+                fields.insert(k, v);
+            }
+            i += 2;
+        }
+
+        out.push((entry_id, fields));
+    }
+
+    out
+}
+
+fn value_to_string(v: &fred::types::Value) -> Option<String> {
+    match v {
+        fred::types::Value::String(s) => Some(s.to_string()),
+        fred::types::Value::Bytes(b) => Some(String::from_utf8_lossy(b).to_string()),
+        fred::types::Value::Integer(i) => Some(i.to_string()),
+        fred::types::Value::Double(d) => Some(d.to_string()),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Alert rule subscriber — rebuilds AlertRouter on rule changes
+// ---------------------------------------------------------------------------
+
+/// Subscribe to `alert:rules:changed` and rebuild the `AlertRouter` on each message.
+pub async fn alert_rule_subscriber(
+    pool: sqlx::PgPool,
+    valkey: fred::clients::Pool,
+    alert_router: std::sync::Arc<tokio::sync::RwLock<AlertRouter>>,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    use fred::interfaces::{EventInterface, PubsubInterface};
+
+    let subscriber = valkey.next().clone_new();
+    if let Err(e) = subscriber.subscribe(ALERT_RULES_CHANGED_CHANNEL).await {
+        tracing::error!(error = %e, "failed to subscribe to alert rules channel");
+        return;
+    }
+
+    let mut msg_rx = subscriber.message_rx();
+
+    tracing::info!("alert rule subscriber started");
+
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => {
+                tracing::info!("alert rule subscriber shutting down");
+                let _ = subscriber.unsubscribe(ALERT_RULES_CHANGED_CHANNEL).await;
+                break;
+            }
+            msg = msg_rx.recv() => {
+                match msg {
+                    Ok(_) => {
+                        match AlertRouter::from_db(&pool).await {
+                            Ok(new_router) => {
+                                *alert_router.write().await = new_router;
+                                tracing::info!("alert router rebuilt after rule change");
+                            }
+                            Err(e) => {
+                                tracing::error!(error = %e, "failed to rebuild alert router");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "alert rule subscriber channel closed");
+                        break;
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -806,5 +1486,313 @@ mod tests {
     #[test]
     fn validate_condition_whitespace_rejected() {
         assert!(validate_condition(" gt ").is_err());
+    }
+
+    // -- AlertRouter --
+
+    #[test]
+    fn alert_router_empty() {
+        let router = AlertRouter::empty();
+        assert!(router.is_empty());
+        assert!(
+            router
+                .matching_rules("cpu", &serde_json::json!({}), None)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn alert_router_exact_match() {
+        let id1 = Uuid::new_v4();
+        let mut routes = HashMap::new();
+        routes.insert(("cpu".to_string(), None), vec![(id1, None)]);
+        let router = AlertRouter { routes };
+
+        assert_eq!(
+            router.matching_rules("cpu", &serde_json::json!({}), None),
+            vec![id1]
+        );
+        // Different metric — no match
+        assert!(
+            router
+                .matching_rules("mem", &serde_json::json!({}), None)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn alert_router_project_scoping() {
+        let id1 = Uuid::new_v4();
+        let pid = Uuid::new_v4();
+        let mut routes = HashMap::new();
+        routes.insert(("cpu".to_string(), Some(pid)), vec![(id1, None)]);
+        let router = AlertRouter { routes };
+
+        // Match with correct project_id
+        assert_eq!(
+            router.matching_rules("cpu", &serde_json::json!({}), Some(pid)),
+            vec![id1]
+        );
+        // No match with None project_id
+        assert!(
+            router
+                .matching_rules("cpu", &serde_json::json!({}), None)
+                .is_empty()
+        );
+        // No match with different project_id
+        assert!(
+            router
+                .matching_rules("cpu", &serde_json::json!({}), Some(Uuid::new_v4()))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn alert_router_label_filter_subset() {
+        let id1 = Uuid::new_v4();
+        let filter = serde_json::json!({"env": "prod"});
+        let mut routes = HashMap::new();
+        routes.insert(("cpu".to_string(), None), vec![(id1, Some(filter))]);
+        let router = AlertRouter { routes };
+
+        // Labels superset of filter — match
+        assert_eq!(
+            router.matching_rules(
+                "cpu",
+                &serde_json::json!({"env": "prod", "host": "web1"}),
+                None,
+            ),
+            vec![id1]
+        );
+        // Labels missing filter key — no match
+        assert!(
+            router
+                .matching_rules("cpu", &serde_json::json!({"host": "web1"}), None)
+                .is_empty()
+        );
+        // Labels wrong value — no match
+        assert!(
+            router
+                .matching_rules("cpu", &serde_json::json!({"env": "dev"}), None)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn alert_router_multiple_rules_same_metric() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let mut routes = HashMap::new();
+        routes.insert(
+            ("cpu".to_string(), None),
+            vec![(id1, None), (id2, Some(serde_json::json!({"env": "prod"})))],
+        );
+        let router = AlertRouter { routes };
+
+        // Both match when labels include env=prod
+        let matches = router.matching_rules("cpu", &serde_json::json!({"env": "prod"}), None);
+        assert_eq!(matches.len(), 2);
+
+        // Only the no-filter rule matches
+        let matches = router.matching_rules("cpu", &serde_json::json!({}), None);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0], id1);
+    }
+
+    // -- labels_subset --
+
+    #[test]
+    fn labels_subset_empty_filter_matches() {
+        assert!(labels_subset(
+            &serde_json::json!({}),
+            &serde_json::json!({"env": "prod"}),
+        ));
+    }
+
+    #[test]
+    fn labels_subset_non_object_returns_false() {
+        assert!(!labels_subset(
+            &serde_json::json!("string"),
+            &serde_json::json!({"env": "prod"}),
+        ));
+        assert!(!labels_subset(
+            &serde_json::json!({"env": "prod"}),
+            &serde_json::json!([1, 2]),
+        ));
+    }
+
+    // -- RuleWindow --
+
+    #[test]
+    fn rule_window_push_and_aggregate_avg() {
+        let now = Utc::now();
+        let mut w = RuleWindow::new(300, "avg");
+        w.push(now, 10.0);
+        w.push(now, 20.0);
+        w.push(now, 30.0);
+        assert_eq!(w.len(), 3);
+        let avg = w.aggregate().unwrap();
+        assert!((avg - 20.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rule_window_aggregate_sum() {
+        let now = Utc::now();
+        let mut w = RuleWindow::new(300, "sum");
+        w.push(now, 5.0);
+        w.push(now, 15.0);
+        assert!((w.aggregate().unwrap() - 20.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rule_window_aggregate_count() {
+        let now = Utc::now();
+        let mut w = RuleWindow::new(300, "count");
+        w.push(now, 1.0);
+        w.push(now, 2.0);
+        w.push(now, 3.0);
+        assert!((w.aggregate().unwrap() - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rule_window_aggregate_max() {
+        let now = Utc::now();
+        let mut w = RuleWindow::new(300, "max");
+        w.push(now, 5.0);
+        w.push(now, 25.0);
+        w.push(now, 15.0);
+        assert!((w.aggregate().unwrap() - 25.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rule_window_aggregate_min() {
+        let now = Utc::now();
+        let mut w = RuleWindow::new(300, "min");
+        w.push(now, 15.0);
+        w.push(now, 5.0);
+        w.push(now, 25.0);
+        assert!((w.aggregate().unwrap() - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rule_window_empty_returns_none() {
+        let w = RuleWindow::new(300, "avg");
+        assert!(w.aggregate().is_none());
+        assert_eq!(w.len(), 0);
+    }
+
+    #[test]
+    fn rule_window_evict_expired() {
+        let now = Utc::now();
+        let old = now - chrono::Duration::seconds(400);
+        let recent = now - chrono::Duration::seconds(100);
+        let mut w = RuleWindow::new(300, "avg");
+        w.push(old, 100.0);
+        w.push(recent, 20.0);
+        assert_eq!(w.len(), 2);
+
+        w.evict_expired(now);
+        assert_eq!(w.len(), 1);
+        assert!((w.aggregate().unwrap() - 20.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rule_window_evict_all_expired() {
+        let now = Utc::now();
+        let old1 = now - chrono::Duration::seconds(400);
+        let old2 = now - chrono::Duration::seconds(350);
+        let mut w = RuleWindow::new(300, "sum");
+        w.push(old1, 10.0);
+        w.push(old2, 20.0);
+
+        w.evict_expired(now);
+        assert_eq!(w.len(), 0);
+        assert!(w.aggregate().is_none());
+    }
+
+    #[test]
+    fn rule_window_running_sum_tracks_eviction() {
+        let now = Utc::now();
+        let old = now - chrono::Duration::seconds(400);
+        let mut w = RuleWindow::new(300, "sum");
+        w.push(old, 50.0);
+        w.push(now, 30.0);
+        assert!((w.aggregate().unwrap() - 80.0).abs() < f64::EPSILON);
+
+        w.evict_expired(now);
+        assert!((w.aggregate().unwrap() - 30.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rule_window_unknown_aggregation_returns_none() {
+        let now = Utc::now();
+        let mut w = RuleWindow::new(300, "p99");
+        w.push(now, 10.0);
+        assert!(w.aggregate().is_none());
+    }
+
+    // -- process_entry field parsing --
+
+    #[test]
+    fn parse_xread_response_empty() {
+        let response = fred::types::streams::XReadResponse::new();
+        assert!(parse_xread_response(response).is_empty());
+    }
+
+    // -- value_to_string --
+
+    #[test]
+    fn value_to_string_variants() {
+        assert_eq!(
+            value_to_string(&fred::types::Value::String("hello".into())),
+            Some("hello".to_string())
+        );
+        assert_eq!(
+            value_to_string(&fred::types::Value::Integer(42)),
+            Some("42".to_string())
+        );
+        assert_eq!(
+            value_to_string(&fred::types::Value::Double(3.14)),
+            Some("3.14".to_string())
+        );
+        assert!(value_to_string(&fred::types::Value::Null).is_none());
+    }
+
+    // -- parse_xautoclaim_result --
+
+    #[test]
+    fn xautoclaim_empty_array() {
+        let val = fred::types::Value::Array(vec![]);
+        assert!(parse_xautoclaim_result(val).is_empty());
+    }
+
+    #[test]
+    fn xautoclaim_non_array() {
+        let val = fred::types::Value::Null;
+        assert!(parse_xautoclaim_result(val).is_empty());
+    }
+
+    #[test]
+    fn xautoclaim_single_entry() {
+        // Simulate: [cursor, [[id, [k1, v1, k2, v2]]], []]
+        let entry = fred::types::Value::Array(vec![
+            fred::types::Value::String("1234-0".into()),
+            fred::types::Value::Array(vec![
+                fred::types::Value::String("r".into()),
+                fred::types::Value::String("abc".into()),
+                fred::types::Value::String("t".into()),
+                fred::types::Value::String("999".into()),
+            ]),
+        ]);
+        let val = fred::types::Value::Array(vec![
+            fred::types::Value::String("0-0".into()),
+            fred::types::Value::Array(vec![entry]),
+            fred::types::Value::Array(vec![]),
+        ]);
+        let result = parse_xautoclaim_result(val);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "1234-0");
+        assert_eq!(result[0].1.get("r").unwrap(), "abc");
+        assert_eq!(result[0].1.get("t").unwrap(), "999");
     }
 }

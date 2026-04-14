@@ -83,16 +83,3 @@ impl RegistryCredentialProvider for RegistryCredentials<'_> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn credentials_is_constructible() {
-        fn make(pool: &PgPool) -> RegistryCredentials<'_> {
-            RegistryCredentials::new(pool, "registry.example.com:5000")
-        }
-        let _ = make as fn(&PgPool) -> RegistryCredentials<'_>;
-    }
-}

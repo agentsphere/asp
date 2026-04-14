@@ -4194,7 +4194,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "chrono",
  "dashmap",
+ "fred",
  "k8s-openapi",
  "kube",
  "minijinja",
@@ -4207,6 +4209,7 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "uuid",
 ]
@@ -4329,6 +4332,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "platform-next"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "axum",
+ "chrono",
+ "fred",
+ "futures-util",
+ "hex",
+ "hmac",
+ "ipnetwork",
+ "k8s-openapi",
+ "kube",
+ "opendal",
+ "platform-agent",
+ "platform-auth",
+ "platform-deployer",
+ "platform-git",
+ "platform-k8s",
+ "platform-mesh",
+ "platform-notify",
+ "platform-observe",
+ "platform-operator",
+ "platform-pipeline",
+ "platform-registry",
+ "platform-secrets",
+ "platform-types",
+ "platform-webhook",
+ "reqwest 0.12.28",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-tungstenite",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "webauthn-rs",
+]
+
+[[package]]
 name = "platform-notify"
 version = "0.1.0"
 dependencies = [
@@ -4369,6 +4422,27 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "platform-operator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "fred",
+ "k8s-openapi",
+ "kube",
+ "opendal",
+ "platform-types",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
  "tokio-util",
  "tracing",
  "uuid",

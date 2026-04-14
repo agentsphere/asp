@@ -63,6 +63,10 @@ mod tests {
             SshKeyError::RsaKeyTooShort(1024).to_string(),
             "RSA key too short: 1024 bits (minimum 2048)"
         );
+        assert_eq!(
+            SshKeyError::FingerprintError.to_string(),
+            "failed to compute fingerprint"
+        );
     }
 
     #[test]

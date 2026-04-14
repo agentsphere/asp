@@ -166,4 +166,25 @@ mod tests {
         let err = DeployerError::ApplyFailed("server rejected".into());
         assert_eq!(err.to_string(), "manifest apply failed: server rejected");
     }
+
+    // -- From conversion tests --
+
+    #[test]
+    fn from_sqlx_creates_db() {
+        let err: DeployerError = sqlx::Error::RowNotFound.into();
+        assert!(matches!(err, DeployerError::Db(_)));
+    }
+
+    #[test]
+    fn from_kube_creates_kube() {
+        let kube_err = kube::Error::Api(Box::default());
+        let err: DeployerError = kube_err.into();
+        assert!(matches!(err, DeployerError::Kube(_)));
+    }
+
+    #[test]
+    fn from_anyhow_creates_other() {
+        let err: DeployerError = anyhow::anyhow!("unexpected").into();
+        assert!(matches!(err, DeployerError::Other(_)));
+    }
 }

@@ -203,4 +203,53 @@ mod tests {
         let cidrs = vec!["10.0.0.0/8".to_string()];
         assert_eq!(extract_ip(&parts, true, &cidrs), Some("192.168.1.1".into()));
     }
+
+    // -- IPv6 CIDR tests --
+
+    #[test]
+    fn cidr_matches_ipv6_in_range() {
+        let ip: std::net::IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(cidr_matches(ip, &["2001:db8::/32".to_string()]));
+    }
+
+    #[test]
+    fn cidr_matches_ipv6_outside_range() {
+        let ip: std::net::IpAddr = "2001:db9::1".parse().unwrap();
+        assert!(!cidr_matches(ip, &["2001:db8::/32".to_string()]));
+    }
+
+    #[test]
+    fn cidr_matches_ipv6_loopback() {
+        let ip: std::net::IpAddr = "::1".parse().unwrap();
+        assert!(cidr_matches(ip, &["::1/128".to_string()]));
+    }
+
+    #[test]
+    fn cidr_matches_ipv6_link_local() {
+        let ip: std::net::IpAddr = "fe80::1".parse().unwrap();
+        assert!(cidr_matches(ip, &["fe80::/10".to_string()]));
+    }
+
+    #[test]
+    fn cidr_matches_ipv6_not_in_link_local() {
+        let ip: std::net::IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(!cidr_matches(ip, &["fe80::/10".to_string()]));
+    }
+
+    #[test]
+    fn cidr_matches_mixed_v4_v6_ranges() {
+        let v4: std::net::IpAddr = "10.1.2.3".parse().unwrap();
+        let v6: std::net::IpAddr = "2001:db8::1".parse().unwrap();
+        let cidrs = vec!["10.0.0.0/8".to_string(), "2001:db8::/32".to_string()];
+        assert!(cidr_matches(v4, &cidrs));
+        assert!(cidr_matches(v6, &cidrs));
+    }
+
+    #[test]
+    fn extract_ip_from_ipv6_connect_info() {
+        let mut parts = make_parts(&[]);
+        let addr: std::net::SocketAddr = "[::1]:9000".parse().unwrap();
+        parts.extensions.insert(axum::extract::ConnectInfo(addr));
+        assert_eq!(extract_ip(&parts, false, &[]), Some("::1".into()));
+    }
 }

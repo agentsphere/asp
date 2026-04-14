@@ -204,4 +204,96 @@ mod tests {
             Err(SsrfError::PrivateIp)
         );
     }
+
+    // -- IPv6 tests --
+
+    #[test]
+    fn blocks_ipv4_mapped_ipv6_loopback() {
+        assert_eq!(
+            validate_webhook_url("http://[::ffff:127.0.0.1]/hook"),
+            Err(SsrfError::PrivateIp)
+        );
+    }
+
+    #[test]
+    fn blocks_ipv4_mapped_ipv6_private_10() {
+        assert_eq!(
+            validate_webhook_url("http://[::ffff:10.0.0.1]/hook"),
+            Err(SsrfError::PrivateIp)
+        );
+    }
+
+    #[test]
+    fn blocks_ipv4_mapped_ipv6_private_192() {
+        assert_eq!(
+            validate_webhook_url("http://[::ffff:192.168.1.1]/hook"),
+            Err(SsrfError::PrivateIp)
+        );
+    }
+
+    #[test]
+    fn blocks_ipv4_mapped_ipv6_private_172() {
+        assert_eq!(
+            validate_webhook_url("http://[::ffff:172.16.0.1]/hook"),
+            Err(SsrfError::PrivateIp)
+        );
+    }
+
+    #[test]
+    fn blocks_ipv6_unique_local_fc00() {
+        assert_eq!(
+            validate_webhook_url("http://[fc00::1]/hook"),
+            Err(SsrfError::PrivateIp)
+        );
+    }
+
+    #[test]
+    fn blocks_ipv6_unique_local_fd00() {
+        assert_eq!(
+            validate_webhook_url("http://[fd12:3456::1]/hook"),
+            Err(SsrfError::PrivateIp)
+        );
+    }
+
+    #[test]
+    fn blocks_ipv6_unique_local_upper_boundary() {
+        assert_eq!(
+            validate_webhook_url("http://[fdff:ffff:ffff::1]/hook"),
+            Err(SsrfError::PrivateIp)
+        );
+    }
+
+    #[test]
+    fn blocks_ipv6_link_local() {
+        assert_eq!(
+            validate_webhook_url("http://[fe80::1]/hook"),
+            Err(SsrfError::PrivateIp)
+        );
+    }
+
+    #[test]
+    fn blocks_ipv6_unspecified() {
+        assert_eq!(
+            validate_webhook_url("http://[::]/hook"),
+            Err(SsrfError::PrivateIp)
+        );
+    }
+
+    #[test]
+    fn allows_ipv6_public() {
+        assert!(validate_webhook_url("http://[2001:db8::1]/hook").is_ok());
+    }
+
+    #[test]
+    fn allows_ipv4_mapped_ipv6_public() {
+        assert!(validate_webhook_url("http://[::ffff:8.8.8.8]/hook").is_ok());
+    }
+
+    #[test]
+    fn blocks_ipv6_loopback_with_port() {
+        assert_eq!(
+            validate_webhook_url("http://[::1]:9090/hook"),
+            Err(SsrfError::BlockedHost)
+        );
+    }
 }

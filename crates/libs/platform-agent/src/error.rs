@@ -109,6 +109,30 @@ mod tests {
     }
 
     #[test]
+    fn from_sqlx_creates_db() {
+        let err: AgentError = sqlx::Error::RowNotFound.into();
+        assert!(matches!(err, AgentError::Db(_)));
+    }
+
+    #[test]
+    fn from_kube_creates_kube() {
+        let err: AgentError = kube::Error::Api(Box::default()).into();
+        assert!(matches!(err, AgentError::Kube(_)));
+    }
+
+    #[test]
+    fn db_error_maps_to_internal() {
+        let api: ApiError = AgentError::Db(sqlx::Error::RowNotFound).into();
+        assert!(matches!(api, ApiError::Internal(_)));
+    }
+
+    #[test]
+    fn kube_error_maps_to_internal() {
+        let api: ApiError = AgentError::Kube(kube::Error::Api(Box::default())).into();
+        assert!(matches!(api, ApiError::Internal(_)));
+    }
+
+    #[test]
     fn display_messages_are_descriptive() {
         assert_eq!(AgentError::SessionNotFound.to_string(), "session not found");
         assert_eq!(

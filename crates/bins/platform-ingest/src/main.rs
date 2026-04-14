@@ -52,6 +52,25 @@ async fn main() -> anyhow::Result<()> {
     let cancel = CancellationToken::new();
     let tracker = TaskTracker::new();
 
+    // Build initial AlertRouter for the ingest tap
+    let alert_router = match platform_observe::alert::AlertRouter::from_db(&pool).await {
+        Ok(r) => std::sync::Arc::new(tokio::sync::RwLock::new(r)),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load alert router, starting empty");
+            std::sync::Arc::new(tokio::sync::RwLock::new(
+                platform_observe::alert::AlertRouter::empty(),
+            ))
+        }
+    };
+
+    // Alert rule subscriber — rebuilds router on rule changes
+    tracker.spawn(platform_observe::alert::alert_rule_subscriber(
+        pool.clone(),
+        valkey.clone(),
+        alert_router.clone(),
+        cancel.clone(),
+    ));
+
     let (channels, spans_rx, logs_rx, metrics_rx) =
         ingest::create_channels_with_capacity(cfg.buffer_capacity);
 
@@ -64,6 +83,8 @@ async fn main() -> anyhow::Result<()> {
     ));
     tracker.spawn(ingest::flush_metrics(
         pool.clone(),
+        valkey.clone(),
+        alert_router,
         metrics_rx,
         cancel.clone(),
     ));

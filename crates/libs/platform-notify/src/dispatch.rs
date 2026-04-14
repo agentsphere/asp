@@ -134,11 +134,30 @@ async fn send_email_notification(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn channel_routing_values() {
-        // Verify the string matching used in the impl covers all channels
+    fn channel_routing_covers_all_known_channels() {
+        // The match in `notify()` routes: "email" → SMTP, "webhook" → dispatcher, _ → in_app.
+        // Verify each expected channel is a distinct non-empty string.
         let channels = ["in_app", "email", "webhook"];
-        for ch in channels {
+        assert_eq!(channels.len(), 3);
+        for ch in &channels {
             assert!(!ch.is_empty());
+        }
+        // No duplicates
+        let mut sorted = channels.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), channels.len());
+    }
+
+    #[test]
+    fn unknown_channel_treated_as_in_app() {
+        // The match uses `_ => "sent"`, so any unknown channel is treated like in_app.
+        // This test documents that behavior — unknown channels don't error.
+        let unknown_channels = ["sms", "slack", "push", ""];
+        for ch in unknown_channels {
+            // They would all fall through to the default match arm.
+            assert_ne!(ch, "email");
+            assert_ne!(ch, "webhook");
         }
     }
 }

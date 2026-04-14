@@ -3,7 +3,12 @@
 
 //! Focused state for the observe subsystem — no dependency on main binary's `AppState`.
 
+use std::sync::Arc;
+
 use sqlx::PgPool;
+use tokio::sync::RwLock;
+
+use crate::alert::AlertRouter;
 
 /// Shared state for the observe subsystem.
 #[derive(Clone)]
@@ -12,6 +17,7 @@ pub struct ObserveState {
     pub valkey: fred::clients::Pool,
     pub minio: opendal::Operator,
     pub config: ObserveConfig,
+    pub alert_router: Arc<RwLock<AlertRouter>>,
 }
 
 /// Configuration for the observe subsystem.
@@ -27,6 +33,9 @@ pub struct ObserveConfig {
     pub parquet_metric_retention_hours: u32,
     /// Whether to trust X-Forwarded-For for client IP extraction.
     pub trust_proxy: bool,
+    /// Maximum alert rule window in seconds (default 86400 = 24h).
+    /// Controls how long the stream evaluator keeps samples in memory.
+    pub alert_max_window_secs: u32,
 }
 
 impl Default for ObserveConfig {
@@ -37,6 +46,7 @@ impl Default for ObserveConfig {
             parquet_log_retention_hours: 48,
             parquet_metric_retention_hours: 1,
             trust_proxy: false,
+            alert_max_window_secs: 86_400,
         }
     }
 }
@@ -53,5 +63,6 @@ mod tests {
         assert_eq!(cfg.parquet_log_retention_hours, 48);
         assert_eq!(cfg.parquet_metric_retention_hours, 1);
         assert!(!cfg.trust_proxy);
+        assert_eq!(cfg.alert_max_window_secs, 86_400);
     }
 }

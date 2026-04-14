@@ -17,12 +17,14 @@ members = [
     "crates/libs/platform-webhook",
     "crates/libs/platform-notify",
     "crates/libs/platform-mesh",
+    "crates/libs/platform-operator",
     # bins — standalone deployable binaries
     "crates/bins/platform-agent-runner",
     "crates/bins/platform-ingest",
     "crates/bins/platform-k8s-watcher",
     "crates/bins/platform-proxy",
     "crates/bins/platform-proxy-init",
+    "crates/bins/platform",
 ]
 
 [package]

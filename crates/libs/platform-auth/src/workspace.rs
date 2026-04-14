@@ -34,18 +34,3 @@ impl WorkspaceMembershipChecker for PgWorkspaceMembershipChecker<'_> {
         Ok(exists)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn checker_is_constructible() {
-        // Verify the struct can be instantiated (no runtime test without DB).
-        // Integration tests in tests/ cover actual DB queries.
-        fn make_checker(pool: &PgPool) -> PgWorkspaceMembershipChecker<'_> {
-            PgWorkspaceMembershipChecker::new(pool)
-        }
-        let _ = make_checker as fn(&PgPool) -> PgWorkspaceMembershipChecker<'_>;
-    }
-}

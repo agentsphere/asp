@@ -5,6 +5,7 @@
 
 pub mod audit;
 pub mod auth_user;
+pub mod config;
 pub mod error;
 pub mod events;
 pub mod git_error;

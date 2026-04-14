@@ -558,8 +558,13 @@ async fn drain_and_publish_logs(
 }
 
 /// Drain the metrics channel and batch-write to Postgres.
+///
+/// After writing to Postgres, matching samples are also published to the
+/// `alert:samples` Valkey stream for the stream alert evaluator.
 pub async fn flush_metrics(
     pool: sqlx::PgPool,
+    valkey: fred::clients::Pool,
+    alert_router: std::sync::Arc<tokio::sync::RwLock<crate::alert::AlertRouter>>,
     mut rx: mpsc::Receiver<MetricRecord>,
     cancel: tokio_util::sync::CancellationToken,
 ) {
@@ -571,12 +576,12 @@ pub async fn flush_metrics(
             () = cancel.cancelled() => {
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_secs(5),
-                    drain_metrics(&pool, &mut rx, &mut buffer),
+                    drain_metrics(&pool, &valkey, &alert_router, &mut rx, &mut buffer),
                 ).await;
                 break;
             }
             _ = interval.tick() => {
-                drain_metrics(&pool, &mut rx, &mut buffer).await;
+                drain_metrics(&pool, &valkey, &alert_router, &mut rx, &mut buffer).await;
             }
         }
     }
@@ -584,6 +589,8 @@ pub async fn flush_metrics(
 
 async fn drain_metrics(
     pool: &sqlx::PgPool,
+    valkey: &fred::clients::Pool,
+    alert_router: &tokio::sync::RwLock<crate::alert::AlertRouter>,
     rx: &mut mpsc::Receiver<MetricRecord>,
     buffer: &mut Vec<MetricRecord>,
 ) {
@@ -593,11 +600,74 @@ async fn drain_metrics(
             Err(_) => break,
         }
     }
-    if !buffer.is_empty() {
-        if let Err(e) = crate::store::write_metrics(pool, buffer).await {
-            tracing::error!(error = %e, count = buffer.len(), "failed to flush metrics");
-        }
+    if buffer.is_empty() {
+        return;
+    }
+
+    // Write to Postgres first
+    if let Err(e) = crate::store::write_metrics(pool, buffer).await {
+        tracing::error!(error = %e, count = buffer.len(), "failed to flush metrics");
         buffer.clear();
+        return;
+    }
+
+    // XADD matching samples to alert:samples (best-effort)
+    xadd_alert_samples(valkey, alert_router, buffer).await;
+
+    buffer.clear();
+}
+
+/// Route metric records through the `AlertRouter` and XADD matching samples
+/// to the `alert:samples` Valkey stream. Best-effort — failures are logged.
+async fn xadd_alert_samples(
+    valkey: &fred::clients::Pool,
+    alert_router: &tokio::sync::RwLock<crate::alert::AlertRouter>,
+    buffer: &[MetricRecord],
+) {
+    use fred::interfaces::StreamsInterface;
+
+    let router = alert_router.read().await;
+    if router.is_empty() {
+        return;
+    }
+
+    let pipeline = valkey.next().pipeline();
+    let mut has_matches = false;
+
+    for record in buffer {
+        let matching = router.matching_rules(&record.name, &record.labels, record.project_id);
+        if matching.is_empty() {
+            continue;
+        }
+        has_matches = true;
+
+        let rules_str: String = matching
+            .iter()
+            .map(Uuid::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let ts_ms = record.timestamp.timestamp_millis().to_string();
+        let value = record.value.to_string();
+
+        // XADD alert:samples * r <rule_ids> t <ts_ms> v <value>
+        let fields: Vec<(&str, &str)> = vec![
+            ("r", rules_str.as_str()),
+            ("t", ts_ms.as_str()),
+            ("v", value.as_str()),
+        ];
+        let _: Result<(), _> = pipeline
+            .xadd::<(), _, _, _, _>(
+                crate::alert::ALERT_STREAM_KEY,
+                false, // no NOMKSTREAM
+                None::<()>,
+                "*",
+                fields,
+            )
+            .await;
+    }
+
+    if has_matches && let Err(e) = pipeline.all::<()>().await {
+        tracing::debug!(error = %e, "failed to XADD alert samples (best-effort)");
     }
 }
 

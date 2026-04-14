@@ -13,6 +13,7 @@ pub mod ca;
 pub mod config;
 pub mod error;
 pub mod identity;
+pub mod state;
 pub mod sync;
 
 pub use acme::{parse_acme_challenge_path, run_acme_manager};
@@ -20,4 +21,5 @@ pub use ca::{CertBundle, MeshCa};
 pub use config::{AcmeConfig, MeshConfig};
 pub use error::MeshError;
 pub use identity::SpiffeId;
+pub use state::MeshState;
 pub use sync::{sync_bundles_to_namespaces, sync_trust_bundles};

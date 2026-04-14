@@ -77,4 +77,11 @@ mod tests {
         let pipeline_err: PipelineError = opendal_err.into();
         assert!(matches!(pipeline_err, PipelineError::Storage(_)));
     }
+
+    #[test]
+    fn from_kube_creates_kube() {
+        let kube_err = kube::Error::Api(Box::default());
+        let pipeline_err: PipelineError = kube_err.into();
+        assert!(matches!(pipeline_err, PipelineError::Kube(_)));
+    }
 }

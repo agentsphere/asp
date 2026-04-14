@@ -142,12 +142,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn webhook_dispatch_is_constructible() {
-        // Verify the struct layout. Actual dispatch is tested in integration tests.
-        let _ctor = |pool: PgPool| WebhookDispatch::new(pool);
-    }
-
-    #[test]
     fn max_concurrent_deliveries() {
         assert_eq!(MAX_CONCURRENT_DELIVERIES, 50);
     }

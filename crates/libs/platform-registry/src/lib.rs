@@ -14,6 +14,7 @@ pub mod error;
 pub mod gc;
 pub mod pull_secret;
 pub mod seed;
+pub mod state;
 pub mod types;
 
 // Re-export key types at crate root.
@@ -27,6 +28,7 @@ pub use pull_secret::{
     create_pull_secret, create_push_secret,
 };
 pub use seed::{SeedResult, seed_all, seed_image};
+pub use state::{RegistryConfig, RegistryState};
 pub use types::{
     Descriptor, MEDIA_TYPE_DOCKER_MANIFEST, MEDIA_TYPE_DOCKER_MANIFEST_LIST, MEDIA_TYPE_OCI_INDEX,
     MEDIA_TYPE_OCI_MANIFEST, OciManifest, TagListResponse, UploadSession, is_manifest_media_type,

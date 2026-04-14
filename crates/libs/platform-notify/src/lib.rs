@@ -8,6 +8,8 @@
 
 pub mod dispatch;
 pub mod email;
+pub mod state;
 
 pub use dispatch::SmtpNotificationDispatcher;
 pub use email::SmtpConfig;
+pub use state::NotifyState;

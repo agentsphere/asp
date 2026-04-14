@@ -507,6 +507,107 @@ impl OpsRepoManager for OpsRepoService {
 mod tests {
     use super::*;
 
+    // -- OpsRepoError display tests --
+
+    #[test]
+    fn error_not_found_display() {
+        let err = OpsRepoError::NotFound("main:values.yaml".into());
+        assert_eq!(err.to_string(), "ops repo not found: main:values.yaml");
+    }
+
+    #[test]
+    fn error_sync_failed_display() {
+        let err = OpsRepoError::SyncFailed("connection refused".into());
+        assert_eq!(err.to_string(), "ops repo sync failed: connection refused");
+    }
+
+    #[test]
+    fn error_commit_failed_display() {
+        let err = OpsRepoError::CommitFailed("merge conflict".into());
+        assert_eq!(err.to_string(), "ops repo commit failed: merge conflict");
+    }
+
+    #[test]
+    fn error_revert_failed_display() {
+        let err = OpsRepoError::RevertFailed("dirty worktree".into());
+        assert_eq!(err.to_string(), "ops repo revert failed: dirty worktree");
+    }
+
+    #[test]
+    fn error_values_not_found_display() {
+        let err = OpsRepoError::ValuesNotFound("staging.yaml".into());
+        assert_eq!(err.to_string(), "values file not found: staging.yaml");
+    }
+
+    #[test]
+    fn error_render_failed_display() {
+        let err = OpsRepoError::RenderFailed("missing variable".into());
+        assert_eq!(err.to_string(), "template render failed: missing variable");
+    }
+
+    #[test]
+    fn error_invalid_manifest_display() {
+        let err = OpsRepoError::InvalidManifest("missing kind".into());
+        assert_eq!(err.to_string(), "invalid manifest: missing kind");
+    }
+
+    // -- From conversion tests --
+
+    #[test]
+    fn from_sqlx_creates_db() {
+        let err: OpsRepoError = sqlx::Error::RowNotFound.into();
+        assert!(matches!(err, OpsRepoError::Db(_)));
+    }
+
+    #[test]
+    fn from_anyhow_creates_other() {
+        let err: OpsRepoError = anyhow::anyhow!("unexpected").into();
+        assert!(matches!(err, OpsRepoError::Other(_)));
+    }
+
+    #[test]
+    fn from_git_error_file_not_found_maps_to_not_found() {
+        let git_err = platform_types::GitError::FileNotFound {
+            git_ref: "main".into(),
+            path: "values.yaml".into(),
+        };
+        let err: OpsRepoError = git_err.into();
+        match err {
+            OpsRepoError::NotFound(msg) => assert_eq!(msg, "main:values.yaml"),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_git_error_ref_not_found_maps_to_not_found() {
+        let git_err = platform_types::GitError::RefNotFound("missing-branch".into());
+        let err: OpsRepoError = git_err.into();
+        match err {
+            OpsRepoError::NotFound(msg) => assert_eq!(msg, "missing-branch"),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_git_error_merge_conflict_maps_to_commit_failed() {
+        let git_err = platform_types::GitError::MergeConflict("conflict in values.yaml".into());
+        let err: OpsRepoError = git_err.into();
+        match err {
+            OpsRepoError::CommitFailed(msg) => assert_eq!(msg, "conflict in values.yaml"),
+            other => panic!("expected CommitFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_git_error_other_maps_to_other() {
+        let git_err = platform_types::GitError::CommandFailed {
+            command: "push".into(),
+            stderr: "fatal error".into(),
+        };
+        let err: OpsRepoError = git_err.into();
+        assert!(matches!(err, OpsRepoError::Other(_)));
+    }
+
     // Pure unit tests — correctly placed in unit tier
 
     #[test]

@@ -219,7 +219,7 @@ test-all: test-unit test-integration test-e2e
 # No #[ignore] attributes needed — the file name IS the tier selector.
 
 # All workspace crates (package names from Cargo.toml)
-_crate_all := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-git -p platform-registry -p platform-agent -p platform-ingest -p platform-k8s-watcher -p platform-proxy -p platform-proxy-init -p platform-pipeline -p platform-deployer -p platform-webhook -p platform-notify -p platform-mesh -p platform-ops-repo -p platform-agent-runner"
+_crate_all := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-git -p platform-registry -p platform-agent -p platform-ingest -p platform-k8s-watcher -p platform-proxy -p platform-proxy-init -p platform-pipeline -p platform-deployer -p platform-webhook -p platform-notify -p platform-mesh -p platform-ops-repo -p platform-agent-runner -p platform-next -p platform-operator"
 # Crates with --lib targets for coverage (proxy included — coverage uses --lib to avoid binary crash)
 # Excludes proxy-init, ingest, and agent-runner (no lib.rs, binary-only crates)
 _crate_lib := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-git -p platform-registry -p platform-agent -p platform-k8s-watcher -p platform-proxy -p platform-pipeline -p platform-deployer -p platform-webhook -p platform-notify -p platform-mesh -p platform-ops-repo"

@@ -54,88 +54,107 @@ pub fn spawn_background_tasks(
     ));
     tracker.spawn(ingest::flush_metrics(
         state.pool.clone(),
+        state.valkey.clone(),
+        state.alert_router.clone(),
         metrics_rx,
         cancel.clone(),
     ));
     tracker.spawn(parquet::rotation_loop(state.clone(), cancel.clone()));
 
-    // Observability data retention — purge old data hourly
-    {
-        let pool = state.pool.clone();
-        let retention_days = state.config.retention_days;
-        let cancel = cancel.clone();
-        tracker.spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let cutoff = chrono::Utc::now()
-                            - chrono::Duration::days(i64::from(retention_days));
-                        for (table, col) in &[
-                            ("spans", "started_at"),
-                            ("log_entries", "timestamp"),
-                            ("metric_samples", "timestamp"),
-                        ] {
-                            let batch_size: i64 = 50_000;
-                            let mut total_deleted: u64 = 0;
-                            loop {
-                                let sql = format!(
-                                    "DELETE FROM {table} WHERE ctid IN (\
-                                        SELECT ctid FROM {table} WHERE {col} < $1 LIMIT $2\
-                                    )"
-                                );
-                                match sqlx::query(&sql)
-                                    .bind(cutoff)
-                                    .bind(batch_size)
-                                    .execute(&pool)
-                                    .await
-                                {
-                                    Ok(result) => {
-                                        let deleted = result.rows_affected();
-                                        total_deleted += deleted;
-                                        #[allow(clippy::cast_sign_loss)]
-                                        if deleted < batch_size as u64 {
-                                            break;
-                                        }
-                                        tokio::time::sleep(
-                                            std::time::Duration::from_millis(100),
-                                        )
-                                        .await;
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            table,
-                                            error = %e,
-                                            "retention cleanup batch failed"
-                                        );
-                                        break;
-                                    }
-                                }
-                            }
-                            if total_deleted > 0 {
-                                tracing::info!(
-                                    table,
-                                    rows = total_deleted,
-                                    retention_days,
-                                    "purged old observability data"
-                                );
-                            }
-                        }
-                    }
-                    () = cancel.cancelled() => break,
-                }
-            }
-        });
-    }
+    tracker.spawn(retention_loop(
+        state.pool.clone(),
+        state.config.retention_days,
+        cancel.clone(),
+    ));
 
-    tracker.spawn(alert::evaluate_alerts_loop(
+    // Alert rule subscriber — rebuilds AlertRouter on rule changes (every replica)
+    tracker.spawn(alert::alert_rule_subscriber(
+        state.pool.clone(),
+        state.valkey.clone(),
+        state.alert_router.clone(),
+        cancel.clone(),
+    ));
+
+    // Stream alert evaluator — replaces the poll-based evaluate_alerts_loop.
+    // Uses a consumer group so only one replica is active leader.
+    tracker.spawn(alert::stream_alert_evaluator(
         state.pool.clone(),
         state.valkey.clone(),
         cancel.clone(),
+        state.config.alert_max_window_secs,
     ));
+
     tracker.spawn(partitions::run(state.pool.clone(), cancel));
 
     channels
+}
+
+/// Observability data retention — purge old data hourly.
+async fn retention_loop(
+    pool: sqlx::PgPool,
+    retention_days: u32,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let cutoff = chrono::Utc::now()
+                    - chrono::Duration::days(i64::from(retention_days));
+                for (table, col) in &[
+                    ("spans", "started_at"),
+                    ("log_entries", "timestamp"),
+                    ("metric_samples", "timestamp"),
+                ] {
+                    let batch_size: i64 = 50_000;
+                    let mut total_deleted: u64 = 0;
+                    loop {
+                        let sql = format!(
+                            "DELETE FROM {table} WHERE ctid IN (\
+                                SELECT ctid FROM {table} WHERE {col} < $1 LIMIT $2\
+                            )"
+                        );
+                        match sqlx::query(&sql)
+                            .bind(cutoff)
+                            .bind(batch_size)
+                            .execute(&pool)
+                            .await
+                        {
+                            Ok(result) => {
+                                let deleted = result.rows_affected();
+                                total_deleted += deleted;
+                                #[allow(clippy::cast_sign_loss)]
+                                if deleted < batch_size as u64 {
+                                    break;
+                                }
+                                tokio::time::sleep(
+                                    std::time::Duration::from_millis(100),
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    table,
+                                    error = %e,
+                                    "retention cleanup batch failed"
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    if total_deleted > 0 {
+                        tracing::info!(
+                            table,
+                            rows = total_deleted,
+                            retention_days,
+                            "purged old observability data"
+                        );
+                    }
+                }
+            }
+            () = cancel.cancelled() => break,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

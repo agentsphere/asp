@@ -27,51 +27,40 @@ fn main() {
 
     // --- Step 2: Set up iptables rules ---
     println!("[proxy-init] Setting up iptables rules...");
+    setup_iptables();
+}
 
+fn setup_iptables() {
     let inbound_port = env_or("PROXY_INBOUND_PORT", "15006");
     let outbound_port = env_or("PROXY_OUTBOUND_PORT", "15001");
     let health_port = env_or("PROXY_HEALTH_PORT", "15020");
     let bypass_ports = env_or("PROXY_BYPASS_PORT_RANGE", "61000:65000");
     let platform_api_port = env::var("PROXY_PLATFORM_API_PORT").unwrap_or_default();
 
-    // INBOUND: redirect external TCP to proxy inbound listener
+    setup_inbound_rules(&inbound_port, &outbound_port, &health_port);
+    setup_outbound_rules(&outbound_port, &bypass_ports, &platform_api_port);
+
+    println!(
+        "[proxy-init] Ready (inbound:{inbound_port} outbound:{outbound_port} bypass:{bypass_ports})"
+    );
+}
+
+fn setup_inbound_rules(inbound_port: &str, outbound_port: &str, health_port: &str) {
     ipt(&["-t", "nat", "-N", "PLATFORM_INBOUND"]);
-    ipt(&[
-        "-t",
-        "nat",
-        "-A",
-        "PLATFORM_INBOUND",
-        "-p",
-        "tcp",
-        "--dport",
-        &inbound_port,
-        "-j",
-        "RETURN",
-    ]);
-    ipt(&[
-        "-t",
-        "nat",
-        "-A",
-        "PLATFORM_INBOUND",
-        "-p",
-        "tcp",
-        "--dport",
-        &outbound_port,
-        "-j",
-        "RETURN",
-    ]);
-    ipt(&[
-        "-t",
-        "nat",
-        "-A",
-        "PLATFORM_INBOUND",
-        "-p",
-        "tcp",
-        "--dport",
-        &health_port,
-        "-j",
-        "RETURN",
-    ]);
+    for port in [inbound_port, outbound_port, health_port] {
+        ipt(&[
+            "-t",
+            "nat",
+            "-A",
+            "PLATFORM_INBOUND",
+            "-p",
+            "tcp",
+            "--dport",
+            port,
+            "-j",
+            "RETURN",
+        ]);
+    }
     ipt(&[
         "-t",
         "nat",
@@ -82,7 +71,7 @@ fn main() {
         "-j",
         "REDIRECT",
         "--to-ports",
-        &inbound_port,
+        inbound_port,
     ]);
     ipt(&[
         "-t",
@@ -94,8 +83,9 @@ fn main() {
         "-j",
         "PLATFORM_INBOUND",
     ]);
+}
 
-    // OUTBOUND: redirect app-originated TCP to proxy outbound listener
+fn setup_outbound_rules(outbound_port: &str, bypass_ports: &str, platform_api_port: &str) {
     ipt(&["-t", "nat", "-N", "PLATFORM_OUTPUT"]);
 
     // 1. Bypass proxy's own outbound connections (source port range)
@@ -107,7 +97,7 @@ fn main() {
         "-p",
         "tcp",
         "--sport",
-        &bypass_ports,
+        bypass_ports,
         "-j",
         "RETURN",
     ]);
@@ -151,7 +141,7 @@ fn main() {
             "-p",
             "tcp",
             "--dport",
-            &platform_api_port,
+            platform_api_port,
             "-j",
             "RETURN",
         ]);
@@ -168,7 +158,7 @@ fn main() {
         "-j",
         "REDIRECT",
         "--to-ports",
-        &outbound_port,
+        outbound_port,
     ]);
     ipt(&[
         "-t",
@@ -180,10 +170,6 @@ fn main() {
         "-j",
         "PLATFORM_OUTPUT",
     ]);
-
-    println!(
-        "[proxy-init] Ready (inbound:{inbound_port} outbound:{outbound_port} bypass:{bypass_ports})"
-    );
 }
 
 fn env_or(key: &str, default: &str) -> String {

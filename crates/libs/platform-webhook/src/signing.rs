@@ -49,4 +49,29 @@ mod tests {
     fn empty_secret_returns_none() {
         assert!(sign_payload("", b"payload").is_none());
     }
+
+    #[test]
+    fn known_test_vector() {
+        // HMAC-SHA256("key", "The quick brown fox jumps over the lazy dog")
+        // Expected: f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8
+        let sig = sign_payload("key", b"The quick brown fox jumps over the lazy dog").unwrap();
+        assert_eq!(
+            sig,
+            "sha256=f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
+    }
+
+    #[test]
+    fn sign_empty_payload() {
+        let sig = sign_payload("secret", b"").unwrap();
+        assert!(sig.starts_with("sha256="));
+        assert_eq!(sig.len(), 7 + 64);
+    }
+
+    #[test]
+    fn different_payloads_different_signatures() {
+        let a = sign_payload("secret", b"payload-1").unwrap();
+        let b = sign_payload("secret", b"payload-2").unwrap();
+        assert_ne!(a, b);
+    }
 }
