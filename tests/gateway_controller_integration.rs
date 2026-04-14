@@ -63,6 +63,7 @@ async fn gateway_controller_creates_deployment(pool: PgPool) {
         config.gateway_namespace = ns.clone();
         config.gateway_http_node_port = 0;
         config.gateway_tls_node_port = 0;
+        config.registry_node_url = None;
         config.registry_url = Some("test-registry.local:5000".to_string());
         let mut s = state;
         s.config = Arc::new(config);
@@ -109,6 +110,7 @@ async fn gateway_controller_creates_service(pool: PgPool) {
         config.gateway_namespace = ns.clone();
         config.gateway_http_node_port = 0;
         config.gateway_tls_node_port = 0;
+        config.registry_node_url = None;
         config.registry_url = Some("test-registry.local:5000".to_string());
         let mut s = state;
         s.config = Arc::new(config);
@@ -163,6 +165,7 @@ async fn gateway_controller_noop_when_current(pool: PgPool) {
         config.gateway_namespace = ns.clone();
         config.gateway_http_node_port = 0;
         config.gateway_tls_node_port = 0;
+        config.registry_node_url = None;
         config.registry_url = Some("test-registry.local:5000".to_string());
         let mut s = state;
         s.config = Arc::new(config);
@@ -200,6 +203,7 @@ async fn gateway_controller_updates_image(pool: PgPool) {
         config.gateway_namespace = ns.clone();
         config.gateway_http_node_port = 0;
         config.gateway_tls_node_port = 0;
+        config.registry_node_url = None;
         config.registry_url = Some("old-registry.local:5000".to_string());
         let mut s = state;
         s.config = Arc::new(config);

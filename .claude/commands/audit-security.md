@@ -469,7 +469,7 @@ _Git hooks:_
 
 ### Agent 8: Supply Chain & Dependency Security
 
-**Scope:** `Cargo.toml`, `Cargo.lock`, `deny.toml`, `cli/agent-runner/Cargo.toml`, `cli/agent-runner/Cargo.lock`, `mcp/package.json`, `mcp/package-lock.json`, `ui/package.json`, `ui/package-lock.json`, `docker/Dockerfile*`, `.github/workflows/*.yaml`, `.pre-commit-config.yaml`, `.gitleaks.toml`
+**Scope:** `Cargo.toml`, `Cargo.lock`, `deny.toml`, `crates/bins/platform-agent-runner/Cargo.toml`, `crates/bins/platform-agent-runner/Cargo.lock`, `mcp/package.json`, `mcp/package-lock.json`, `ui/package.json`, `ui/package-lock.json`, `docker/Dockerfile*`, `.github/workflows/*.yaml`, `.pre-commit-config.yaml`, `.gitleaks.toml`
 
 **Read ALL files, then analyze:**
 
@@ -520,7 +520,7 @@ _Dependency freshness:_
 
 ### Agent 9: Agent & Pipeline Sandbox Security
 
-**Scope:** All files under `src/agent/`, `src/pipeline/`, `cli/agent-runner/src/`, `tests/fixtures/claude-mock/claude`
+**Scope:** All files under `src/agent/`, `src/pipeline/`, `crates/bins/platform-agent-runner/src/`, `tests/fixtures/claude-mock/claude`
 
 **Read ALL files, then analyze the trust boundary between user code and platform code:**
 

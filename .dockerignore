@@ -1,9 +1,21 @@
 # Ignore everything by default — only whitelist what Dockerfiles need.
-# This keeps the build context small (~10MB instead of ~400MB).
+# This keeps the build context small by excluding .git, target, node_modules, etc.
 *
 
-# Needed by Dockerfile.platform-runner (agent-runner build + runtime)
-!cli/agent-runner/
+# Workspace root (needed for cargo workspace resolution)
+!Cargo.toml
+!Cargo.lock
+
+# Rust sources
+!src/
+!crates/
+!migrations/
+!.sqlx/
+
+# UI sources (for main Dockerfile)
+!ui/
+
+# Agent runtime assets
 !mcp/
 !docker/entrypoint.sh
 !docker/platform-build-status.sh

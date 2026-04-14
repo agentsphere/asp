@@ -301,6 +301,9 @@ pub async fn e2e_state_with_api_url(
         valkey_pool_size: 2,
         git_http_timeout_secs: 600,
         request_timeout_secs: 300,
+        webhook_max_concurrent: 50,
+        manager_session_max_per_user: 10,
+        observe_buffer_capacity: 10_000,
     };
 
     // Registry seed is opt-in — E2E tests that need seeded images should call

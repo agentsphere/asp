@@ -83,9 +83,9 @@ Built by Steven Hooker. Officially backed and distributed by AgentSphere GmbH.
 | Binary | Crate | Image | Role |
 |--------|-------|-------|------|
 | **platform** | `src/` | `platform` | Control plane — API, git, background tasks, embedded UI |
-| **agent-runner** | `cli/agent-runner/` | `platform-runner` | Runs inside agent pods — wraps Claude CLI, manages MCP servers, Valkey pub/sub |
-| **platform-proxy** | `crates/proxy/` | `platform-proxy` | Mesh sidecar (mTLS, logs, metrics), process wrapper, or ingress gateway |
-| **proxy-init** | `crates/proxy-init/` | `platform-proxy-init` | Init container — copies proxy binary, sets up iptables redirect rules |
+| **agent-runner** | `crates/bins/platform-agent-runner/` | `platform-runner` | Runs inside agent pods — wraps Claude CLI, manages MCP servers, Valkey pub/sub |
+| **platform-proxy** | `crates/bins/platform-proxy/` | `platform-proxy` | Mesh sidecar (mTLS, logs, metrics), process wrapper, or ingress gateway |
+| **proxy-init** | `crates/bins/platform-proxy-init/` | `platform-proxy-init` | Init container — copies proxy binary, sets up iptables redirect rules |
 | **claude-mock** | `tests/fixtures/claude-mock/` | — | Test harness — mocks Claude CLI for integration tests |
 
 ### Infrastructure

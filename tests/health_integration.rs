@@ -176,6 +176,13 @@ async fn readyz_returns_ok_without_auth(pool: PgPool) {
                 message: None,
                 checked_at: chrono::Utc::now(),
             },
+            platform::health::SubsystemCheck {
+                name: "minio".into(),
+                status: platform::health::SubsystemStatus::Healthy,
+                latency_ms: 2,
+                message: None,
+                checked_at: chrono::Utc::now(),
+            },
         ];
     }
 

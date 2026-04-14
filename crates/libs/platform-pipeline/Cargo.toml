@@ -60,6 +60,7 @@ fred = { version = "10", features = ["subscriber-client"] }
 opendal = { version = "0.55", features = ["services-memory"] }
 tokio-util = { version = "0.7" }
 platform-k8s = { path = "../platform-k8s" }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde_json = "1"
 
 [lints.rust]

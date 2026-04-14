@@ -3,6 +3,7 @@
 
 //! Pipeline execution engine: definition parsing, executor loop, trigger utilities.
 
+pub mod concrete;
 pub mod config;
 pub mod definition;
 pub mod error;
@@ -10,6 +11,7 @@ pub mod executor;
 pub mod state;
 pub mod trigger;
 
+pub use concrete::ConcretePipelineServices;
 pub use error::PipelineError;
 pub use state::{PipelineServices, PipelineState};
 

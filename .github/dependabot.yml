@@ -27,8 +27,3 @@ updates:
     directory: /docs/viewer
     schedule:
       interval: weekly
-
-  - package-ecosystem: cargo
-    directory: /cli/agent-runner
-    schedule:
-      interval: weekly

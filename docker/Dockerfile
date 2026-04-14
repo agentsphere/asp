@@ -20,12 +20,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc-x86-64-linux-gnu libc6-dev-amd64-cross \
   && rm -rf /var/lib/apt/lists/*
 RUN rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
-WORKDIR /agent-runner
-COPY cli/agent-runner/ .
+WORKDIR /app
+COPY . .
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
-RUN cargo build --release --target x86_64-unknown-linux-gnu
-RUN cargo build --release --target aarch64-unknown-linux-gnu
+RUN cargo build --release -p platform-agent-runner --target x86_64-unknown-linux-gnu
+RUN cargo build --release -p platform-agent-runner --target aarch64-unknown-linux-gnu
 
 # Stage 3: Build deps + binary
 FROM rust:1.93-slim-bookworm AS builder
@@ -49,10 +49,10 @@ COPY --from=builder /app/target/release/platform /platform
 COPY --from=builder /app/target/release/platform-ingest /platform-ingest
 COPY --from=builder /app/target/release/platform-k8s-watcher /platform-k8s-watcher
 COPY --from=agent-runner-builder \
-  /agent-runner/target/x86_64-unknown-linux-gnu/release/agent-runner \
+  /app/target/x86_64-unknown-linux-gnu/release/agent-runner \
   /data/agent-runner/amd64
 COPY --from=agent-runner-builder \
-  /agent-runner/target/aarch64-unknown-linux-gnu/release/agent-runner \
+  /app/target/aarch64-unknown-linux-gnu/release/agent-runner \
   /data/agent-runner/arm64
 EXPOSE 8080
 USER 1000

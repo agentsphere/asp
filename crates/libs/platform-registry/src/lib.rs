@@ -8,6 +8,7 @@
 //! call into crate functions.
 
 pub mod access;
+pub mod credential_provider;
 pub mod digest;
 pub mod error;
 pub mod gc;
@@ -17,6 +18,7 @@ pub mod types;
 
 // Re-export key types at crate root.
 pub use access::{RegistryUser, RepoAccess, copy_tag, glob_match, matches_tag_pattern};
+pub use credential_provider::RegistryCredentials;
 pub use digest::{Digest, sha256_digest};
 pub use error::{OciErrorCode, RegistryError};
 pub use gc::collect_garbage;

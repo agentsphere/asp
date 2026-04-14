@@ -29,8 +29,10 @@
 //! - [`CliGitMerger`] — merge via worktrees + `git` CLI
 //! - [`CliGitWorktreeWriter`] — write files via worktrees + per-repo locking
 
+pub mod auto_merge;
 pub mod browser;
 pub mod browser_types;
+pub mod db_services;
 pub mod error;
 pub mod gpg_keys;
 pub mod hooks;
@@ -57,7 +59,12 @@ pub mod worktree;
 pub use platform_types::{GitCoreRead, GitError, GitMerger, GitWriter};
 
 // Re-export key types at crate root for convenience.
+pub use auto_merge::AutoMergeHandler;
 pub use browser_types::{BlobContent, BranchInfo, CommitInfo, TreeEntry};
+pub use db_services::{
+    PgBranchProtectionProvider, PgGitAccessControl, PgGitAuthenticator, PgPostReceiveHandler,
+    PgProjectResolver,
+};
 pub use error::{GpgKeyError, SshError, SshKeyError};
 pub use hooks::{PostReceiveParams, RefUpdate};
 pub use lock::repo_lock;

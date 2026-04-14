@@ -7,6 +7,7 @@ description = "Git operations library for the platform"
 
 [dependencies]
 platform-types = { path = "../../foundation/platform-types", default-features = false }
+platform-auth = { path = "../platform-auth" }
 thiserror = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -26,6 +27,9 @@ http-body-util = "0.1"
 bytes = "1"
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["io", "rt"] }
+
+# Database (for DB-backed trait implementations)
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"] }
 
 # SSH server
 russh = "0.49"

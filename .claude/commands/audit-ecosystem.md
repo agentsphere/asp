@@ -36,7 +36,7 @@ Run quick checks to establish baseline. Don't block on failures — agents will 
 just lint
 
 # Agent runner CLI
-cd cli/agent-runner && cargo check && cargo clippy --all-features -- -D warnings && cd ../..
+cd crates/bins/platform-agent-runner && cargo check && cargo clippy --all-features -- -D warnings && cd ../..
 
 # UI builds
 just ui build 2>&1 | tail -5
@@ -52,7 +52,7 @@ which hadolint && hadolint docker/Dockerfile docker/Dockerfile.platform-runner d
 
 # File counts for context
 echo "=== Component sizes ==="
-echo "CLI:"; find cli/agent-runner/src -name '*.rs' | xargs wc -l | tail -1
+echo "CLI:"; find crates/bins/platform-agent-runner/src -name '*.rs' | xargs wc -l | tail -1
 echo "UI:"; find ui/src -name '*.ts' -o -name '*.tsx' | xargs wc -l | tail -1
 echo "MCP:"; find mcp -name '*.js' -not -path '*/node_modules/*' | xargs wc -l | tail -1
 echo "Helm:"; find helm -type f | xargs wc -l | tail -1
@@ -77,9 +77,9 @@ Launch **all 8 agents concurrently**. Each agent gets a specific scope and check
 
 ### Agent 1: Agent Runner CLI — Protocol & Transport Correctness
 
-**Scope:** All files under `cli/agent-runner/` (~6K LOC Rust)
+**Scope:** All files under `crates/bins/platform-agent-runner/` (~6K LOC Rust)
 
-**Read ALL files in `cli/agent-runner/src/`, plus `cli/agent-runner/Cargo.toml`.**
+**Read ALL files in `crates/bins/platform-agent-runner/src/`, plus `crates/bins/platform-agent-runner/Cargo.toml`.**
 
 _Protocol contract with platform API:_
 - [ ] HTTP endpoints called match what `src/api/sessions.rs` and `src/api/commands.rs` expose
@@ -247,7 +247,7 @@ _Platform image (`Dockerfile`):_
 
 _Runner image (`Dockerfile.platform-runner`):_
 - [ ] Claude Code CLI version pinned or managed
-- [ ] MCP servers installed at paths that `cli/agent-runner` expects
+- [ ] MCP servers installed at paths that `crates/bins/platform-agent-runner` expects
 - [ ] Kaniko executor available at expected path
 - [ ] Git version sufficient for worktree operations (needs ≥2.17)
 - [ ] Node.js version compatible with MCP servers
@@ -416,7 +416,7 @@ _Security tooling:_
 - `src/agent/identity.rs` — agent credentials setup
 - `src/agent/provider.rs` — image resolution
 - `src/agent/service.rs` — pod spec construction
-- `cli/agent-runner/src/main.rs`, `cli/agent-runner/src/transport.rs`, `cli/agent-runner/src/pubsub.rs`, `cli/agent-runner/src/control.rs`
+- `crates/bins/platform-agent-runner/src/main.rs`, `crates/bins/platform-agent-runner/src/transport.rs`, `crates/bins/platform-agent-runner/src/pubsub.rs`, `crates/bins/platform-agent-runner/src/control.rs`
 - `mcp/lib/client.js`
 - `ui/src/lib/api.ts`, `ui/src/lib/types.ts`, `ui/src/lib/ws.ts`
 - `helm/platform/templates/configmap.yaml`, `helm/platform/templates/secret.yaml`, `helm/platform/templates/deployment.yaml`

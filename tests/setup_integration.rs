@@ -156,6 +156,9 @@ async fn setup_test_state(pool: PgPool) -> (platform::store::AppState, String) {
         valkey_pool_size: 2,
         git_http_timeout_secs: 600,
         request_timeout_secs: 300,
+        webhook_max_concurrent: 50,
+        manager_session_max_per_user: 10,
+        observe_buffer_capacity: 10_000,
     };
 
     let webauthn = platform::auth::passkey::build_webauthn(&config).expect("webauthn build failed");

@@ -19,6 +19,11 @@ default-filter = "not binary(~_integration) and not binary(~_k8s)"
 
 [profile.integration]
 default-filter = "binary(~_integration)"
+retries = 1
+fail-fast = false
+
+[profile.integration.junit]
+path = "junit.xml"
 
 [profile.k8s]
 default-filter = "binary(~_k8s)"
@@ -56,7 +61,7 @@ max-threads = 1
 filter = "test(pull_platform_runner_image) | test(pull_platform_runner_bare_image) | test(auto_setup_downloads_agent_runner)"
 test-group = "serial-listen-port"
 
-[[profile.ci.overrides]]
+[[profile.integration.overrides]]
 filter = "test(pull_platform_runner_image) | test(pull_platform_runner_bare_image) | test(auto_setup_downloads_agent_runner)"
 test-group = "serial-listen-port"
 
@@ -70,7 +75,7 @@ max-threads = 8
 filter = "test(executor_)"
 test-group = "executor-parallel"
 
-[[profile.ci.overrides]]
+[[profile.integration.overrides]]
 filter = "test(executor_)"
 test-group = "executor-parallel"
 

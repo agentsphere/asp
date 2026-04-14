@@ -105,9 +105,9 @@ async fn on_push_no_yaml_returns_none(pool: PgPool) {
     std::fs::create_dir_all(&base).unwrap();
     let bare_path = base.join("bare.git");
     let work_path = base.join("work");
-    run_git(&bare_path, &["init", "--bare", bare_path.to_str().unwrap()]).await;
+    run_git(&base, &["init", "--bare", bare_path.to_str().unwrap()]).await;
     run_git(
-        &work_path,
+        &base,
         &[
             "clone",
             bare_path.to_str().unwrap(),
@@ -143,7 +143,7 @@ async fn on_push_branch_filter_skips_non_matching(pool: PgPool) {
 
     let yaml = r"
 pipeline:
-  trigger:
+  on:
     push:
       branches:
         - release/*
@@ -224,9 +224,10 @@ async fn on_tag_creates_pipeline(pool: PgPool) {
 
     let yaml = r"
 pipeline:
-  trigger:
+  on:
     tag:
-      pattern: v*
+      patterns:
+        - v*
   steps:
     - name: release
       image: alpine:3.19
@@ -310,9 +311,9 @@ async fn on_api_no_yaml_errors(pool: PgPool) {
     std::fs::create_dir_all(&base).unwrap();
     let bare_path = base.join("bare.git");
     let work_path = base.join("work");
-    run_git(&bare_path, &["init", "--bare", bare_path.to_str().unwrap()]).await;
+    run_git(&base, &["init", "--bare", bare_path.to_str().unwrap()]).await;
     run_git(
-        &work_path,
+        &base,
         &[
             "clone",
             bare_path.to_str().unwrap(),
@@ -583,7 +584,7 @@ pipeline:
     - name: build-image
       type: imagebuild
       dockerfile: Dockerfile
-      image_name: myapp
+      imageName: myapp
 ";
     let (bare, _work) = helpers::create_repo_with_platform_yaml(yaml).await;
 
@@ -657,9 +658,9 @@ async fn read_version_at_ref_with_version_file(_pool: PgPool) {
     std::fs::create_dir_all(&base).unwrap();
     let bare_path = base.join("bare.git");
     let work_path = base.join("work");
-    run_git(&bare_path, &["init", "--bare", bare_path.to_str().unwrap()]).await;
+    run_git(&base, &["init", "--bare", bare_path.to_str().unwrap()]).await;
     run_git(
-        &work_path,
+        &base,
         &[
             "clone",
             bare_path.to_str().unwrap(),

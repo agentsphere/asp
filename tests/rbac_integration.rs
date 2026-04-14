@@ -456,11 +456,11 @@ async fn list_permissions_and_roles(pool: PgPool) {
     let (status, roles) = helpers::get_json(&app, &admin_token, "/api/admin/roles").await;
     assert_eq!(status, StatusCode::OK);
     let roles_array = roles["items"].as_array().unwrap();
-    // Bootstrap seeds 10 system roles
+    // Bootstrap seeds 11 system roles (incl. otlp-ingest)
     assert_eq!(
         roles_array.len(),
-        10,
-        "expected 10 system roles, got {}",
+        11,
+        "expected 11 system roles, got {}",
         roles_array.len()
     );
 

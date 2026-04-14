@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# test-in-cluster.sh — Run integration/E2E tests against ephemeral cluster services
+# test-in-cluster.sh — Run integration/E2E tests against dev cluster services
 #
-# Creates isolated namespaces (platform-test-{id}-*), deploys PG + Valkey + MinIO
-# as NodePort services, deploys a DaemonSet registry proxy, then connects
-# directly to the cluster node IP (Kind makes it routable from macOS).
-# Runs tests natively with cargo nextest.
+# Reuses the long-lived dev namespace (platform-dev-*) for PG, Valkey, MinIO
+# (sourced from .env.dev). Creates only ephemeral pipeline/agent namespaces
+# per test run. Runs tests natively with cargo nextest.
 #
 # Usage:
 #   bash hack/test-in-cluster.sh                          # integration tests
@@ -63,22 +62,33 @@ fi
 # ── Namespace ID ──────────────────────────────────────────────────────────
 RUN_ID=$(openssl rand -hex 4)
 NS_PREFIX="platform-test-${RUN_ID}"
-SVC_NS="${NS_PREFIX}-services"
 PIPELINE_NS="${NS_PREFIX}-pipelines"
 AGENT_NS="${NS_PREFIX}-agents"
+
+# ── Source dev environment (reuse long-lived PG/Valkey/MinIO) ────────────
+if [[ ! -f "${PROJECT_DIR}/.env.dev" ]]; then
+  echo "ERROR: .env.dev not found. Run 'just dev-up' first."
+  exit 1
+fi
+# shellcheck disable=SC1091
+source "${PROJECT_DIR}/.env.dev"
+
+# Extract the dev namespace from .env.dev (e.g. platform-dev-main)
+DEV_NS="${PLATFORM_NAMESPACE:-platform-dev-main}"
 
 # ── Cleanup on exit ───────────────────────────────────────────────────────
 cleanup() {
   echo ""
   echo "==> Cleaning up"
 
-  # Delete all namespaces with our prefix
+  # Delete only the ephemeral pipeline/agent namespaces (NOT the dev services)
   echo "  Deleting namespaces: ${NS_PREFIX}-*"
   kubectl get namespaces -o name | grep "^namespace/${NS_PREFIX}" | \
     xargs -r kubectl delete --wait=false 2>/dev/null || true
   kubectl delete clusterrolebinding "${NS_PREFIX}-runner" 2>/dev/null || true
 
-  # DaemonSet cleanup happens automatically with namespace deletion
+  # Delete the per-run registry proxy DaemonSet
+  kubectl delete daemonset "registry-proxy-${RUN_ID}" -n "${DEV_NS}" 2>/dev/null || true
 
   # Clean up seed cache/lock files scoped to this run
   local wt
@@ -92,12 +102,13 @@ echo "==> Pre-flight checks"
 source "${SCRIPT_DIR}/cluster-info.sh"
 
 echo "  Cluster:   ${NODE_CONTAINER}"
+echo "  Dev NS:    ${DEV_NS}"
 echo "  NS prefix: ${NS_PREFIX}"
 echo "  Test type: ${TEST_TYPE}"
 echo "  Test filter: ${TEST_FILTER}"
 echo "  Node IP:   ${NODE_IP}"
 
-# ── Find free ports (backend + registry only — PG/Valkey/MinIO use NodePort) ──
+# ── Find free ports (backend + registry + gateway — services reuse dev NS) ──
 find_free_port() {
   python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()"
 }
@@ -119,41 +130,86 @@ bash "${SCRIPT_DIR}/build-agent-images.sh"
 WORKTREE="$(bash "${SCRIPT_DIR}/detect-worktree.sh")"
 RUNNER_DIR="/tmp/platform-e2e/${WORKTREE}/agent-runner"
 
-# ── Deploy services + registry proxy using shared script ──────────────────
-REGISTRY_BACKEND_HOST="${PLATFORM_HOST}" \
-  REGISTRY_BACKEND_PORT="${BACKEND_PORT}" \
-  REGISTRY_NODE_PORT="${REGISTRY_NODE_PORT}" \
-  bash "${SCRIPT_DIR}/deploy-services.sh" "${SVC_NS}"
-
-# ── Discover NodePorts (K8s auto-assigned) ──────────────────────────────
+# ── Reuse dev namespace services (PG/Valkey/MinIO already running) ────────
+# No deploy-services.sh call — .env.dev already has connection strings.
+# Just verify connectivity to the dev services.
 echo ""
-echo "==> Discovering NodePorts"
-PG_PORT=$(kubectl get svc -n "${SVC_NS}" postgres -o jsonpath='{.spec.ports[0].nodePort}')
-VALKEY_PORT=$(kubectl get svc -n "${SVC_NS}" valkey -o jsonpath='{.spec.ports[0].nodePort}')
-MINIO_PORT=$(kubectl get svc -n "${SVC_NS}" minio -o jsonpath='{.spec.ports[0].nodePort}')
-PREVIEW_PROXY_PORT=$(kubectl get svc -n "${SVC_NS}" preview-proxy -o jsonpath='{.spec.ports[0].nodePort}')
-echo "  Postgres:      ${NODE_IP}:${PG_PORT}"
-echo "  Valkey:        ${NODE_IP}:${VALKEY_PORT}"
-echo "  MinIO:         ${NODE_IP}:${MINIO_PORT}"
-echo "  Preview proxy: ${NODE_IP}:${PREVIEW_PROXY_PORT}"
+echo "==> Verifying dev namespace services (${DEV_NS})"
+echo "  DATABASE_URL: ${DATABASE_URL}"
+echo "  VALKEY_URL:   ${VALKEY_URL}"
+echo "  MINIO:        ${MINIO_ENDPOINT}"
 
-# Wait for NodePort connectivity (direct to cluster node — no port-forward)
-echo -n "  Waiting for NodePort connectivity"
-for i in $(seq 1 60); do
-  if nc -z "$NODE_IP" "$PG_PORT" 2>/dev/null && \
-     nc -z "$NODE_IP" "$VALKEY_PORT" 2>/dev/null && \
-     nc -z "$NODE_IP" "$MINIO_PORT" 2>/dev/null; then
+# Extract host:port from DATABASE_URL for connectivity check
+DB_HOST_PORT=$(echo "$DATABASE_URL" | sed -E 's|.*@([^/]+)/.*|\1|')
+DB_HOST=$(echo "$DB_HOST_PORT" | cut -d: -f1)
+DB_PORT=$(echo "$DB_HOST_PORT" | cut -d: -f2)
+VALKEY_HOST_PORT=$(echo "$VALKEY_URL" | sed -E 's|.*@([^/]*).*|\1|')
+VK_HOST=$(echo "$VALKEY_HOST_PORT" | cut -d: -f1)
+VK_PORT=$(echo "$VALKEY_HOST_PORT" | cut -d: -f2)
+MINIO_HOST_PORT=$(echo "$MINIO_ENDPOINT" | sed -E 's|https?://||')
+MN_HOST=$(echo "$MINIO_HOST_PORT" | cut -d: -f1)
+MN_PORT=$(echo "$MINIO_HOST_PORT" | cut -d: -f2)
+
+echo -n "  Checking connectivity"
+for i in $(seq 1 30); do
+  if nc -z "$DB_HOST" "$DB_PORT" 2>/dev/null && \
+     nc -z "$VK_HOST" "$VK_PORT" 2>/dev/null && \
+     nc -z "$MN_HOST" "$MN_PORT" 2>/dev/null; then
     break
   fi
   echo -n "."
   sleep 0.5
 done
-if ! nc -z "$NODE_IP" "$PG_PORT" 2>/dev/null; then
+if ! nc -z "$DB_HOST" "$DB_PORT" 2>/dev/null; then
   echo ""
-  echo "ERROR: Could not connect to services after 15s"
+  echo "ERROR: Could not connect to dev services. Run 'just dev-up' first."
   exit 1
 fi
 echo " ready"
+
+# Deploy a per-run registry proxy DaemonSet (separate from the dev one).
+# Each test run has its own backend port, so it needs its own proxy.
+REGISTRY_PROXY_NAME="registry-proxy-${RUN_ID}"
+echo "==> Deploying registry proxy DaemonSet: ${REGISTRY_PROXY_NAME} (port ${REGISTRY_NODE_PORT} → ${PLATFORM_HOST}:${BACKEND_PORT})"
+cat <<DAEMONSET | kubectl apply -n "${DEV_NS}" -f -
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ${REGISTRY_PROXY_NAME}
+  labels:
+    app: ${REGISTRY_PROXY_NAME}
+spec:
+  selector:
+    matchLabels:
+      app: ${REGISTRY_PROXY_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${REGISTRY_PROXY_NAME}
+    spec:
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: socat
+          image: alpine/socat:1.8.0.1
+          args:
+            - "TCP-LISTEN:${REGISTRY_NODE_PORT},fork,reuseaddr"
+            - "TCP:${PLATFORM_HOST}:${BACKEND_PORT}"
+          ports:
+            - containerPort: ${REGISTRY_NODE_PORT}
+              hostPort: ${REGISTRY_NODE_PORT}
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+DAEMONSET
+kubectl rollout status -n "${DEV_NS}" daemonset/"${REGISTRY_PROXY_NAME}" --timeout=30s 2>/dev/null || true
+
+# Discover preview-proxy port from dev namespace
+PREVIEW_PROXY_PORT=$(kubectl get svc -n "${DEV_NS}" preview-proxy -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "")
 
 # ── RBAC for all test types ───────────────────────────────────────────────
 echo ""
@@ -166,13 +222,13 @@ kubectl create namespace "${AGENT_NS}" --dry-run=client -o yaml | kubectl apply 
 # Apply the ClusterRole (idempotent)
 kubectl apply -f "${SCRIPT_DIR}/test-manifests/rbac.yaml"
 
-# Create ServiceAccount in services namespace
-kubectl create serviceaccount test-runner -n "${SVC_NS}" 2>/dev/null || true
+# Create ServiceAccount in dev namespace (reuse existing if present)
+kubectl create serviceaccount test-runner -n "${DEV_NS}" 2>/dev/null || true
 
 # Bind ClusterRole to the ServiceAccount
 kubectl create clusterrolebinding "${NS_PREFIX}-runner" \
   --clusterrole=test-runner \
-  --serviceaccount="${SVC_NS}:test-runner" 2>/dev/null || true
+  --serviceaccount="${DEV_NS}:test-runner" 2>/dev/null || true
 
 # Gateway is auto-deployed by the platform binary (PLATFORM_GATEWAY_AUTO_DEPLOY=true)
 # No manual EnvoyProxy/Gateway CRD creation needed
@@ -182,9 +238,8 @@ echo ""
 echo "==> Running tests"
 echo "────────────────────────────────────────────────────────────────"
 
-# Build env vars — DATABASE_URL is set after the connectivity check above
-# so sqlx::query!() macros can validate queries against the real DB at compile time.
-export DATABASE_URL="postgres://platform:dev@${NODE_IP}:${PG_PORT}/platform_dev?sslmode=require"
+# Build env vars — DATABASE_URL, VALKEY_URL, MINIO_* already set from .env.dev.
+# Only override test-run-specific vars.
 
 # Run migrations so the DB schema is up-to-date for sqlx compile-time validation
 echo "  Running migrations..."
@@ -193,31 +248,31 @@ sqlx migrate run --source "${PROJECT_DIR}/migrations" 2>/dev/null || {
   echo "  sqlx-cli not found, using offline cache"
   export SQLX_OFFLINE=true
 }
-export VALKEY_URL="redis://:dev@${NODE_IP}:${VALKEY_PORT}"
-export MINIO_ENDPOINT="https://${NODE_IP}:${MINIO_PORT}"
-export MINIO_ACCESS_KEY="platform"
-export MINIO_SECRET_KEY="devdevdev"
-export MINIO_INSECURE=true  # S55: accept self-signed TLS cert in dev/test
+
+# .env.dev already exports: DATABASE_URL, VALKEY_URL, MINIO_ENDPOINT,
+# MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_INSECURE, PLATFORM_MASTER_KEY,
+# PLATFORM_DEV, PLATFORM_MESH_ENABLED
 export REGISTRY_PROXY_BLOBS=true  # Stream blobs through platform (MinIO NodePort unreachable from pods)
-export PLATFORM_MASTER_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-export PLATFORM_MESH_ENABLED=true
-export PLATFORM_DEV=true
 export RUST_LOG="${RUST_LOG:-platform=debug}"
+
+# Override namespace-related vars for this test run
 export PLATFORM_NS_PREFIX="${NS_PREFIX}"
-export PLATFORM_NAMESPACE="${SVC_NS}"
+export PLATFORM_NAMESPACE="${DEV_NS}"
 export PLATFORM_LISTEN_PORT="${BACKEND_PORT}"
 export PLATFORM_REGISTRY_URL="${PLATFORM_HOST}:${BACKEND_PORT}"
 export PLATFORM_REGISTRY_NODE_URL="localhost:${REGISTRY_NODE_PORT}"
 export PLATFORM_API_URL="http://${PLATFORM_HOST}:${BACKEND_PORT}"
 export PLATFORM_PIPELINE_NAMESPACE="${PIPELINE_NS}"
 export PLATFORM_AGENT_NAMESPACE="${AGENT_NS}"
-export PLATFORM_GATEWAY_NAMESPACE="${PLATFORM_GATEWAY_NAMESPACE:-${SVC_NS}}"
+export PLATFORM_GATEWAY_NAMESPACE="${DEV_NS}"
 export PLATFORM_GATEWAY_AUTO_DEPLOY=true
 export PLATFORM_GATEWAY_HTTP_NODE_PORT="${GATEWAY_HTTP_NODE_PORT}"
 export PLATFORM_GATEWAY_TLS_NODE_PORT="${GATEWAY_TLS_NODE_PORT}"
-export PLATFORM_GATEWAY_WATCH_NAMESPACES="${SVC_NS},${PIPELINE_NS},${AGENT_NS}"
-export PLATFORM_VALKEY_AGENT_HOST="valkey.${SVC_NS}.svc.cluster.local:6379"
-export PLATFORM_PREVIEW_PROXY_URL="http://${NODE_IP}:${PREVIEW_PROXY_PORT}"
+export PLATFORM_GATEWAY_WATCH_NAMESPACES="${DEV_NS},${PIPELINE_NS},${AGENT_NS}"
+export PLATFORM_VALKEY_AGENT_HOST="valkey.${DEV_NS}.svc.cluster.local:6379"
+if [[ -n "${PREVIEW_PROXY_PORT}" ]]; then
+  export PLATFORM_PREVIEW_PROXY_URL="http://${NODE_IP}:${PREVIEW_PROXY_PORT}"
+fi
 export PLATFORM_SEED_IMAGES_PATH="/tmp/platform-e2e/${WORKTREE}/seed-images"
 export PLATFORM_AGENT_RUNNER_DIR="${RUNNER_DIR}"
 export PLATFORM_PROXY_PATH="/tmp/platform-e2e/${WORKTREE}/proxy"
@@ -237,7 +292,7 @@ export CLAUDE_CLI_PATH="/tmp/platform-e2e/mock-claude-cli.sh"
 REPORT_FILE="${PROJECT_DIR}/test-${RUN_ID}-report.txt"
 OUTPUT_FILE="${PROJECT_DIR}/test-${RUN_ID}-output.txt"
 LOG_FILE="${PROJECT_DIR}/test-${RUN_ID}-logs.jsonl"
-JUNIT_FILE="${PROJECT_DIR}/target/nextest/ci/junit.xml"
+JUNIT_FILE="${PROJECT_DIR}/target/nextest/integration/junit.xml"
 
 # Structured JSON logs with threadName per line (consumed by helpers::init_test_tracing)
 export TEST_LOG_FILE="${LOG_FILE}"
@@ -268,7 +323,7 @@ if [[ "$TEST_TYPE" == "total" ]]; then
   echo ""
   echo "==> Running integration tests (coverage, no report)"
   cargo llvm-cov nextest --no-report --test '*_integration' \
-    --profile ci --test-threads 32 \
+    --profile integration --test-threads 32 \
     --ignore-filename-regex "${COV_IGNORE_REGEX}" --no-fail-fast \
     2>&1 | tee -a "${OUTPUT_FILE}" \
     || TIER_FAILURES=$((TIER_FAILURES + 1))
@@ -317,8 +372,14 @@ else
     NEXTEST_ARGS+=(--run-ignored ignored-only)
   fi
 
-  # Use CI profile for retries on transient failures (e.g. DB connection resets)
-  NEXTEST_ARGS+=(--profile ci --no-fail-fast)
+  # Use the matching nextest profile for each test type
+  if [[ "$TEST_TYPE" == "integration" || "$TEST_FILTER" == *"_integration"* ]]; then
+    NEXTEST_ARGS+=(--profile integration)
+  elif [[ "$TEST_TYPE" == "e2e" ]]; then
+    NEXTEST_ARGS+=(--profile default --no-fail-fast)
+  else
+    NEXTEST_ARGS+=(--profile default --no-fail-fast)
+  fi
 
   TEST_EXIT=0
   if $COVERAGE_MODE; then

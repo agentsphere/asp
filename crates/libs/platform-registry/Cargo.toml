@@ -5,7 +5,7 @@ edition = "2024"
 license = "BUSL-1.1"
 
 [dependencies]
-platform-types = { path = "../../foundation/platform-types" }
+platform-types = { path = "../../foundation/platform-types", features = ["kube"] }
 platform-auth = { path = "../platform-auth" }
 thiserror = "2"
 anyhow = "1"

@@ -219,10 +219,10 @@ test-all: test-unit test-integration test-e2e
 # No #[ignore] attributes needed — the file name IS the tier selector.
 
 # All workspace crates (package names from Cargo.toml)
-_crate_all := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-git -p platform-registry -p platform-agent -p platform-ingest -p platform-k8s-watcher -p platform-proxy -p platform-proxy-init -p platform-pipeline"
+_crate_all := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-git -p platform-registry -p platform-agent -p platform-ingest -p platform-k8s-watcher -p platform-proxy -p platform-proxy-init -p platform-pipeline -p platform-deployer -p platform-webhook -p platform-notify -p platform-mesh -p platform-ops-repo -p platform-agent-runner"
 # Crates with --lib targets for coverage (proxy included — coverage uses --lib to avoid binary crash)
-# Excludes proxy-init and ingest (no lib.rs, binary-only crates)
-_crate_lib := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-git -p platform-registry -p platform-agent -p platform-k8s-watcher -p platform-proxy -p platform-pipeline"
+# Excludes proxy-init, ingest, and agent-runner (no lib.rs, binary-only crates)
+_crate_lib := "-p platform-types -p platform-auth -p platform-observe -p platform-secrets -p platform-k8s -p platform-git -p platform-registry -p platform-agent -p platform-k8s-watcher -p platform-proxy -p platform-pipeline -p platform-deployer -p platform-webhook -p platform-notify -p platform-mesh -p platform-ops-repo"
 
 # Unit tests for workspace crates
 # just crate-test-unit                        → all crates
@@ -285,8 +285,8 @@ crate-test-all crate="":
 [group('crate')]
 crate-cov crate="":
     cargo llvm-cov nextest \
-        {{ if crate != "" { "-p " + crate } else { _crate_lib } }} \
-        --lib --test '*' --ignore-default-filter \
+        {{ if crate != "" { "-p " + crate } else { _crate_all } }} \
+        --lib --test '*' --ignore-default-filter --no-fail-fast \
         --lcov --output-path crate-coverage.lcov
     @echo "Coverage written to crate-coverage.lcov"
 
@@ -297,8 +297,8 @@ crate-cov crate="":
 [group('crate')]
 crate-cov-html crate="":
     cargo llvm-cov nextest \
-        {{ if crate != "" { "-p " + crate } else { _crate_lib } }} \
-        --lib --test '*' --ignore-default-filter \
+        {{ if crate != "" { "-p " + crate } else { _crate_all } }} \
+        --lib --test '*' --ignore-default-filter --no-fail-fast \
         --html --output-dir crate-coverage-html
     @echo "Open crate-coverage-html/index.html"
 
@@ -366,6 +366,11 @@ db-prepare:
     cd crates/libs/platform-observe && cargo sqlx prepare
     cd crates/libs/platform-secrets && cargo sqlx prepare
     cd crates/libs/platform-agent && cargo sqlx prepare
+    cd crates/libs/platform-webhook && cargo sqlx prepare
+    cd crates/libs/platform-notify && cargo sqlx prepare
+    cd crates/libs/platform-git && cargo sqlx prepare
+    cd crates/libs/platform-registry && cargo sqlx prepare
+    cd crates/libs/platform-pipeline && cargo sqlx prepare
 
 [group('db')]
 db-check:

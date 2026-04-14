@@ -5,14 +5,14 @@ agent_runner_dir := "/tmp/platform-e2e/" + worktree + "/agent-runner"
 
 [group('cli')]
 build:
-    cargo build --release --manifest-path cli/agent-runner/Cargo.toml
+    cargo build --release -p platform-agent-runner
 
 # Cross-compile agent-runner for linux/amd64 and linux/arm64 (uses Docker)
 [group('cli')]
 cross dir=agent_runner_dir:
     mkdir -p {{ dir }}
     docker run --rm \
-      -v "$(pwd)/cli/agent-runner:/src" \
+      -v "$(pwd):/src" \
       -v "{{ dir }}:/out" \
       -v "platform-cross-cargo-registry:/usr/local/cargo/registry" \
       -v "platform-cross-cargo-git:/usr/local/cargo/git" \
@@ -24,28 +24,28 @@ cross dir=agent_runner_dir:
         rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu && \
         cd /src && \
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
-          cargo build --release --target aarch64-unknown-linux-gnu && \
+          cargo build --release -p platform-agent-runner --target aarch64-unknown-linux-gnu && \
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
-          cargo build --release --target x86_64-unknown-linux-gnu && \
+          cargo build --release -p platform-agent-runner --target x86_64-unknown-linux-gnu && \
         cp target/aarch64-unknown-linux-gnu/release/agent-runner /out/arm64 && \
         cp target/x86_64-unknown-linux-gnu/release/agent-runner /out/amd64'
 
 [group('cli')]
 install:
-    cargo install --path cli/agent-runner
+    cargo install --path crates/bins/platform-agent-runner
 
 # `just cli test` or `just cli test some_test_name`
 [group('cli')]
 test *args="":
-    cargo test --manifest-path cli/agent-runner/Cargo.toml --bin agent-runner {{args}}
+    cargo test -p platform-agent-runner --bin agent-runner {{args}}
 
 [group('cli')]
 lint:
-    cargo clippy --manifest-path cli/agent-runner/Cargo.toml --all-features -- -D warnings
+    cargo clippy -p platform-agent-runner --all-features -- -D warnings
 
 [group('cli')]
 fmt:
-    cargo fmt --manifest-path cli/agent-runner/Cargo.toml
+    cargo fmt -p platform-agent-runner
 
 # CLI pub/sub integration test (requires cluster)
 [group('cli')]
@@ -55,8 +55,8 @@ test-pubsub:
 # Real Claude CLI tests (requires CLAUDE_OAUTH_TOKEN)
 [group('cli')]
 test-llm:
-    cargo test --manifest-path cli/agent-runner/Cargo.toml --bin agent-runner llm_ -- --ignored
+    cargo test -p platform-agent-runner --bin agent-runner llm_ -- --ignored
 
 [group('cli')]
 cov:
-    cargo llvm-cov --manifest-path cli/agent-runner/Cargo.toml --bin agent-runner
+    cargo llvm-cov -p platform-agent-runner --bin agent-runner

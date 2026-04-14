@@ -380,8 +380,8 @@ async fn admin_list_roles(pool: PgPool) {
 
     assert_eq!(status, StatusCode::OK);
     let roles = body["items"].as_array().unwrap();
-    // Bootstrap seeds 10 system roles (admin, developer, ops, agent, viewer, agent-dev, agent-ops, agent-test, agent-review, agent-manager)
-    assert_eq!(roles.len(), 10);
+    // Bootstrap seeds 11 system roles (admin, developer, ops, agent, viewer, agent-dev, agent-ops, agent-test, agent-review, agent-manager, otlp-ingest)
+    assert_eq!(roles.len(), 11);
 }
 
 #[sqlx::test(migrations = "./migrations")]

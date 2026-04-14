@@ -12,11 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY cli/agent-runner/ ./cli/agent-runner/
-WORKDIR /build/cli/agent-runner
+COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/build/cli/agent-runner/target \
-    cargo build --release && cp target/release/agent-runner /usr/local/bin/agent-runner
+    --mount=type=cache,target=/build/target \
+    cargo build --release -p platform-agent-runner \
+    && cp target/release/agent-runner /usr/local/bin/agent-runner
 
 # ── Stage 2: Runtime image ────────────────────────────────────────────────
 FROM gcr.io/kaniko-project/executor:v1.23.2 AS kaniko

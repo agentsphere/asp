@@ -91,8 +91,8 @@ pub fn create_channels_with_capacity(
     )
 }
 
-/// Create ingest channels with default buffer capacity (used in tests).
-#[cfg(test)]
+/// Create ingest channels with default buffer capacity (used by integration/E2E tests).
+#[allow(dead_code)]
 pub fn create_channels() -> (
     IngestChannels,
     mpsc::Receiver<SpanRecord>,

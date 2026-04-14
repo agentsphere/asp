@@ -472,7 +472,7 @@ async fn health_run_publishes_to_valkey(pool: PgPool) {
 async fn health_is_ready_with_recent_healthy_snapshot(pool: PgPool) {
     let (state, _admin_token) = helpers::test_state(pool).await;
 
-    // Inject a recent snapshot with both postgres and valkey healthy
+    // Inject a recent snapshot with postgres, valkey, and minio healthy
     {
         let mut snap = state.health.write().unwrap();
         snap.checked_at = Utc::now(); // recent
@@ -486,6 +486,13 @@ async fn health_is_ready_with_recent_healthy_snapshot(pool: PgPool) {
             },
             SubsystemCheck {
                 name: "valkey".into(),
+                status: SubsystemStatus::Healthy,
+                latency_ms: 1,
+                message: None,
+                checked_at: Utc::now(),
+            },
+            SubsystemCheck {
+                name: "minio".into(),
                 status: SubsystemStatus::Healthy,
                 latency_ms: 1,
                 message: None,

@@ -10,6 +10,7 @@ pub mod password;
 pub mod rate_limit;
 pub mod resolver;
 pub mod token;
+pub mod workspace;
 
 // Re-export key types at crate root.
 pub use auth_user::AuthUser;
@@ -19,3 +20,4 @@ pub use password::{dummy_hash, hash_password, verify_password};
 pub use rate_limit::check_rate;
 pub use resolver::PgPermissionChecker;
 pub use token::{generate_api_token, generate_session_token, hash_token};
+pub use workspace::PgWorkspaceMembershipChecker;

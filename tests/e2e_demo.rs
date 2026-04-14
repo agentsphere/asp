@@ -1172,6 +1172,15 @@ async fn demo_full_lifecycle(pool: PgPool) {
     let (state, token, _server, flush_cancel) =
         e2e_helpers::start_observe_pipeline_server(pool.clone()).await;
 
+    // Seed container images (platform-runner, platform-runner-bare) into the
+    // built-in OCI registry so kaniko build steps can pull them as base images.
+    if let Err(e) =
+        platform::registry::seed::seed_all(&pool, &state.minio, &state.config.seed_images_path)
+            .await
+    {
+        tracing::warn!(error = %e, "registry seed failed (build steps may fail)");
+    }
+
     let _executor = ExecutorGuard::spawn(&state);
     let _reconciler = ReconcilerGuard::spawn(&state);
     let _eventbus = EventBusGuard::spawn(&state);

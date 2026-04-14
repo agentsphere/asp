@@ -19,6 +19,9 @@ use platform_pipeline::state::{MockPipelineServices, NoopHeartbeat, PipelineStat
 /// Build a `PipelineState<MockPipelineServices>` with real PG, Valkey, K8s, and
 /// an in-memory opendal `Memory` backend.
 pub async fn test_pipeline_state(pool: PgPool) -> PipelineState<MockPipelineServices> {
+    // Ensure a rustls CryptoProvider is installed (needed by kube/fred)
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let valkey = valkey_pool().await;
     let kube = kube::Client::try_default()
         .await
@@ -192,12 +195,12 @@ pub async fn create_repo_with_platform_yaml(yaml_content: &str) -> (PathBuf, Pat
     let bare_path = base.join("bare.git");
     let work_path = base.join("work");
 
-    // Create bare repo
-    git_cmd(&bare_path, &["init", "--bare", bare_path.to_str().unwrap()]).await;
+    // Create bare repo (use `base` as cwd because `bare_path` doesn't exist yet)
+    git_cmd(&base, &["init", "--bare", bare_path.to_str().unwrap()]).await;
 
     // Create working copy and add .platform.yaml
     git_cmd(
-        &work_path,
+        &base,
         &[
             "clone",
             bare_path.to_str().unwrap(),

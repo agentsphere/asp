@@ -833,7 +833,7 @@ pub async fn ensure_namespace_with_services_ns(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn ensure_namespace_inner(
     kube_client: &kube::Client,
     ns_name: &str,
@@ -861,6 +861,27 @@ async fn ensure_namespace_inner(
     let patch_params = kube::api::PatchParams::apply("platform-deployer").force();
     api.patch(ns_name, &patch_params, &kube::api::Patch::Apply(&obj))
         .await?;
+
+    // Wait for the `default` ServiceAccount to be created by the SA controller.
+    // K8s creates it asynchronously after namespace creation — pods will fail
+    // with "serviceaccount default not found" if we proceed before it exists.
+    {
+        let sa_ar = kube::discovery::ApiResource {
+            group: String::new(),
+            version: "v1".into(),
+            api_version: "v1".into(),
+            kind: "ServiceAccount".into(),
+            plural: "serviceaccounts".into(),
+        };
+        let sa_api: kube::Api<kube::api::DynamicObject> =
+            kube::Api::namespaced_with(kube_client.clone(), ns_name, &sa_ar);
+        for _ in 0..30 {
+            if sa_api.get("default").await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
 
     // S6: Create per-namespace RoleBinding for secrets access
     let secrets_rb = json!({

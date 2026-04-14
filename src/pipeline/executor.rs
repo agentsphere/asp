@@ -159,6 +159,15 @@ async fn execute_pipeline(state: &AppState, pipeline_id: Uuid) -> Result<(), Pip
         platform_api_url, pipeline.owner_name, pipeline.project_name,
     );
 
+    tracing::info!(
+        %pipeline_id,
+        repo_clone_url = %repo_clone_url,
+        registry_url = state.config.registry_url.as_deref().unwrap_or("none"),
+        registry_node_url = state.config.registry_node_url.as_deref().unwrap_or("none"),
+        platform_api_url = %platform_api_url,
+        "pipeline execution starting"
+    );
+
     // Use the project owner for git/registry auth tokens — `triggered_by` may be
     // an ephemeral agent user whose identity gets cleaned up before the pipeline
     // finishes (race condition: reaper deletes agent tokens while Kaniko is still pushing).
@@ -442,7 +451,7 @@ async fn ensure_pipeline_namespace(
         &project_id.to_string(),
         &state.config.platform_namespace,
         &state.config.gateway_namespace,
-        false,
+        state.config.dev_mode,
     )
     .await
     .map_err(|e| PipelineError::Other(e.into()))?;
@@ -928,6 +937,23 @@ async fn execute_single_step(
     let resolved_image = super::definition::expand_step_env(&step.image, &env_pairs);
 
     let pod_name = format!("pl-{}-{}", &pipeline_id.to_string()[..8], slug(&step.name));
+
+    // Log the actual REGISTRY value the pod will see (for debugging image push issues)
+    let pod_registry = env_vars
+        .iter()
+        .find(|ev| ev.name == "REGISTRY")
+        .and_then(|ev| ev.value.as_deref());
+    tracing::info!(
+        %pipeline_id,
+        step = %step.name,
+        step_type = %step.step_type,
+        image = %resolved_image,
+        pod_registry = pod_registry.unwrap_or("none"),
+        clone_url = %pipeline.repo_clone_url,
+        commands = ?step.commands,
+        "creating step pod"
+    );
+
     let step_artifacts = extract_artifact_defs(step.step_config.as_ref());
     let pod_spec = build_pod_spec(&PodSpecParams {
         pod_name: &pod_name,
@@ -1799,6 +1825,11 @@ async fn capture_logs(
 ) {
     let failed = exit_code != 0;
 
+    // On failure, log container termination details and K8s events for debugging
+    if failed {
+        log_pod_debug_info(pods, pod_name, state, step_name).await;
+    }
+
     // Capture init container (clone) logs
     let init_log_params = LogParams {
         container: Some("clone".into()),
@@ -1807,7 +1838,7 @@ async fn capture_logs(
     match pods.logs(pod_name, &init_log_params).await {
         Ok(logs) => {
             if failed {
-                let truncated: String = logs.chars().take(2000).collect();
+                let truncated: String = logs.chars().take(4000).collect();
                 tracing::warn!(
                     pod = pod_name,
                     step = step_name,
@@ -1833,7 +1864,7 @@ async fn capture_logs(
     match pods.logs(pod_name, &log_params).await {
         Ok(logs) => {
             if failed {
-                let truncated: String = logs.chars().take(2000).collect();
+                let truncated: String = logs.chars().take(4000).collect();
                 tracing::error!(
                     pod = pod_name,
                     step = step_name,
@@ -1848,6 +1879,96 @@ async fn capture_logs(
         }
         Err(e) => {
             tracing::warn!(error = %e, pod = pod_name, "failed to read pod logs");
+        }
+    }
+}
+
+/// Log detailed pod debug info on failure: container termination states and K8s events.
+async fn log_pod_debug_info(pods: &Api<Pod>, pod_name: &str, state: &AppState, step_name: &str) {
+    // 1. Container termination states (init + main)
+    if let Ok(pod) = pods.get(pod_name).await
+        && let Some(status) = &pod.status
+    {
+        // Init container statuses
+        if let Some(init_statuses) = &status.init_container_statuses {
+            for cs in init_statuses {
+                let terminated = cs
+                    .state
+                    .as_ref()
+                    .and_then(|s| s.terminated.as_ref())
+                    .map(|t| {
+                        format!(
+                            "exit_code={}, reason={}, message={}",
+                            t.exit_code,
+                            t.reason.as_deref().unwrap_or("none"),
+                            t.message.as_deref().unwrap_or("none"),
+                        )
+                    });
+                tracing::warn!(
+                    pod = pod_name,
+                    step = step_name,
+                    container = %cs.name,
+                    restart_count = cs.restart_count,
+                    terminated = terminated.as_deref().unwrap_or("not terminated"),
+                    "init container status"
+                );
+            }
+        }
+        // Main container statuses
+        if let Some(container_statuses) = &status.container_statuses {
+            for cs in container_statuses {
+                let terminated = cs
+                    .state
+                    .as_ref()
+                    .and_then(|s| s.terminated.as_ref())
+                    .map(|t| {
+                        format!(
+                            "exit_code={}, reason={}, message={}",
+                            t.exit_code,
+                            t.reason.as_deref().unwrap_or("none"),
+                            t.message.as_deref().unwrap_or("none"),
+                        )
+                    });
+                tracing::warn!(
+                    pod = pod_name,
+                    step = step_name,
+                    container = %cs.name,
+                    restart_count = cs.restart_count,
+                    terminated = terminated.as_deref().unwrap_or("not terminated"),
+                    "container status"
+                );
+            }
+        }
+    }
+
+    // 2. K8s events related to this pod
+    let ns = pods
+        .resource_url()
+        .split("/namespaces/")
+        .nth(1)
+        .and_then(|s| s.split('/').next())
+        .unwrap_or("default");
+    let events: kube::Api<k8s_openapi::api::core::v1::Event> =
+        kube::Api::namespaced(state.kube.clone(), ns);
+    if let Ok(event_list) = events
+        .list(&kube::api::ListParams::default().fields(&format!("involvedObject.name={pod_name}")))
+        .await
+    {
+        for ev in event_list.items {
+            let reason = ev.reason.as_deref().unwrap_or("unknown");
+            let message = ev.message.as_deref().unwrap_or("");
+            let source = ev
+                .source
+                .as_ref()
+                .and_then(|s| s.component.as_deref())
+                .unwrap_or("unknown");
+            tracing::warn!(
+                pod = pod_name,
+                step = step_name,
+                reason,
+                source,
+                "pod event: {message}"
+            );
         }
     }
 }
@@ -2618,7 +2739,7 @@ async fn execute_deploy_test_step(
         &project_id.to_string(),
         &state.config.platform_namespace,
         &state.config.gateway_namespace,
-        false,
+        state.config.dev_mode,
     )
     .await
     .map_err(|e| PipelineError::Other(e.into()))?;

@@ -14,6 +14,8 @@ members = [
     "crates/libs/platform-pipeline",
     "crates/libs/platform-ops-repo",
     "crates/libs/platform-deployer",
+    "crates/libs/platform-webhook",
+    "crates/libs/platform-notify",
     "crates/libs/platform-mesh",
     # bins — standalone deployable binaries
     "crates/bins/platform-agent-runner",

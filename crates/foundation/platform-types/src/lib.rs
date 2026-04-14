@@ -9,6 +9,7 @@ pub mod error;
 pub mod events;
 pub mod git_error;
 pub mod git_traits;
+pub mod health;
 pub mod permission;
 pub mod pool;
 pub mod traits;
@@ -23,6 +24,7 @@ pub use error::ApiError;
 pub use events::PlatformEvent;
 pub use git_error::GitError;
 pub use git_traits::{GitCoreRead, GitMerger, GitWriter};
+pub use health::TaskRegistry;
 pub use permission::Permission;
 pub use traits::{
     AuditLogger, MergeRequestHandler, NotificationDispatcher, NotifyParams, OpsRepoManager,

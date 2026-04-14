@@ -1257,8 +1257,9 @@ async fn ensure_project_service_account(
         "SELECT namespace_slug FROM projects WHERE id = $1 AND is_active = true",
     )
     .bind(project_id)
-    .fetch_one(&state.pool)
-    .await?;
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| DeployerError::Other(anyhow::anyhow!("project {project_id} not found")))?;
 
     let sa_name = format!("sa-{slug}");
     let sa_email = format!("{sa_name}@platform.local");

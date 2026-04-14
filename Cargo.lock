@@ -4225,11 +4225,13 @@ dependencies = [
  "hex",
  "http-body-util",
  "pgp",
+ "platform-auth",
  "platform-types",
  "russh",
  "russh-keys",
  "serde",
  "serde_json",
+ "sqlx",
  "ssh-key",
  "tempfile",
  "thiserror 2.0.18",
@@ -4327,6 +4329,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "platform-notify"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fred",
+ "lettre",
+ "platform-auth",
+ "platform-types",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "platform-observe"
 version = "0.1.0"
 dependencies = [
@@ -4390,6 +4409,7 @@ dependencies = [
  "platform-secrets",
  "platform-types",
  "rand 0.10.0",
+ "rustls",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -4512,6 +4532,24 @@ dependencies = [
  "tokio",
  "tracing",
  "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "platform-webhook"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "hmac",
+ "platform-types",
+ "reqwest 0.12.28",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "url",
  "uuid",
 ]
 

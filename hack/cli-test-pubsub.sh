@@ -2,7 +2,7 @@
 # cli-test-pubsub.sh — Run agent-runner CLI pub/sub tests against ephemeral Valkey
 #
 # Deploys Valkey into an ephemeral cluster namespace, port-forwards it,
-# and runs the ignored pub/sub integration tests in cli/agent-runner.
+# and runs the ignored pub/sub integration tests in platform-agent-runner.
 #
 # Usage:
 #   bash hack/cli-test-pubsub.sh
@@ -80,9 +80,9 @@ echo ""
 echo "==> Running agent-runner pub/sub tests (VALKEY_URL=redis://127.0.0.1:${VALKEY_PORT})"
 echo ""
 
-cd "${PROJECT_DIR}/cli/agent-runner"
+cd "${PROJECT_DIR}"
 VALKEY_URL="redis://127.0.0.1:${VALKEY_PORT}" \
-  cargo test --bin agent-runner -- --ignored
+  cargo test -p platform-agent-runner --bin agent-runner -- --ignored
 
 echo ""
 echo "==> All pub/sub tests passed"

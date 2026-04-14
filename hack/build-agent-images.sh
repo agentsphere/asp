@@ -64,15 +64,15 @@ build_seed_image() {
 # ── Seed images ──────────────────────────────────────────────────────────
 echo "  Seed images:"
 build_seed_image "platform-runner" "${PROJECT_DIR}/docker/Dockerfile.platform-runner" \
-  "cli/agent-runner/src" "mcp"
+  "crates/bins/platform-agent-runner/src" "mcp"
 build_seed_image "platform-runner-bare" "${PROJECT_DIR}/docker/Dockerfile.platform-runner-bare"
 
 # ── Agent-runner cross-compiled binaries (worktree-scoped) ───────────────
 echo "  Agent-runner binaries (→ ${RUNNER_DIR}):"
 RUNNER_CHECKSUM_FILE="${RUNNER_DIR}/.checksum"
 RUNNER_CURRENT_CHECKSUM=$(
-  { find "${PROJECT_DIR}/cli/agent-runner/src" -name '*.rs' -exec shasum -a 256 {} +
-    shasum -a 256 "${PROJECT_DIR}/cli/agent-runner/Cargo.toml" "${PROJECT_DIR}/cli/agent-runner/Cargo.lock"
+  { find "${PROJECT_DIR}/crates/bins/platform-agent-runner/src" -name '*.rs' -exec shasum -a 256 {} +
+    shasum -a 256 "${PROJECT_DIR}/crates/bins/platform-agent-runner/Cargo.toml" "${PROJECT_DIR}/Cargo.lock"
   } | sort | shasum -a 256 | awk '{print $1}'
 )
 
