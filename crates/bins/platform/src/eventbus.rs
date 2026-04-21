@@ -626,9 +626,14 @@ async fn handle_demo_auto_promote(
     .fetch_optional(&state.pool)
     .await;
 
-    let Ok(Some(row)) = release else { return };
+    let Ok(Some(row)) = release else {
+        tracing::warn!(%release_id, "demo auto-promote: release row not found");
+        return;
+    };
     let strategy: String = row.get("strategy");
     let environment: String = row.get("environment");
+
+    tracing::info!(%project_id, %release_id, %environment, %strategy, "demo auto-promote: checking release");
 
     if environment == "staging" && strategy == "rolling" {
         demo_promote_staging_to_prod(state, project_id).await;
@@ -665,37 +670,53 @@ async fn demo_promote_staging_to_prod(state: &PlatformState, project_id: uuid::U
         .fetch_optional(&state.pool)
         .await;
 
-    let Ok(Some(ops)) = ops_repo else { return };
+    let Ok(Some(ops)) = ops_repo else {
+        tracing::error!(%project_id, "demo auto-promote: ops repo query failed or not found");
+        return;
+    };
     let ops_id: uuid::Uuid = ops.get("id");
     let ops_path_str: String = ops.get("repo_path");
     let ops_branch: String = ops.get("branch");
     let ops_path = std::path::PathBuf::from(&ops_path_str);
 
-    // Read staging values for image_ref
-    let Ok(staging_values) = platform_ops_repo::read_values(&ops_path, "staging", "staging").await
-    else {
-        return;
+    // Read staging values for image_ref.
+    // NOTE: gitops_sync writes to `values.yaml` (via OpsRepoManager::commit_values),
+    // not `values/{env}.yaml`, so we read `values.yaml` from the staging branch.
+    let image_ref = match platform_ops_repo::read_file_at_ref(&ops_path, "staging", "values.yaml")
+        .await
+    {
+        Ok(content) => serde_yaml::from_str::<serde_json::Value>(&content)
+            .ok()
+            .and_then(|v| v["image_ref"].as_str().map(String::from))
+            .unwrap_or_default(),
+        Err(e) => {
+            tracing::error!(error = %e, %project_id, "demo auto-promote: failed to read staging values");
+            String::new()
+        }
     };
-    let image_ref = staging_values["image_ref"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
 
     // Merge staging → production branch in the ops repo.
-    let merge_result = platform_ops_repo::merge_branch(&ops_path, "staging", &ops_branch).await;
-
-    if let Ok(new_sha) = merge_result {
-        let _ = platform_types::events::publish(
-            &state.valkey,
-            &PlatformEvent::OpsRepoUpdated {
-                project_id,
-                ops_repo_id: ops_id,
-                environment: "production".into(),
-                commit_sha: new_sha,
-                image_ref,
-            },
-        )
-        .await;
+    match platform_ops_repo::merge_branch(&ops_path, "staging", &ops_branch).await {
+        Ok(new_sha) => {
+            tracing::info!(%project_id, %new_sha, %image_ref, "demo auto-promote: merged staging → production");
+            if let Err(e) = platform_types::events::publish(
+                &state.valkey,
+                &PlatformEvent::OpsRepoUpdated {
+                    project_id,
+                    ops_repo_id: ops_id,
+                    environment: "production".into(),
+                    commit_sha: new_sha,
+                    image_ref,
+                },
+            )
+            .await
+            {
+                tracing::error!(error = %e, %project_id, "demo auto-promote: failed to publish OpsRepoUpdated");
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, %project_id, "demo auto-promote: merge staging → production failed");
+        }
     }
 }
 

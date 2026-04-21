@@ -1205,12 +1205,13 @@ async fn demo_full_lifecycle(pool: PgPool) {
     tracing::info!("stage 7: PR2 pipeline");
     state.pipeline_notify.notify_one();
 
-    // Wait for PR2 pipeline
+    // Wait for PR2 pipeline (pipelines table has no merge_request_id column;
+    // match via trigger='mr' and git_ref for the v0.2 branch)
     poll_until("PR2 pipeline", 120, || async {
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pipelines p
-             JOIN merge_requests mr ON p.merge_request_id = mr.id
-             WHERE p.project_id = $1 AND mr.source_branch = 'feature/shop-app-v0.2'",
+            "SELECT COUNT(*) FROM pipelines
+             WHERE project_id = $1 AND trigger = 'mr'
+               AND git_ref = 'refs/heads/feature/shop-app-v0.2'",
         )
         .bind(project_id)
         .fetch_one(&pool)
@@ -1221,10 +1222,10 @@ async fn demo_full_lifecycle(pool: PgPool) {
     .await;
 
     let pr2_pipeline_id: String = sqlx::query_scalar(
-        "SELECT p.id::text FROM pipelines p
-         JOIN merge_requests mr ON p.merge_request_id = mr.id
-         WHERE p.project_id = $1 AND mr.source_branch = 'feature/shop-app-v0.2'
-         ORDER BY p.created_at DESC LIMIT 1",
+        "SELECT id::text FROM pipelines
+         WHERE project_id = $1 AND trigger = 'mr'
+           AND git_ref = 'refs/heads/feature/shop-app-v0.2'
+         ORDER BY created_at DESC LIMIT 1",
     )
     .bind(project_id)
     .fetch_one(&pool)
